@@ -18,4 +18,11 @@ export default {
     }
   },
   plugins: [],
+  safelist: [
+    { pattern: /bg-(pink|brand)-(50|100|500|600|700)/ },
+    { pattern: /text-(pink|brand)-(600|700)/ },
+    { pattern: /border-(pink|brand)-(200|300)/ },
+    { pattern: /hover:bg-(pink|brand)-(50|700)/ },
+    { pattern: /focus:ring-(pink|brand)-400/ },
+  ]
 }
