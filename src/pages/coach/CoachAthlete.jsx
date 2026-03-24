@@ -189,10 +189,16 @@ export default function CoachAthlete() {
         <div className="space-y-6">
           <div className="flex items-center justify-between">
             <h2 className="font-medium text-gray-900">{activeBloc.name}</h2>
-            <Link to={`/coach/bloc/${activeBloc.id}/edit`}
-              className="text-sm text-brand-600 hover:text-brand-800 font-medium">
-              Éditer le programme →
-            </Link>
+            <div className="flex items-center gap-4">
+              <Link to={`/coach/athlete/${athleteId}/view`}
+                className="text-sm text-gray-500 hover:text-gray-800 font-medium">
+                👁 Vue coaché
+              </Link>
+              <Link to={`/coach/bloc/${activeBloc.id}/edit`}
+                className="text-sm text-brand-600 hover:text-brand-800 font-medium">
+                Éditer le programme →
+              </Link>
+            </div>
           </div>
           <ObjectifsBloc bloc={activeBloc} onSave={fetchData} />
           <RecapTracking athleteId={athleteId} blocId={activeBloc.id} />
