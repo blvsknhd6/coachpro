@@ -8,12 +8,12 @@ import Layout from '../../components/shared/Layout'
 export default function AthleteDashboard() {
   const { profile } = useAuth()
   const theme = useTheme()
-  const [blocs, setBlocs]         = useState([])
+  const [blocs, setBlocs]           = useState([])
   const [activeBloc, setActiveBloc] = useState(null)
-  const [semaines, setSemaines]   = useState([])
+  const [semaines, setSemaines]     = useState([])
   const [activeSemaine, setActiveSemaine] = useState(null)
-  const [seances, setSeances]     = useState([])
-  const [loading, setLoading]     = useState(true)
+  const [seances, setSeances]       = useState([])
+  const [loading, setLoading]       = useState(true)
 
   useEffect(() => { fetchBlocs() }, [profile])
   useEffect(() => { if (activeSemaine) fetchSeances(activeSemaine.id) }, [activeSemaine])
@@ -29,8 +29,24 @@ export default function AthleteDashboard() {
   async function fetchSemaines(blocId) {
     const { data } = await supabase.from('semaines').select('*').eq('bloc_id', blocId).order('numero')
     setSemaines(data || [])
-    if (data && data.length > 0) setActiveSemaine(data[data.length - 1])
-    else setLoading(false)
+    if (data && data.length > 0) {
+      const activeSem = await getActiveSemaine(data)
+      setActiveSemaine(activeSem)
+    } else setLoading(false)
+  }
+
+  async function getActiveSemaine(semainesList) {
+    // Trouve la dernière semaine avec de l'activité, sinon la première
+    for (let i = semainesList.length - 1; i >= 0; i--) {
+      const sem = semainesList[i]
+      const { data: seancesIds } = await supabase.from('seances').select('id').eq('semaine_id', sem.id)
+      if (!seancesIds?.length) continue
+      const { data: series } = await supabase.from('series_realisees')
+        .select('id').eq('athlete_id', profile.id)
+        .in('exercice_id', seancesIds.map(s => s.id)).limit(1)
+      if (series?.length) return sem
+    }
+    return semainesList[0]
   }
 
   async function fetchSeances(semaineId) {
@@ -64,7 +80,7 @@ export default function AthleteDashboard() {
           {semaines.map(s => (
             <button key={s.id} onClick={() => setActiveSemaine(s)}
               className={`px-3 py-1.5 rounded-lg text-sm transition-colors ${activeSemaine?.id === s.id ? 'bg-gray-900 text-white' : 'bg-white border border-gray-200 text-gray-600'}`}>
-              Semaine {s.numero}
+              S{s.numero}
             </button>
           ))}
         </div>
@@ -82,7 +98,7 @@ export default function AthleteDashboard() {
             const pct = totalEx > 0 ? Math.round((doneEx / totalEx) * 100) : 0
             return (
               <Link key={seance.id} to={`/athlete/seance/${seance.id}/semaine/${activeSemaine?.id}`}
-                className={`bg-white border rounded-xl p-5 hover:shadow-sm transition-all group ${theme.border} border-gray-100 hover:${theme.border}`}>
+                className={`bg-white border border-gray-100 rounded-xl p-5 hover:shadow-sm transition-all group hover:${theme.border}`}>
                 <p className={`font-medium text-sm text-gray-900 group-hover:${theme.text} mb-3`}>{seance.nom}</p>
                 <p className="text-xs text-gray-400 mb-2">{totalEx} exercice{totalEx !== 1 ? 's' : ''}</p>
                 <div className="h-1.5 bg-gray-100 rounded-full overflow-hidden">
@@ -97,8 +113,7 @@ export default function AthleteDashboard() {
               className={`bg-white border border-gray-100 rounded-xl p-5 hover:shadow-sm transition-all group hover:${theme.border}`}>
               <p className={`font-medium text-sm text-gray-900 group-hover:${theme.text} mb-1`}>Activités bonus</p>
               <p className="text-xs text-gray-400">
-                {seance.activites_bonus?.filter(a => a.activites_realisees?.length > 0).length || 0}
-                /{seance.activites_bonus?.length || 0} réalisées
+                {seance.activites_bonus?.filter(a => a.activites_realisees?.length > 0).length || 0}/{seance.activites_bonus?.length || 0} réalisées
               </p>
             </Link>
           ))}
