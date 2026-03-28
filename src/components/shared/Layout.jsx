@@ -35,7 +35,7 @@ export default function Layout({ children }) {
         <div className="max-w-5xl mx-auto px-4 h-14 flex items-center justify-between">
           <div className="flex items-center gap-6">
             <span className={`font-semibold text-base ${isFemme ? 'text-pink-600' : 'text-brand-700'}`}>
-              CoachPro
+              PouceTraining
             </span>
             <nav className="flex gap-1">
               {navLinks.map(l => {

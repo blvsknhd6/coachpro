@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { useParams, Link } from 'react-router-dom'
+import { useParams, Link, useNavigate } from 'react-router-dom'
 import { supabase } from '../../lib/supabase'
 import { useAuth } from '../../hooks/useAuth'
 import { useTheme } from '../../hooks/useTheme'
@@ -9,14 +9,17 @@ export default function AthleteSeance() {
   const { seanceId, semaineId } = useParams()
   const { profile } = useAuth()
   const theme = useTheme()
-  const [seance, setSeance]       = useState(null)
-  const [exercices, setExercices] = useState([])
-  const [activites, setActivites] = useState([])
-  const [series, setSeries]       = useState({})
-  const [seriesPrev, setSeriesPrev] = useState({}) // perfs semaine précédente
+  const navigate = useNavigate()
+  const [seance, setSeance]           = useState(null)
+  const [exercices, setExercices]     = useState([])
+  const [activites, setActivites]     = useState([])
+  const [series, setSeries]           = useState({})
+  const [seriesPrev, setSeriesPrev]   = useState({})
   const [activitesRealisees, setActivitesRealisees] = useState({})
-  const [loading, setLoading]     = useState(true)
-  const [isCoachEditing, setIsCoachEditing] = useState(false) // coach qui édite pour le coaché
+  const [loading, setLoading]         = useState(true)
+  const [isCoachEditing, setIsCoachEditing] = useState(false)
+  const [targetAthleteId, setTargetAthleteId] = useState(null)
+  const [chrono, setChrono]           = useState(null)
 
   useEffect(() => { fetchAll() }, [seanceId, semaineId, profile])
 
@@ -25,18 +28,23 @@ export default function AthleteSeance() {
     const { data: sc } = await supabase.from('seances').select('*').eq('id', seanceId).single()
     setSeance(sc)
 
-    // Déterminer si c'est le coach qui consulte la séance d'un coaché
-    // On récupère l'athlète lié à la semaine
     const { data: semaine } = await supabase.from('semaines').select('bloc_id').eq('id', semaineId).single()
-    const { data: bloc } = semaine ? await supabase.from('blocs').select('athlete_id').eq('id', semaine.bloc_id).single() : { data: null }
-    const athleteId = bloc?.athlete_id || profile.id
-    const editingForOther = profile.role === 'coach' && athleteId !== profile.id && athleteId !== profile.self_athlete_id
+    const { data: bloc } = semaine
+      ? await supabase.from('blocs').select('athlete_id').eq('id', semaine.bloc_id).single()
+      : { data: null }
+
+    const athId = bloc?.athlete_id || profile.id
+    setTargetAthleteId(athId)
+
+    const editingForOther = profile.role === 'coach' && athId !== profile.id && athId !== profile.self_athlete_id
     setIsCoachEditing(editingForOther)
 
     if (sc?.nom === 'Bonus') {
-      const { data: acts } = await supabase.from('activites_bonus').select('*').eq('seance_id', seanceId).order('ordre')
+      const { data: acts } = await supabase
+        .from('activites_bonus').select('*').eq('seance_id', seanceId).order('ordre')
       setActivites(acts || [])
-      const { data: realisees } = await supabase.from('activites_realisees').select('*').eq('semaine_id', semaineId).eq('athlete_id', athleteId)
+      const { data: realisees } = await supabase
+        .from('activites_realisees').select('*').eq('semaine_id', semaineId).eq('athlete_id', athId)
       const map = {}
       ;(realisees || []).forEach(r => { map[r.activite_id] = r.realisee })
       setActivitesRealisees(map)
@@ -44,45 +52,46 @@ export default function AthleteSeance() {
       return
     }
 
-    const { data: exs } = await supabase.from('exercices').select('*').eq('seance_id', seanceId).order('ordre')
+    const { data: exs } = await supabase
+      .from('exercices').select('*').eq('seance_id', seanceId).order('ordre')
     setExercices(exs || [])
 
-    // Séries de la semaine actuelle
-    const { data: sr } = await supabase.from('series_realisees').select('*')
-      .eq('semaine_id', semaineId).eq('athlete_id', athleteId)
+    const { data: sr } = await supabase
+      .from('series_realisees').select('*')
+      .eq('semaine_id', semaineId).eq('athlete_id', athId)
       .in('exercice_id', (exs || []).map(e => e.id)).order('numero_set')
+
     const map = {}
     ;(exs || []).forEach(ex => { map[ex.id] = [] })
     ;(sr || []).forEach(s => { if (map[s.exercice_id]) map[s.exercice_id].push(s) })
     setSeries(map)
 
-    // Perfs semaine précédente
-    await fetchSeriesPrev(exs || [], semaineId, athleteId)
-
+    await fetchSeriesPrev(exs || [], semaineId, athId, sc?.nom)
     setLoading(false)
   }
 
-  async function fetchSeriesPrev(exs, currentSemaineId, athleteId) {
-    // Trouver la semaine précédente
-    const { data: semaineCourante } = await supabase.from('semaines').select('numero, bloc_id').eq('id', currentSemaineId).single()
+  async function fetchSeriesPrev(exs, currentSemaineId, athId, seanceNom) {
+    const { data: semaineCourante } = await supabase
+      .from('semaines').select('numero, bloc_id').eq('id', currentSemaineId).single()
     if (!semaineCourante || semaineCourante.numero <= 1) return
 
-    const { data: semPrev } = await supabase.from('semaines')
-      .select('id').eq('bloc_id', semaineCourante.bloc_id).eq('numero', semaineCourante.numero - 1).single()
+    const { data: semPrev } = await supabase
+      .from('semaines').select('id')
+      .eq('bloc_id', semaineCourante.bloc_id).eq('numero', semaineCourante.numero - 1).single()
     if (!semPrev) return
 
-    // Trouver les séances de la semaine précédente avec le même nom
-    const { data: seancePrev } = await supabase.from('seances')
-      .select('id').eq('semaine_id', semPrev.id).eq('nom', seance?.nom || '').single()
+    const { data: seancePrev } = await supabase
+      .from('seances').select('id').eq('semaine_id', semPrev.id).eq('nom', seanceNom || '').single()
     if (!seancePrev) return
 
-    const { data: exsPrev } = await supabase.from('exercices').select('*').eq('seance_id', seancePrev.id).order('ordre')
+    const { data: exsPrev } = await supabase
+      .from('exercices').select('*').eq('seance_id', seancePrev.id).order('ordre')
 
-    const { data: srPrev } = await supabase.from('series_realisees').select('*')
-      .eq('semaine_id', semPrev.id).eq('athlete_id', athleteId)
+    const { data: srPrev } = await supabase
+      .from('series_realisees').select('*')
+      .eq('semaine_id', semPrev.id).eq('athlete_id', athId)
       .in('exercice_id', (exsPrev || []).map(e => e.id)).order('numero_set')
 
-    // Mapper par nom d'exercice (pas par id, car les ids changent entre semaines)
     const mapByNom = {}
     ;(exsPrev || []).forEach(ex => { mapByNom[ex.nom] = [] })
     ;(srPrev || []).forEach(s => {
@@ -92,41 +101,47 @@ export default function AthleteSeance() {
     setSeriesPrev(mapByNom)
   }
 
-  async function addSerie(exerciceId, numeroSet, athleteId) {
-    const { data: semaine } = await supabase.from('semaines').select('bloc_id').eq('id', semaineId).single()
-    const { data: bloc } = semaine ? await supabase.from('blocs').select('athlete_id').eq('id', semaine.bloc_id).single() : { data: null }
-    const targetAthleteId = bloc?.athlete_id || profile.id
-
+  async function addSerie(exerciceId, numeroSet) {
+    if (!targetAthleteId) return
     const { data } = await supabase.from('series_realisees').upsert({
       exercice_id: exerciceId, semaine_id: semaineId, athlete_id: targetAthleteId,
       numero_set: numeroSet, charge: null, reps: null,
     }, { onConflict: 'exercice_id,semaine_id,athlete_id,numero_set' }).select().single()
     setSeries(prev => ({
       ...prev,
-      [exerciceId]: [...(prev[exerciceId] || []).filter(s => s.numero_set !== numeroSet), data].sort((a, b) => a.numero_set - b.numero_set)
+      [exerciceId]: [...(prev[exerciceId] || []).filter(s => s.numero_set !== numeroSet), data]
+        .sort((a, b) => a.numero_set - b.numero_set)
     }))
   }
 
   async function updateSerie(serieId, exerciceId, field, value) {
     await supabase.from('series_realisees').update({ [field]: value === '' ? null : value }).eq('id', serieId)
-    setSeries(prev => ({ ...prev, [exerciceId]: prev[exerciceId].map(s => s.id === serieId ? { ...s, [field]: value } : s) }))
+    setSeries(prev => ({
+      ...prev,
+      [exerciceId]: prev[exerciceId].map(s => s.id === serieId ? { ...s, [field]: value } : s)
+    }))
   }
 
   async function deleteSerie(serieId, exerciceId) {
     await supabase.from('series_realisees').delete().eq('id', serieId)
-    setSeries(prev => ({ ...prev, [exerciceId]: prev[exerciceId].filter(s => s.id !== serieId) }))
+    setSeries(prev => ({
+      ...prev,
+      [exerciceId]: prev[exerciceId].filter(s => s.id !== serieId)
+    }))
   }
 
   async function toggleActivite(activiteId, current) {
-    const { data: semaine } = await supabase.from('semaines').select('bloc_id').eq('id', semaineId).single()
-    const { data: bloc } = semaine ? await supabase.from('blocs').select('athlete_id').eq('id', semaine.bloc_id).single() : { data: null }
-    const targetAthleteId = bloc?.athlete_id || profile.id
-
+    if (!targetAthleteId) return
     const newVal = !current
     setActivitesRealisees(prev => ({ ...prev, [activiteId]: newVal }))
     await supabase.from('activites_realisees').upsert({
       activite_id: activiteId, semaine_id: semaineId, athlete_id: targetAthleteId, realisee: newVal,
     }, { onConflict: 'activite_id,semaine_id,athlete_id' })
+  }
+
+  const goBack = () => {
+    if (window.history.length > 1) navigate(-1)
+    else navigate(profile?.role === 'coach' ? '/coach' : '/athlete')
   }
 
   if (loading) return <Layout><p className="text-sm text-gray-400">Chargement…</p></Layout>
@@ -136,7 +151,7 @@ export default function AthleteSeance() {
     return (
       <Layout>
         <div className="flex items-center gap-3 mb-4">
-          <Link to={profile?.role === 'coach' ? -1 : '/athlete'} className="text-sm text-gray-400 hover:text-gray-700">← Retour</Link>
+          <button onClick={goBack} className="text-sm text-gray-400 hover:text-gray-700">← Retour</button>
           <h1 className="text-xl font-semibold">Activités bonus</h1>
           {isCoachEditing && <span className="text-xs bg-amber-100 text-amber-700 px-2 py-1 rounded-full font-medium">Mode édition coach</span>}
         </div>
@@ -151,8 +166,12 @@ export default function AthleteSeance() {
                     ? theme.isFemme ? 'bg-pink-50 border-pink-200 text-pink-800' : 'bg-brand-50 border-brand-200 text-brand-800'
                     : 'bg-white border-gray-100 text-gray-700 hover:border-gray-200'
                 }`}>
-                <div className={`w-6 h-6 rounded-full border-2 flex items-center justify-center flex-shrink-0 ${done ? (theme.isFemme ? 'border-pink-500 bg-pink-500' : 'border-brand-500 bg-brand-500') : 'border-gray-300'}`}>
-                  {done && <svg className="w-3 h-3 text-white" fill="none" viewBox="0 0 12 12"><path d="M2 6l3 3 5-5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+                <div className={`w-6 h-6 rounded-full border-2 flex items-center justify-center flex-shrink-0 ${
+                  done ? (theme.isFemme ? 'border-pink-500 bg-pink-500' : 'border-brand-500 bg-brand-500') : 'border-gray-300'
+                }`}>
+                  {done && <svg className="w-3 h-3 text-white" fill="none" viewBox="0 0 12 12">
+                    <path d="M2 6l3 3 5-5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                  </svg>}
                 </div>
                 <span className="text-sm font-medium">{act.nom}</span>
               </button>
@@ -170,10 +189,11 @@ export default function AthleteSeance() {
   return (
     <Layout>
       <div className="flex items-center gap-3 mb-2 flex-wrap">
-        <Link to={profile?.role === 'coach' ? -1 : '/athlete'} className="text-sm text-gray-400 hover:text-gray-700">← Retour</Link>
+        <button onClick={goBack} className="text-sm text-gray-400 hover:text-gray-700">← Retour</button>
         <h1 className="text-xl font-semibold">{seance?.nom}</h1>
         {isCoachEditing && <span className="text-xs bg-amber-100 text-amber-700 px-2 py-1 rounded-full font-medium">Mode édition coach</span>}
       </div>
+
       <div className="mb-5">
         <div className="flex justify-between text-xs text-gray-400 mb-1">
           <span>{doneSeries} / {totalSeries} séries</span>
@@ -184,6 +204,8 @@ export default function AthleteSeance() {
         </div>
       </div>
 
+      <RecapSemainePrev exercices={exercices} seriesPrev={seriesPrev} theme={theme} />
+
       <div className="space-y-3">
         {exercices.map(ex => (
           <ExerciceCard key={ex.id} exercice={ex}
@@ -193,14 +215,45 @@ export default function AthleteSeance() {
             onAddSerie={(num) => addSerie(ex.id, num)}
             onUpdate={(serieId, field, val) => updateSerie(serieId, ex.id, field, val)}
             onDelete={(serieId) => deleteSerie(serieId, ex.id)}
+            onStartChrono={(duree) => setChrono({ duree })}
           />
         ))}
       </div>
+
+      {chrono && <ChronoRepos duree={chrono.duree} onClose={() => setChrono(null)} />}
     </Layout>
   )
 }
 
-function ExerciceCard({ exercice, series, prevSeries, onAddSerie, onUpdate, onDelete, theme }) {
+function RecapSemainePrev({ exercices, seriesPrev, theme }) {
+  const exsAvecPerfs = exercices.filter(ex => (seriesPrev[ex.nom] || []).some(s => s.charge || s.reps))
+  if (exsAvecPerfs.length === 0) return null
+
+  return (
+    <div className="bg-gray-50 border border-gray-100 rounded-xl p-4 mb-4">
+      <p className="text-xs font-medium text-gray-500 mb-3">📊 Semaine précédente</p>
+      <div className="space-y-2">
+        {exsAvecPerfs.map(ex => (
+          <div key={ex.id}>
+            <p className="text-xs font-medium text-gray-600 mb-1">{ex.nom}</p>
+            <div className="flex flex-wrap gap-1">
+              {(seriesPrev[ex.nom] || []).map((s, i) => (
+                <span key={i} className={`text-xs border px-2 py-0.5 rounded-md ${
+                  theme.isFemme ? 'bg-pink-50 border-pink-100 text-pink-600' : 'bg-brand-50 border-brand-100 text-brand-600'
+                }`}>
+                  S{i+1} : {s.charge ? `${s.charge}kg` : '—'} × {s.reps || '—'}
+                  {s.notes ? ` · ${s.notes}` : ''}
+                </span>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function ExerciceCard({ exercice, series, prevSeries, onAddSerie, onUpdate, onDelete, theme, onStartChrono }) {
   const nextSet = series.length + 1
   const canAddSet = series.length < exercice.sets
 
@@ -211,10 +264,14 @@ function ExerciceCard({ exercice, series, prevSeries, onAddSerie, onUpdate, onDe
           <p className="font-medium text-sm text-gray-900 truncate">{exercice.nom}</p>
           <p className="text-xs text-gray-400 mt-0.5">
             {exercice.muscle && <span className="mr-1">{exercice.muscle} ·</span>}
-            <span className={`font-medium ${theme.isFemme ? 'text-pink-600' : 'text-brand-600'}`}>{exercice.sets} × {exercice.rep_range}</span>
-            {exercice.repos && <span className="ml-1 text-gray-400">· {exercice.repos}</span>}
+            <span className={`font-medium ${theme.isFemme ? 'text-pink-600' : 'text-brand-600'}`}>
+              {exercice.sets} × {exercice.rep_range}
+            </span>
+            {exercice.repos && <span className="ml-1">· {exercice.repos}</span>}
           </p>
-          {exercice.indications && <p className="text-xs text-amber-600 mt-0.5 font-medium">{exercice.indications}</p>}
+          {exercice.indications && (
+            <p className="text-xs text-amber-600 mt-0.5 font-medium">{exercice.indications}</p>
+          )}
         </div>
         <span className={`text-xs px-2 py-0.5 rounded-full font-medium ml-2 flex-shrink-0 ${
           series.length >= exercice.sets ? 'bg-green-50 text-green-700'
@@ -226,46 +283,43 @@ function ExerciceCard({ exercice, series, prevSeries, onAddSerie, onUpdate, onDe
       </div>
 
       <div className="px-4 py-3 space-y-2">
-        {/* En-têtes colonnes — optimisé mobile */}
-        {series.length > 0 && (
-          <div className="grid grid-cols-10 gap-1.5 text-xs text-gray-400 font-medium px-0.5 mb-1">
-            <div className="col-span-1 text-center">#</div>
-            <div className="col-span-3">kg</div>
-            <div className="col-span-3">Reps</div>
-            <div className="col-span-3">Note</div>
-          </div>
-        )}
-
         {series.map((s, i) => (
           <SerieRow key={s.id} serie={s} index={i + 1}
             prevSerie={prevSeries[i] || null}
-            repRange={exercice.rep_range} theme={theme}
+            repos={exercice.repos}
+            repRange={exercice.rep_range}
+            theme={theme}
             onUpdate={(field, val) => onUpdate(s.id, field, val)}
             onDelete={() => onDelete(s.id)}
+            onStartChrono={() => onStartChrono(exercice.repos)}
           />
         ))}
 
         {canAddSet ? (
           <button onClick={() => onAddSerie(nextSet)}
             className={`w-full mt-1 py-2.5 border border-dashed rounded-lg text-sm font-medium transition-colors ${
-              theme.isFemme ? 'border-pink-200 text-pink-400 hover:border-pink-400 hover:text-pink-600' : 'border-gray-200 text-gray-400 hover:border-brand-400 hover:text-brand-600'
+              theme.isFemme
+                ? 'border-pink-200 text-pink-400 hover:border-pink-400 hover:text-pink-600'
+                : 'border-gray-200 text-gray-400 hover:border-brand-400 hover:text-brand-600'
             }`}>
             + Set {nextSet}
             {prevSeries[series.length] && (
               <span className="ml-2 text-xs text-gray-300">
-                (S-1 : {prevSeries[series.length].charge ? `${prevSeries[series.length].charge}kg` : '—'} × {prevSeries[series.length].reps || '—'})
+                S-1 : {prevSeries[series.length].charge ? `${prevSeries[series.length].charge}kg` : '—'} × {prevSeries[series.length].reps || '—'}
               </span>
             )}
           </button>
         ) : (
-          <div className="w-full mt-1 py-2 text-center text-xs text-green-600 font-medium">✓ Tous les sets complétés</div>
+          <div className="w-full mt-1 py-2 text-center text-xs text-green-600 font-medium">
+            ✓ Tous les sets complétés
+          </div>
         )}
       </div>
     </div>
   )
 }
 
-function SerieRow({ serie, index, prevSerie, repRange, onUpdate, onDelete, theme }) {
+function SerieRow({ serie, index, prevSerie, repRange, repos, onUpdate, onDelete, theme, onStartChrono }) {
   const [charge, setCharge] = useState(serie.charge ?? '')
   const [reps, setReps]     = useState(serie.reps ?? '')
   const [notes, setNotes]   = useState(serie.notes ?? '')
@@ -276,41 +330,126 @@ function SerieRow({ serie, index, prevSerie, repRange, onUpdate, onDelete, theme
   }, [])
 
   const ringClass = theme.isFemme ? 'focus:ring-2 focus:ring-pink-300' : 'focus:ring-2 focus:ring-brand-400'
-  const inputClass = `w-full border border-gray-100 rounded-lg px-2 py-2.5 text-sm focus:outline-none bg-gray-50 focus:bg-white transition-colors ${ringClass}`
+  const inputBase = `border border-gray-100 rounded-lg px-3 py-2.5 text-sm focus:outline-none bg-gray-50 focus:bg-white transition-colors ${ringClass}`
 
   return (
-    <div className="space-y-0.5">
-      <div className="grid grid-cols-10 gap-1.5 items-center group">
-        <div className="col-span-1 text-xs font-medium text-gray-400 text-center">{index}</div>
-        <div className="col-span-3">
-          <input ref={chargeRef} type="number" inputMode="decimal" value={charge}
-            placeholder={prevSerie?.charge ? String(prevSerie.charge) : '—'}
-            onChange={e => setCharge(e.target.value)} onBlur={() => onUpdate('charge', charge)}
-            className={inputClass} />
-        </div>
-        <div className="col-span-3">
-          <input type="number" inputMode="numeric" value={reps}
-            placeholder={prevSerie?.reps ? String(prevSerie.reps) : (repRange || '—')}
-            onChange={e => setReps(e.target.value)} onBlur={() => onUpdate('reps', reps)}
-            className={inputClass} />
-        </div>
-        <div className="col-span-3 flex items-center gap-1">
-          <input type="text" value={notes} placeholder="Note"
-            onChange={e => setNotes(e.target.value)} onBlur={() => onUpdate('notes', notes)}
-            className={inputClass + " flex-1"} />
-          <button onClick={onDelete} className="text-gray-200 hover:text-red-400 text-base opacity-0 group-hover:opacity-100 flex-shrink-0">×</button>
+    <div className="space-y-1 pb-2 border-b border-gray-50 last:border-0 last:pb-0">
+      {/* Ligne principale : numéro + charge + reps */}
+      <div className="flex items-center gap-2">
+        <span className="w-5 text-xs font-medium text-gray-400 text-center flex-shrink-0">{index}</span>
+        <div className="flex gap-2 flex-1">
+          <div className="flex-1">
+            <input ref={chargeRef} type="number" inputMode="decimal" value={charge}
+              placeholder={prevSerie?.charge ? String(prevSerie.charge) : 'kg'}
+              onChange={e => setCharge(e.target.value)}
+              onBlur={() => onUpdate('charge', charge)}
+              className={inputBase + " w-full"} />
+          </div>
+          <div className="flex-1">
+            <input type="number" inputMode="numeric" value={reps}
+              placeholder={prevSerie?.reps ? String(prevSerie.reps) : (repRange || 'reps')}
+              onChange={e => setReps(e.target.value)}
+              onBlur={() => {
+                onUpdate('reps', reps)
+                if (reps) onStartChrono()
+              }}
+              className={inputBase + " w-full"} />
+          </div>
+          <button onClick={onDelete}
+            className="text-gray-200 hover:text-red-400 text-xl flex-shrink-0 px-1">×</button>
         </div>
       </div>
-      {/* Perfs semaine précédente en grisé */}
+
+      {/* Ligne note — pleine largeur */}
+      <div className="flex gap-2">
+        <span className="w-5 flex-shrink-0" />
+        <input type="text" value={notes}
+          placeholder="Note (ex: facile, douleur épaule…)"
+          onChange={e => setNotes(e.target.value)}
+          onBlur={() => onUpdate('notes', notes)}
+          className={inputBase + " flex-1 text-xs"} />
+      </div>
+
+      {/* Perfs semaine précédente */}
       {prevSerie && (prevSerie.charge || prevSerie.reps) && (
-        <div className="grid grid-cols-10 gap-1.5 pl-0.5">
-          <div className="col-span-1"></div>
-          <div className="col-span-6 text-xs text-gray-300 pl-2">
-            S-1 : {prevSerie.charge ? `${prevSerie.charge}kg` : '—'} × {prevSerie.reps || '—'} reps
-            {prevSerie.notes ? ` · ${prevSerie.notes}` : ''}
-          </div>
+        <div className="flex gap-2">
+          <span className="w-5 flex-shrink-0" />
+          <p className="text-xs text-gray-300 pl-1">
+            S-1 : {prevSerie.charge ? `${prevSerie.charge}kg` : '—'} × {prevSerie.reps || '—'}{prevSerie.notes ? ` · ${prevSerie.notes}` : ''}
+          </p>
         </div>
       )}
+    </div>
+  )
+}
+
+function ChronoRepos({ duree, onClose }) {
+  const secondes = (() => {
+    if (!duree) return 120
+    // Formats possibles : "2'", "1'30''", "30''"
+    const matchFull = duree.match(/(\d+)'(\d+)?/)
+    if (matchFull) return parseInt(matchFull[1]) * 60 + parseInt(matchFull[2] || '0')
+    const matchSec = duree.match(/(\d+)''/)
+    if (matchSec) return parseInt(matchSec[1])
+    return 120
+  })()
+
+  const [remaining, setRemaining] = useState(secondes)
+  const [running, setRunning]     = useState(true)
+
+  useEffect(() => {
+    if (!running || remaining <= 0) return
+    const t = setTimeout(() => setRemaining(r => r - 1), 1000)
+    return () => clearTimeout(t)
+  }, [remaining, running])
+
+  const pct  = Math.round((remaining / secondes) * 100)
+  const mins = Math.floor(remaining / 60)
+  const secs = remaining % 60
+  const isDone = remaining <= 0
+
+  return (
+    <div className={`fixed bottom-4 left-4 right-4 rounded-2xl p-4 z-50 flex items-center gap-4 shadow-xl transition-colors ${
+      isDone ? 'bg-green-600' : remaining <= 10 ? 'bg-red-600' : 'bg-gray-900'
+    } text-white`}>
+      <div className="relative w-14 h-14 flex-shrink-0">
+        <svg className="w-14 h-14 -rotate-90" viewBox="0 0 56 56">
+          <circle cx="28" cy="28" r="24" fill="none" stroke="rgba(255,255,255,0.15)" strokeWidth="4"/>
+          <circle cx="28" cy="28" r="24" fill="none"
+            stroke={isDone ? '#ffffff' : remaining <= 10 ? '#fca5a5' : '#818cf8'}
+            strokeWidth="4"
+            strokeDasharray={`${2 * Math.PI * 24}`}
+            strokeDashoffset={`${2 * Math.PI * 24 * (1 - pct / 100)}`}
+            strokeLinecap="round"
+            style={{ transition: 'stroke-dashoffset 1s linear' }}
+          />
+        </svg>
+        <div className="absolute inset-0 flex items-center justify-center text-sm font-bold">
+          {isDone ? '✓' : `${mins}:${String(secs).padStart(2, '0')}`}
+        </div>
+      </div>
+
+      <div className="flex-1">
+        <p className="text-sm font-medium">
+          {isDone ? 'C\'est reparti !' : remaining <= 10 ? 'Presque fini…' : 'Temps de repos'}
+        </p>
+        <p className="text-xs opacity-70">
+          {isDone ? 'Lance ton prochain set' : `${duree} de récupération`}
+        </p>
+      </div>
+
+      <div className="flex gap-2">
+        {!isDone && (
+          <button onClick={() => setRunning(r => !r)}
+            className="text-sm bg-white/10 hover:bg-white/20 px-3 py-1.5 rounded-lg transition-colors">
+            {running ? '⏸' : '▶'}
+          </button>
+        )}
+        <button onClick={onClose}
+          className="text-sm bg-white/10 hover:bg-white/20 px-3 py-1.5 rounded-lg transition-colors">
+          ✕
+        </button>
+      </div>
     </div>
   )
 }
