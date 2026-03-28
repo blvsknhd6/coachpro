@@ -6,10 +6,10 @@ import RecapTracking from '../../components/coach/RecapTracking'
 
 export default function CoachAthlete() {
   const { athleteId } = useParams()
-  const [athlete, setAthlete]   = useState(null)
-  const [blocs, setBlocs]       = useState([])
+  const [athlete, setAthlete] = useState(null)
+  const [blocs, setBlocs] = useState([])
   const [activeBloc, setActiveBloc] = useState(null)
-  const [loading, setLoading]   = useState(true)
+  const [loading, setLoading] = useState(true)
   const [showNewBloc, setShowNewBloc] = useState(false)
   const [newBlocName, setNewBlocName] = useState('')
   const [editingProfile, setEditingProfile] = useState(false)
@@ -19,32 +19,69 @@ export default function CoachAthlete() {
   const [editingBlocName, setEditingBlocName] = useState(null)
   const [editBlocNameVal, setEditBlocNameVal] = useState('')
 
-  useEffect(() => { fetchData() }, [athleteId])
+  useEffect(() => {
+    fetchData()
+  }, [athleteId])
 
   async function fetchData() {
+    setLoading(true)
     const { data: ath } = await supabase.from('profiles').select('*').eq('id', athleteId).single()
-    setAthlete(ath)
-    setProfileForm({ full_name: ath?.full_name || '', genre: ath?.genre || 'homme' })
+    
+    if (ath) {
+      setAthlete(ath)
+      // On initialise le formulaire avec les vraies données
+      setProfileForm({ 
+        full_name: ath.full_name || '', 
+        genre: ath.genre || 'homme' 
+      })
+    }
+
     const { data: bl } = await supabase
-      .from('blocs').select('*, objectifs_bloc(*)')
-      .eq('athlete_id', athleteId).order('created_at', { ascending: false })
+      .from('blocs')
+      .select('*, objectifs_bloc(*)')
+      .eq('athlete_id', athleteId)
+      .order('created_at', { ascending: false })
+    
     setBlocs(bl || [])
     if (bl && bl.length > 0) setActiveBloc(bl[0])
     setLoading(false)
   }
 
+  // --- LOGIQUE DE MODIFICATION DU PROFIL ---
+  
+  const handleStartEdit = () => {
+    // Crucial : On synchronise le formulaire avec l'état actuel de l'athlète
+    // pour éviter de repartir sur des valeurs par défaut
+    setProfileForm({
+      full_name: athlete?.full_name || '',
+      genre: athlete?.genre || 'homme'
+    })
+    setEditingProfile(true)
+  }
+
   async function saveProfile() {
+    if (!profileForm.full_name.trim()) return
+    
     setSavingProfile(true)
-    const { error } = await supabase.from('profiles').update({
-      full_name: profileForm.full_name,
-      genre: profileForm.genre,
-    }).eq('id', athleteId)
+    const { error } = await supabase
+      .from('profiles')
+      .update({
+        full_name: profileForm.full_name.trim(),
+        genre: profileForm.genre,
+      })
+      .eq('id', athleteId)
+
     if (!error) {
-      setAthlete(a => ({ ...a, ...profileForm }))
+      // On met à jour l'athlète localement pour refléter les changements immédiatement
+      setAthlete(prev => ({ ...prev, ...profileForm }))
       setEditingProfile(false)
+    } else {
+      console.error("Erreur lors de la sauvegarde :", error.message)
     }
     setSavingProfile(false)
   }
+
+  // --- LOGIQUE DES BLOCS ---
 
   async function createBloc() {
     if (!newBlocName.trim()) return
@@ -64,14 +101,13 @@ export default function CoachAthlete() {
   }
 
   async function duplicateBloc(bloc) {
-    // Crée un nouveau bloc avec le même nom + " (copie)"
     const { data: newBloc } = await supabase.from('blocs').insert({
       athlete_id: athleteId, name: bloc.name + ' (copie)'
     }).select().single()
 
-    // Copier les objectifs
-    if (bloc.objectifs_bloc) {
-      const obj = bloc.objectifs_bloc
+    const objData = Array.isArray(bloc.objectifs_bloc) ? bloc.objectifs_bloc[0] : bloc.objectifs_bloc
+    if (objData) {
+      const obj = objData
       await supabase.from('objectifs_bloc').insert({
         bloc_id: newBloc.id, poids_cible: obj.poids_cible, kcal: obj.kcal,
         proteines: obj.proteines, glucides: obj.glucides, lipides: obj.lipides,
@@ -79,7 +115,6 @@ export default function CoachAthlete() {
       })
     }
 
-    // Copier les semaines et séances
     const { data: semaines } = await supabase.from('semaines').select('*').eq('bloc_id', bloc.id).order('numero')
     for (const sem of semaines || []) {
       const { data: newSem } = await supabase.from('semaines').insert({ bloc_id: newBloc.id, numero: sem.numero }).select().single()
@@ -135,19 +170,28 @@ export default function CoachAthlete() {
           <div className="flex-1">
             {editingProfile ? (
               <div className="flex items-center gap-2 flex-wrap">
-                <input value={profileForm.full_name}
+                <input 
+                  value={profileForm.full_name}
                   onChange={e => setProfileForm(f => ({ ...f, full_name: e.target.value }))}
-                  className="border border-gray-200 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400" />
+                  className="border border-gray-200 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400" 
+                />
                 <div className="flex gap-1">
                   {['homme', 'femme'].map(g => (
-                    <button key={g} type="button" onClick={() => setProfileForm(f => ({ ...f, genre: g }))}
-                      className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${profileForm.genre === g ? 'bg-brand-600 text-white border-brand-600' : 'border-gray-200 text-gray-600'}`}>
+                    <button 
+                      key={g} 
+                      type="button" 
+                      onClick={() => setProfileForm(f => ({ ...f, genre: g }))}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${profileForm.genre === g ? 'bg-brand-600 text-white border-brand-600' : 'border-gray-200 text-gray-600'}`}
+                    >
                       {g === 'homme' ? '♂' : '♀'} {g}
                     </button>
                   ))}
                 </div>
-                <button onClick={saveProfile} disabled={savingProfile}
-                  className="text-sm text-brand-600 font-medium hover:text-brand-800">
+                <button 
+                  onClick={saveProfile} 
+                  disabled={savingProfile}
+                  className="text-sm text-brand-600 font-medium hover:text-brand-800"
+                >
                   {savingProfile ? 'Enregistrement…' : 'Enregistrer'}
                 </button>
                 <button onClick={() => setEditingProfile(false)} className="text-sm text-gray-400">Annuler</button>
@@ -158,7 +202,12 @@ export default function CoachAthlete() {
                   <h1 className="text-xl font-semibold">{athlete?.full_name}</h1>
                   <p className="text-xs text-gray-400">{athlete?.genre === 'femme' ? '♀ Femme' : '♂ Homme'} · {athlete?.email}</p>
                 </div>
-                <button onClick={() => setEditingProfile(true)} className="text-xs text-gray-400 hover:text-brand-600 ml-2">Modifier</button>
+                <button 
+                  onClick={handleStartEdit} 
+                  className="text-xs text-gray-400 hover:text-brand-600 ml-2"
+                >
+                  Modifier
+                </button>
               </div>
             )}
           </div>
@@ -235,10 +284,11 @@ export default function CoachAthlete() {
   )
 }
 
+// Le composant ObjectifsBloc reste globalement le même mais vérifie bien tes clés Supabase
 function ObjectifsBloc({ bloc, onSave }) {
-  const [obj, setObj]       = useState(null)
+  const [obj, setObj] = useState(null)
   const [editing, setEditing] = useState(false)
-  const [form, setForm]     = useState({})
+  const [form, setForm] = useState({})
   const [saving, setSaving] = useState(false)
 
   useEffect(() => { fetchObj() }, [bloc.id])
@@ -247,24 +297,35 @@ function ObjectifsBloc({ bloc, onSave }) {
     const { data } = await supabase.from('objectifs_bloc').select('*').eq('bloc_id', bloc.id).single()
     setObj(data)
     if (data) setForm(data)
+    else setForm({})
   }
 
   async function saveObj() {
     setSaving(true)
-    if (obj) await supabase.from('objectifs_bloc').update(form).eq('id', obj.id)
-    else await supabase.from('objectifs_bloc').insert({ ...form, bloc_id: bloc.id })
+    const payload = { ...form, bloc_id: bloc.id }
+    
+    if (obj) {
+      await supabase.from('objectifs_bloc').update(payload).eq('id', obj.id)
+    } else {
+      await supabase.from('objectifs_bloc').insert(payload)
+    }
+    
     await fetchObj()
+    if (onSave) onSave()
     setEditing(false)
     setSaving(false)
   }
 
   const field = (key, label, unit = '') => (
-    <div>
+    <div key={key}>
       <label className="text-xs text-gray-500">{label}</label>
       <div className="flex items-center gap-1 mt-0.5">
-        <input type="number" value={form[key] || ''}
+        <input 
+          type="number" 
+          value={form[key] || ''}
           onChange={e => setForm(f => ({ ...f, [key]: e.target.value }))}
-          className="w-24 border border-gray-200 rounded px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-brand-400" />
+          className="w-24 border border-gray-200 rounded px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-brand-400" 
+        />
         {unit && <span className="text-xs text-gray-400">{unit}</span>}
       </div>
     </div>
@@ -276,13 +337,16 @@ function ObjectifsBloc({ bloc, onSave }) {
         <h3 className="text-sm font-medium text-gray-700">Objectifs du bloc</h3>
         {editing ? (
           <div className="flex gap-2">
-            <button onClick={saveObj} disabled={saving} className="text-sm text-brand-600 font-medium">{saving ? 'Enregistrement…' : 'Enregistrer'}</button>
+            <button onClick={saveObj} disabled={saving} className="text-sm text-brand-600 font-medium">
+              {saving ? 'Enregistrement…' : 'Enregistrer'}
+            </button>
             <button onClick={() => setEditing(false)} className="text-sm text-gray-400">Annuler</button>
           </div>
         ) : (
           <button onClick={() => setEditing(true)} className="text-sm text-brand-600 hover:text-brand-800">Modifier</button>
         )}
       </div>
+      
       {editing ? (
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
           {field('poids_cible', 'Poids cible', 'kg')}
@@ -296,10 +360,21 @@ function ObjectifsBloc({ bloc, onSave }) {
         </div>
       ) : obj ? (
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-          {[['Poids cible', obj.poids_cible, 'kg'], ['Kcal', obj.kcal, 'kcal'], ['Protéines', obj.proteines, 'g'], ['Glucides', obj.glucides, 'g'], ['Lipides', obj.lipides, 'g'], ['Sommeil', obj.sommeil, 'h'], ['Pas / jour', obj.pas_journaliers, ''], ['Stress cible', obj.stress_cible, '/10']].map(([label, val, unit]) => (
+          {[
+            ['Poids cible', obj.poids_cible, 'kg'], 
+            ['Kcal', obj.kcal, 'kcal'], 
+            ['Protéines', obj.proteines, 'g'], 
+            ['Glucides', obj.glucides, 'g'], 
+            ['Lipides', obj.lipides, 'g'], 
+            ['Sommeil', obj.sommeil, 'h'], 
+            ['Pas / jour', obj.pas_journaliers, ''], 
+            ['Stress cible', obj.stress_cible, '/10']
+          ].map(([label, val, unit]) => (
             <div key={label}>
               <p className="text-xs text-gray-400">{label}</p>
-              <p className="text-sm font-medium text-gray-900">{val ?? '—'}{val && unit ? ' ' + unit : ''}</p>
+              <p className="text-sm font-medium text-gray-900">
+                {val ?? '—'}{val && unit ? ' ' + unit : ''}
+              </p>
             </div>
           ))}
         </div>

@@ -92,7 +92,7 @@ export default function CoachMonProgramme() {
     const targetId = selfProfile?.id
     if (!targetId) return
     const { data } = await supabase.from('blocs').insert({
-      athlete_id: selfProfile.id,
+      athlete_id: targetId,
       name: newBlocName.trim(),
     }).select().single()
     setBlocs(b => [data, ...b])
