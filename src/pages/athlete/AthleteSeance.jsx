@@ -1,9 +1,30 @@
 import { useState, useEffect, useRef } from 'react'
-import { useParams, Link, useNavigate } from 'react-router-dom'
+import { useParams, useNavigate } from 'react-router-dom'
 import { supabase } from '../../lib/supabase'
 import { useAuth } from '../../hooks/useAuth'
 import { useTheme } from '../../hooks/useTheme'
 import Layout from '../../components/shared/Layout'
+
+function playBeep() {
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)()
+    const playTone = (freq, start, dur) => {
+      const osc = ctx.createOscillator()
+      const gain = ctx.createGain()
+      osc.connect(gain)
+      gain.connect(ctx.destination)
+      osc.frequency.value = freq
+      osc.type = 'sine'
+      gain.gain.setValueAtTime(0.3, ctx.currentTime + start)
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + start + dur)
+      osc.start(ctx.currentTime + start)
+      osc.stop(ctx.currentTime + start + dur)
+    }
+    playTone(880, 0, 0.15)
+    playTone(1046, 0.2, 0.15)
+    playTone(1318, 0.4, 0.3)
+  } catch (e) {}
+}
 
 export default function AthleteSeance() {
   const { seanceId, semaineId } = useParams()
@@ -36,15 +57,13 @@ export default function AthleteSeance() {
     const athId = bloc?.athlete_id || profile.id
     setTargetAthleteId(athId)
 
-    const editingForOther = profile.role === 'coach' && athId !== profile.id && athId !== profile.self_athlete_id
+    const editingForOther = profile.role === 'coach' && athId !== profile.id
     setIsCoachEditing(editingForOther)
 
     if (sc?.nom === 'Bonus') {
-      const { data: acts } = await supabase
-        .from('activites_bonus').select('*').eq('seance_id', seanceId).order('ordre')
+      const { data: acts } = await supabase.from('activites_bonus').select('*').eq('seance_id', seanceId).order('ordre')
       setActivites(acts || [])
-      const { data: realisees } = await supabase
-        .from('activites_realisees').select('*').eq('semaine_id', semaineId).eq('athlete_id', athId)
+      const { data: realisees } = await supabase.from('activites_realisees').select('*').eq('semaine_id', semaineId).eq('athlete_id', athId)
       const map = {}
       ;(realisees || []).forEach(r => { map[r.activite_id] = r.realisee })
       setActivitesRealisees(map)
@@ -52,12 +71,10 @@ export default function AthleteSeance() {
       return
     }
 
-    const { data: exs } = await supabase
-      .from('exercices').select('*').eq('seance_id', seanceId).order('ordre')
+    const { data: exs } = await supabase.from('exercices').select('*').eq('seance_id', seanceId).order('ordre')
     setExercices(exs || [])
 
-    const { data: sr } = await supabase
-      .from('series_realisees').select('*')
+    const { data: sr } = await supabase.from('series_realisees').select('*')
       .eq('semaine_id', semaineId).eq('athlete_id', athId)
       .in('exercice_id', (exs || []).map(e => e.id)).order('numero_set')
 
@@ -71,24 +88,20 @@ export default function AthleteSeance() {
   }
 
   async function fetchSeriesPrev(exs, currentSemaineId, athId, seanceNom) {
-    const { data: semaineCourante } = await supabase
-      .from('semaines').select('numero, bloc_id').eq('id', currentSemaineId).single()
+    const { data: semaineCourante } = await supabase.from('semaines').select('numero, bloc_id').eq('id', currentSemaineId).single()
     if (!semaineCourante || semaineCourante.numero <= 1) return
 
-    const { data: semPrev } = await supabase
-      .from('semaines').select('id')
+    const { data: semPrev } = await supabase.from('semaines').select('id')
       .eq('bloc_id', semaineCourante.bloc_id).eq('numero', semaineCourante.numero - 1).single()
     if (!semPrev) return
 
-    const { data: seancePrev } = await supabase
-      .from('seances').select('id').eq('semaine_id', semPrev.id).eq('nom', seanceNom || '').single()
+    const { data: seancePrev } = await supabase.from('seances').select('id')
+      .eq('semaine_id', semPrev.id).eq('nom', seanceNom || '').single()
     if (!seancePrev) return
 
-    const { data: exsPrev } = await supabase
-      .from('exercices').select('*').eq('seance_id', seancePrev.id).order('ordre')
+    const { data: exsPrev } = await supabase.from('exercices').select('*').eq('seance_id', seancePrev.id).order('ordre')
 
-    const { data: srPrev } = await supabase
-      .from('series_realisees').select('*')
+    const { data: srPrev } = await supabase.from('series_realisees').select('*')
       .eq('semaine_id', semPrev.id).eq('athlete_id', athId)
       .in('exercice_id', (exsPrev || []).map(e => e.id)).order('numero_set')
 
@@ -124,10 +137,7 @@ export default function AthleteSeance() {
 
   async function deleteSerie(serieId, exerciceId) {
     await supabase.from('series_realisees').delete().eq('id', serieId)
-    setSeries(prev => ({
-      ...prev,
-      [exerciceId]: prev[exerciceId].filter(s => s.id !== serieId)
-    }))
+    setSeries(prev => ({ ...prev, [exerciceId]: prev[exerciceId].filter(s => s.id !== serieId) }))
   }
 
   async function toggleActivite(activiteId, current) {
@@ -139,10 +149,7 @@ export default function AthleteSeance() {
     }, { onConflict: 'activite_id,semaine_id,athlete_id' })
   }
 
-  const goBack = () => {
-    if (window.history.length > 1) navigate(-1)
-    else navigate(profile?.role === 'coach' ? '/coach' : '/athlete')
-  }
+  const goBack = () => { if (window.history.length > 1) navigate(-1); else navigate('/athlete') }
 
   if (loading) return <Layout><p className="text-sm text-gray-400">Chargement…</p></Layout>
 
@@ -194,7 +201,7 @@ export default function AthleteSeance() {
         {isCoachEditing && <span className="text-xs bg-amber-100 text-amber-700 px-2 py-1 rounded-full font-medium">Mode édition coach</span>}
       </div>
 
-      <div className="mb-5">
+      <div className="mb-4">
         <div className="flex justify-between text-xs text-gray-400 mb-1">
           <span>{doneSeries} / {totalSeries} séries</span>
           <span>{pct}%</span>
@@ -232,7 +239,7 @@ function RecapSemainePrev({ exercices, seriesPrev, theme }) {
   return (
     <div className="bg-gray-50 border border-gray-100 rounded-xl p-4 mb-4">
       <p className="text-xs font-medium text-gray-500 mb-3">📊 Semaine précédente</p>
-      <div className="space-y-2">
+      <div className="space-y-2.5">
         {exsAvecPerfs.map(ex => (
           <div key={ex.id}>
             <p className="text-xs font-medium text-gray-600 mb-1">{ex.nom}</p>
@@ -241,8 +248,7 @@ function RecapSemainePrev({ exercices, seriesPrev, theme }) {
                 <span key={i} className={`text-xs border px-2 py-0.5 rounded-md ${
                   theme.isFemme ? 'bg-pink-50 border-pink-100 text-pink-600' : 'bg-brand-50 border-brand-100 text-brand-600'
                 }`}>
-                  S{i+1} : {s.charge ? `${s.charge}kg` : '—'} × {s.reps || '—'}
-                  {s.notes ? ` · ${s.notes}` : ''}
+                  S{i+1} : {s.charge ? `${s.charge}kg` : '—'} × {s.reps || '—'}{s.notes ? ` · ${s.notes}` : ''}
                 </span>
               ))}
             </div>
@@ -310,9 +316,7 @@ function ExerciceCard({ exercice, series, prevSeries, onAddSerie, onUpdate, onDe
             )}
           </button>
         ) : (
-          <div className="w-full mt-1 py-2 text-center text-xs text-green-600 font-medium">
-            ✓ Tous les sets complétés
-          </div>
+          <div className="w-full mt-1 py-2 text-center text-xs text-green-600 font-medium">✓ Tous les sets complétés</div>
         )}
       </div>
     </div>
@@ -334,47 +338,35 @@ function SerieRow({ serie, index, prevSerie, repRange, repos, onUpdate, onDelete
 
   return (
     <div className="space-y-1 pb-2 border-b border-gray-50 last:border-0 last:pb-0">
-      {/* Ligne principale : numéro + charge + reps */}
+      {/* Ligne 1 : numéro + charge + reps + supprimer */}
       <div className="flex items-center gap-2">
         <span className="w-5 text-xs font-medium text-gray-400 text-center flex-shrink-0">{index}</span>
-        <div className="flex gap-2 flex-1">
-          <div className="flex-1">
-            <input ref={chargeRef} type="number" inputMode="decimal" value={charge}
-              placeholder={prevSerie?.charge ? String(prevSerie.charge) : 'kg'}
-              onChange={e => setCharge(e.target.value)}
-              onBlur={() => onUpdate('charge', charge)}
-              className={inputBase + " w-full"} />
-          </div>
-          <div className="flex-1">
-            <input type="number" inputMode="numeric" value={reps}
-              placeholder={prevSerie?.reps ? String(prevSerie.reps) : (repRange || 'reps')}
-              onChange={e => setReps(e.target.value)}
-              onBlur={() => {
-                onUpdate('reps', reps)
-                if (reps) onStartChrono()
-              }}
-              className={inputBase + " w-full"} />
-          </div>
-          <button onClick={onDelete}
-            className="text-gray-200 hover:text-red-400 text-xl flex-shrink-0 px-1">×</button>
-        </div>
+        <input ref={chargeRef} type="number" inputMode="decimal" value={charge}
+          placeholder={prevSerie?.charge ? String(prevSerie.charge) : 'kg'}
+          onChange={e => setCharge(e.target.value)}
+          onBlur={() => onUpdate('charge', charge)}
+          className={inputBase + " flex-1"} />
+        <input type="number" inputMode="numeric" value={reps}
+          placeholder={prevSerie?.reps ? String(prevSerie.reps) : (repRange || 'reps')}
+          onChange={e => setReps(e.target.value)}
+          onBlur={() => { onUpdate('reps', reps); if (reps) onStartChrono() }}
+          className={inputBase + " flex-1"} />
+        <button onClick={onDelete} className="text-gray-200 hover:text-red-400 text-xl flex-shrink-0">×</button>
       </div>
 
-      {/* Ligne note — pleine largeur */}
-      <div className="flex gap-2">
-        <span className="w-5 flex-shrink-0" />
+      {/* Ligne 2 : note pleine largeur */}
+      <div className="flex gap-2 items-center pl-7">
         <input type="text" value={notes}
           placeholder="Note (ex: facile, douleur épaule…)"
           onChange={e => setNotes(e.target.value)}
           onBlur={() => onUpdate('notes', notes)}
-          className={inputBase + " flex-1 text-xs"} />
+          className={inputBase + " flex-1 text-xs py-2"} />
       </div>
 
-      {/* Perfs semaine précédente */}
+      {/* Ligne 3 : perfs S-1 */}
       {prevSerie && (prevSerie.charge || prevSerie.reps) && (
-        <div className="flex gap-2">
-          <span className="w-5 flex-shrink-0" />
-          <p className="text-xs text-gray-300 pl-1">
+        <div className="pl-7">
+          <p className="text-xs text-gray-300">
             S-1 : {prevSerie.charge ? `${prevSerie.charge}kg` : '—'} × {prevSerie.reps || '—'}{prevSerie.notes ? ` · ${prevSerie.notes}` : ''}
           </p>
         </div>
@@ -386,7 +378,6 @@ function SerieRow({ serie, index, prevSerie, repRange, repos, onUpdate, onDelete
 function ChronoRepos({ duree, onClose }) {
   const secondes = (() => {
     if (!duree) return 120
-    // Formats possibles : "2'", "1'30''", "30''"
     const matchFull = duree.match(/(\d+)'(\d+)?/)
     if (matchFull) return parseInt(matchFull[1]) * 60 + parseInt(matchFull[2] || '0')
     const matchSec = duree.match(/(\d+)''/)
@@ -396,12 +387,20 @@ function ChronoRepos({ duree, onClose }) {
 
   const [remaining, setRemaining] = useState(secondes)
   const [running, setRunning]     = useState(true)
+  const beeped = useRef(false)
 
   useEffect(() => {
     if (!running || remaining <= 0) return
     const t = setTimeout(() => setRemaining(r => r - 1), 1000)
     return () => clearTimeout(t)
   }, [remaining, running])
+
+  useEffect(() => {
+    if (remaining <= 0 && !beeped.current) {
+      beeped.current = true
+      playBeep()
+    }
+  }, [remaining])
 
   const pct  = Math.round((remaining / secondes) * 100)
   const mins = Math.floor(remaining / 60)
@@ -428,27 +427,19 @@ function ChronoRepos({ duree, onClose }) {
           {isDone ? '✓' : `${mins}:${String(secs).padStart(2, '0')}`}
         </div>
       </div>
-
       <div className="flex-1">
         <p className="text-sm font-medium">
-          {isDone ? 'C\'est reparti !' : remaining <= 10 ? 'Presque fini…' : 'Temps de repos'}
+          {isDone ? "C'est reparti !" : remaining <= 10 ? 'Presque fini…' : 'Temps de repos'}
         </p>
-        <p className="text-xs opacity-70">
-          {isDone ? 'Lance ton prochain set' : `${duree} de récupération`}
-        </p>
+        <p className="text-xs opacity-70">{isDone ? 'Lance ton prochain set' : `${duree} de récupération`}</p>
       </div>
-
       <div className="flex gap-2">
         {!isDone && (
-          <button onClick={() => setRunning(r => !r)}
-            className="text-sm bg-white/10 hover:bg-white/20 px-3 py-1.5 rounded-lg transition-colors">
+          <button onClick={() => setRunning(r => !r)} className="text-sm bg-white/10 hover:bg-white/20 px-3 py-1.5 rounded-lg transition-colors">
             {running ? '⏸' : '▶'}
           </button>
         )}
-        <button onClick={onClose}
-          className="text-sm bg-white/10 hover:bg-white/20 px-3 py-1.5 rounded-lg transition-colors">
-          ✕
-        </button>
+        <button onClick={onClose} className="text-sm bg-white/10 hover:bg-white/20 px-3 py-1.5 rounded-lg transition-colors">✕</button>
       </div>
     </div>
   )

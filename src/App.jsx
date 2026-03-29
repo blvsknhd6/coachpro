@@ -32,10 +32,11 @@ export default function App() {
       <Route path="/coach/athlete/:athleteId/view" element={<PrivateRoute role="coach"><CoachAthleteView /></PrivateRoute>} />
       <Route path="/coach/bloc/:blocId/edit" element={<PrivateRoute role="coach"><CoachBlocEditor /></PrivateRoute>} />
 
-      {/* La page séance est accessible aux deux rôles */}
-      <Route path="/athlete/seance/:seanceId/semaine/:semaineId" element={<PrivateRoute><AthleteSeance /></PrivateRoute>} />
       <Route path="/athlete" element={<PrivateRoute role="athlete"><AthleteDashboard /></PrivateRoute>} />
       <Route path="/athlete/tracking" element={<PrivateRoute role="athlete"><AthleteDataTracking /></PrivateRoute>} />
+
+      {/* Accessible aux deux rôles — coach peut éditer les séances de ses athlètes */}
+      <Route path="/athlete/seance/:seanceId/semaine/:semaineId" element={<PrivateRoute><AthleteSeance /></PrivateRoute>} />
 
       <Route path="/" element={
         profile?.role === 'coach' ? <Navigate to="/coach" replace />

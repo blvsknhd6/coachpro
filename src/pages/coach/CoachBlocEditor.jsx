@@ -6,13 +6,13 @@ import { MUSCLES, EXERCICES_PAR_MUSCLE, TEMPS_REPOS, BONUS_DEFAUT } from '../../
 
 export default function CoachBlocEditor() {
   const { blocId } = useParams()
-  const [bloc, setBloc]                 = useState(null)
-  const [semaines, setSemaines]         = useState([])
+  const [bloc, setBloc]                   = useState(null)
+  const [semaines, setSemaines]           = useState([])
   const [activeSemaine, setActiveSemaine] = useState(null)
-  const [seances, setSeances]           = useState([])
-  const [loading, setLoading]           = useState(true)
+  const [seances, setSeances]             = useState([])
+  const [loading, setLoading]             = useState(true)
   const [showCreateBloc, setShowCreateBloc] = useState(false)
-  const [customExos, setCustomExos]     = useState({})
+  const [customExos, setCustomExos]       = useState({})
   const [confirmDeleteSemaine, setConfirmDeleteSemaine] = useState(null)
 
   useEffect(() => { fetchBloc() }, [blocId])
@@ -47,10 +47,8 @@ export default function CoachBlocEditor() {
   async function fetchSeances(semaineId) {
     setLoading(true)
     const { data } = await supabase
-      .from('seances')
-      .select('*, exercices(*), activites_bonus(*)')
-      .eq('semaine_id', semaineId)
-      .order('ordre')
+      .from('seances').select('*, exercices(*), activites_bonus(*)')
+      .eq('semaine_id', semaineId).order('ordre')
     setSeances(data || [])
     setLoading(false)
   }
@@ -58,11 +56,9 @@ export default function CoachBlocEditor() {
   async function createBlocStructure({ nomsSeances, nbSemaines }) {
     const semaineCrees = []
     for (let i = 1; i <= nbSemaines; i++) {
-      const { data: sem } = await supabase.from('semaines')
-        .insert({ bloc_id: blocId, numero: i }).select().single()
+      const { data: sem } = await supabase.from('semaines').insert({ bloc_id: blocId, numero: i }).select().single()
       semaineCrees.push(sem)
     }
-    // Créer les séances identiques pour chaque semaine
     for (let si = 0; si < semaineCrees.length; si++) {
       for (let j = 0; j < nomsSeances.length; j++) {
         await supabase.from('seances').insert({ semaine_id: semaineCrees[si].id, nom: nomsSeances[j], ordre: j })
@@ -80,22 +76,17 @@ export default function CoachBlocEditor() {
 
   async function addSemaine() {
     const num = (semaines[semaines.length - 1]?.numero || 0) + 1
-    const { data: newSem } = await supabase.from('semaines')
-      .insert({ bloc_id: blocId, numero: num }).select().single()
-
-    // Copier la structure de la semaine 1
+    const { data: newSem } = await supabase.from('semaines').insert({ bloc_id: blocId, numero: num }).select().single()
     if (semaines.length > 0) {
-      const { data: seancesRef } = await supabase
-        .from('seances').select('*, exercices(*), activites_bonus(*)')
-        .eq('semaine_id', semaines[0].id).order('ordre')
+      const { data: seancesRef } = await supabase.from('seances')
+        .select('*, exercices(*), activites_bonus(*)').eq('semaine_id', semaines[0].id).order('ordre')
       for (const sc of seancesRef || []) {
         const { data: newSc } = await supabase.from('seances')
           .insert({ semaine_id: newSem.id, nom: sc.nom, ordre: sc.ordre }).select().single()
         for (const ex of sc.exercices || []) {
           await supabase.from('exercices').insert({
-            seance_id: newSc.id, muscle: ex.muscle, nom: ex.nom,
-            sets: ex.sets, rep_range: ex.rep_range, repos: ex.repos,
-            indications: ex.indications, ordre: ex.ordre
+            seance_id: newSc.id, muscle: ex.muscle, nom: ex.nom, sets: ex.sets,
+            rep_range: ex.rep_range, repos: ex.repos, indications: ex.indications, ordre: ex.ordre
           })
         }
         for (const act of sc.activites_bonus || []) {
@@ -119,78 +110,85 @@ export default function CoachBlocEditor() {
     setConfirmDeleteSemaine(null)
   }
 
-  // Propage les exercices de S1 vers toutes les autres semaines (même séance par nom)
-  async function propagateS1ToOtherSemaines(seanceNom) {
-    const s1 = semaines.find(s => s.numero === 1)
-    if (!s1 || activeSemaine?.numero !== 1) return
+  // Propage les modifications à partir de la semaine active vers toutes les semaines suivantes
+  // On ne propage PAS les indications (notes coach spécifiques à la semaine)
+  async function propagateFromCurrentSemaine(seanceNom, currentSemaineNumero) {
+    const semainesSuivantes = semaines.filter(s => s.numero > currentSemaineNumero)
+    if (semainesSuivantes.length === 0) return
 
-    const { data: seanceS1 } = await supabase
-      .from('seances').select('id').eq('semaine_id', s1.id).eq('nom', seanceNom).single()
-    if (!seanceS1) return
+    // Récupérer les exercices de la séance dans la semaine courante
+    const seanceCourante = seances.find(s => s.nom === seanceNom)
+    if (!seanceCourante) return
 
-    const { data: exsS1 } = await supabase
-      .from('exercices').select('*').eq('seance_id', seanceS1.id).order('ordre')
+    const { data: exsCourants } = await supabase.from('exercices')
+      .select('*').eq('seance_id', seanceCourante.id).order('ordre')
 
-    const autresSemaines = semaines.filter(s => s.numero !== 1)
-    for (const sem of autresSemaines) {
-      const { data: scAutre } = await supabase
-        .from('seances').select('id').eq('semaine_id', sem.id).eq('nom', seanceNom).single()
-      if (!scAutre) continue
-      await supabase.from('exercices').delete().eq('seance_id', scAutre.id)
-      for (const ex of exsS1 || []) {
+    for (const semSuivante of semainesSuivantes) {
+      const { data: scSuivante } = await supabase.from('seances')
+        .select('id').eq('semaine_id', semSuivante.id).eq('nom', seanceNom).single()
+      if (!scSuivante) continue
+
+      // Récupérer les exercices existants pour préserver leurs indications
+      const { data: exsExistants } = await supabase.from('exercices')
+        .select('*').eq('seance_id', scSuivante.id).order('ordre')
+
+      await supabase.from('exercices').delete().eq('seance_id', scSuivante.id)
+
+      for (const ex of exsCourants || []) {
+        // Retrouver l'indication existante pour cet exercice (par ordre)
+        const exExistant = exsExistants?.find(e => e.ordre === ex.ordre)
         await supabase.from('exercices').insert({
-          seance_id: scAutre.id, muscle: ex.muscle, nom: ex.nom,
-          sets: ex.sets, rep_range: ex.rep_range, repos: ex.repos,
-          indications: ex.indications, ordre: ex.ordre
+          seance_id: scSuivante.id,
+          muscle: ex.muscle,
+          nom: ex.nom,
+          sets: ex.sets,
+          rep_range: ex.rep_range,
+          repos: ex.repos,
+          indications: exExistant?.indications ?? ex.indications, // préserve l'indication existante
+          ordre: ex.ordre
         })
       }
+    }
+  }
+
+  async function propagateSeanceNom(ancienNom, nouveauNom, currentSemaineNumero) {
+    const semainesSuivantes = semaines.filter(s => s.numero > currentSemaineNumero)
+    for (const sem of semainesSuivantes) {
+      await supabase.from('seances').update({ nom: nouveauNom }).eq('semaine_id', sem.id).eq('nom', ancienNom)
     }
   }
 
   async function addExercice(seanceId, seanceNom) {
     const seance = seances.find(s => s.id === seanceId)
     const ordre = (seance?.exercices?.length || 0)
-    await supabase.from('exercices').insert({
-      seance_id: seanceId, nom: '', sets: 3, rep_range: '8-10', repos: "2'", ordre
-    })
+    await supabase.from('exercices').insert({ seance_id: seanceId, nom: '', sets: 3, rep_range: '8-10', repos: "2'", ordre })
     await fetchSeances(activeSemaine.id)
-    if (activeSemaine?.numero === 1) await propagateS1ToOtherSemaines(seanceNom)
+    await propagateFromCurrentSemaine(seanceNom, activeSemaine.numero)
   }
 
   async function updateExercice(id, field, value, seanceNom) {
     await supabase.from('exercices').update({ [field]: value }).eq('id', id)
-    if (activeSemaine?.numero === 1) {
-      // Mise à jour dans les autres semaines aussi
-      const s1 = semaines.find(s => s.numero === 1)
-      if (!s1) return
-      const { data: seanceS1 } = await supabase
-        .from('seances').select('id').eq('semaine_id', s1.id).eq('nom', seanceNom).single()
-      if (!seanceS1) return
-      const { data: exsS1 } = await supabase
-        .from('exercices').select('*').eq('seance_id', seanceS1.id).order('ordre')
-      const exUpdated = exsS1?.find(e => e.id === id)
-      if (!exUpdated) return
-      const autresSemaines = semaines.filter(s => s.numero !== 1)
-      for (const sem of autresSemaines) {
-        const { data: scAutre } = await supabase
-          .from('seances').select('id').eq('semaine_id', sem.id).eq('nom', seanceNom).single()
-        if (!scAutre) continue
-        const { data: exAutre } = await supabase
-          .from('exercices').select('*').eq('seance_id', scAutre.id).eq('ordre', exUpdated.ordre).single()
-        if (exAutre) await supabase.from('exercices').update({ [field]: value }).eq('id', exAutre.id)
-      }
+    // Ne pas propager les indications
+    if (field !== 'indications') {
+      // Mettre à jour le state local pour que la propagation utilise la valeur fraîche
+      setSeances(prev => prev.map(sc => ({
+        ...sc,
+        exercices: (sc.exercices || []).map(ex => ex.id === id ? { ...ex, [field]: value } : ex)
+      })))
+      await propagateFromCurrentSemaine(seanceNom, activeSemaine.numero)
     }
   }
 
   async function deleteExercice(id, seanceNom) {
     await supabase.from('exercices').delete().eq('id', id)
     await fetchSeances(activeSemaine.id)
-    if (activeSemaine?.numero === 1) await propagateS1ToOtherSemaines(seanceNom)
+    await propagateFromCurrentSemaine(seanceNom, activeSemaine.numero)
   }
 
-  async function updateSeanceNom(seanceId, nom) {
-    await supabase.from('seances').update({ nom }).eq('id', seanceId)
-    setSeances(prev => prev.map(s => s.id === seanceId ? { ...s, nom } : s))
+  async function updateSeanceNom(seanceId, ancienNom, nouveauNom) {
+    await supabase.from('seances').update({ nom: nouveauNom }).eq('id', seanceId)
+    setSeances(prev => prev.map(s => s.id === seanceId ? { ...s, nom: nouveauNom } : s))
+    await propagateSeanceNom(ancienNom, nouveauNom, activeSemaine.numero)
   }
 
   async function addCustomExo(muscle, nom) {
@@ -202,8 +200,7 @@ export default function CoachBlocEditor() {
 
   async function addSeanceToSemaine(semaineId) {
     const seancesActuelles = seances.filter(s => s.nom !== 'Bonus')
-    const ordre = seancesActuelles.length
-    await supabase.from('seances').insert({ semaine_id: semaineId, nom: `Jour ${ordre + 1}`, ordre })
+    await supabase.from('seances').insert({ semaine_id: semaineId, nom: `Jour ${seancesActuelles.length + 1}`, ordre: seancesActuelles.length })
     fetchSeances(semaineId)
   }
 
@@ -223,6 +220,9 @@ export default function CoachBlocEditor() {
       </Layout>
     )
   }
+
+  const currentNumero = activeSemaine?.numero || 1
+  const hasSemainesSuivantes = semaines.some(s => s.numero > currentNumero)
 
   return (
     <Layout>
@@ -244,9 +244,9 @@ export default function CoachBlocEditor() {
         <h1 className="text-xl font-semibold">{bloc?.name} — Programme</h1>
       </div>
 
-      {activeSemaine?.numero === 1 && semaines.length > 1 && (
+      {hasSemainesSuivantes && (
         <div className="mb-4 bg-amber-50 border border-amber-200 rounded-lg px-4 py-2 text-xs text-amber-700">
-          ✏️ Vous éditez la <strong>Semaine 1</strong> — les modifications se propagent automatiquement sur toutes les autres semaines.
+          ✏️ Modifications en <strong>S{currentNumero}</strong> → propagées automatiquement sur S{currentNumero + 1} à S{semaines[semaines.length - 1]?.numero}. Les indications restent spécifiques à chaque semaine.
         </div>
       )}
 
@@ -279,7 +279,7 @@ export default function CoachBlocEditor() {
               onDeleteExercice={(id) => deleteExercice(id, seance.nom)}
               onAddCustomExo={addCustomExo}
               onDeleteSeance={() => deleteSeance(seance.id)}
-              onUpdateNom={(nom) => updateSeanceNom(seance.id, nom)}
+              onUpdateNom={(ancien, nouveau) => updateSeanceNom(seance.id, ancien, nouveau)}
             />
           ))}
           {seances.filter(s => s.nom === 'Bonus').map(seance => (
@@ -316,7 +316,7 @@ function CreateBlocForm({ onSubmit }) {
           <div className="flex gap-2 flex-wrap">
             {[2, 3, 4, 5, 6, 8, 10, 12].map(n => (
               <button key={n} type="button" onClick={() => setNbSemaines(n)}
-                className={`w-12 h-10 rounded-lg text-sm font-medium transition-colors ${nbSemaines === n ? 'bg-brand-600 text-white' : 'bg-gray-50 text-gray-600 border border-gray-200 hover:border-gray-300'}`}>
+                className={`w-12 h-10 rounded-lg text-sm font-medium transition-colors ${nbSemaines === n ? 'bg-brand-600 text-white' : 'bg-gray-50 text-gray-600 border border-gray-200'}`}>
                 {n}
               </button>
             ))}
@@ -324,25 +324,21 @@ function CreateBlocForm({ onSubmit }) {
         </div>
         <div>
           <label className="text-sm font-medium text-gray-700 block mb-2">Séances par semaine</label>
-          <p className="text-xs text-gray-400 mb-3">La structure sera identique pour toutes les semaines. Modifie les exercices en S1 pour les propager automatiquement.</p>
+          <p className="text-xs text-gray-400 mb-3">Même structure pour toutes les semaines. Modifie S1 pour propager sur S2, S3… etc.</p>
           <div className="space-y-2">
             {nomsSeances.map((nom, i) => (
               <div key={i} className="flex gap-2 items-center">
-                <input value={nom}
-                  onChange={e => setNomsSeances(s => s.map((n, idx) => idx === i ? e.target.value : n))}
+                <input value={nom} onChange={e => setNomsSeances(s => s.map((n, idx) => idx === i ? e.target.value : n))}
                   placeholder={`Jour ${i + 1}`}
                   className="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400" />
                 {nomsSeances.length > 1 && (
-                  <button type="button" onClick={() => setNomsSeances(s => s.filter((_, idx) => idx !== i))}
-                    className="text-gray-300 hover:text-red-400 text-lg">×</button>
+                  <button type="button" onClick={() => setNomsSeances(s => s.filter((_, idx) => idx !== i))} className="text-gray-300 hover:text-red-400 text-lg">×</button>
                 )}
               </div>
             ))}
           </div>
           <button type="button" onClick={() => setNomsSeances(s => [...s, `Jour ${s.length + 1}`])}
-            className="mt-2 text-sm text-brand-600 hover:text-brand-800 font-medium">
-            + Ajouter une séance
-          </button>
+            className="mt-2 text-sm text-brand-600 hover:text-brand-800 font-medium">+ Ajouter une séance</button>
         </div>
         <div className="bg-gray-50 rounded-lg p-3 text-xs text-gray-500">
           Une séance <strong>Bonus</strong> sera ajoutée automatiquement.
@@ -357,12 +353,13 @@ function CreateBlocForm({ onSubmit }) {
 }
 
 function SeanceEditor({ seance, getExosPourMuscle, onAddExercice, onUpdateExercice, onDeleteExercice, onAddCustomExo, onDeleteSeance, onUpdateNom }) {
-  const [editingNom, setEditingNom] = useState(false)
-  const [nom, setNom]               = useState(seance.nom)
+  const [editingNom, setEditingNom]   = useState(false)
+  const [nom, setNom]                 = useState(seance.nom)
   const [confirmDelete, setConfirmDelete] = useState(false)
+  const ancienNomRef = useState(seance.nom)[0]
 
   function handleNomBlur() {
-    if (nom.trim() && nom !== seance.nom) onUpdateNom(nom.trim())
+    if (nom.trim() && nom !== seance.nom) onUpdateNom(seance.nom, nom.trim())
     setEditingNom(false)
   }
 
@@ -374,7 +371,7 @@ function SeanceEditor({ seance, getExosPourMuscle, onAddExercice, onUpdateExerci
             onBlur={handleNomBlur} onKeyDown={e => e.key === 'Enter' && handleNomBlur()}
             className="flex-1 bg-white border border-brand-300 rounded px-2 py-1 text-sm font-medium focus:outline-none focus:ring-1 focus:ring-brand-400 mr-4" />
         ) : (
-          <button onClick={() => setEditingNom(true)}
+          <button onClick={() => { setNom(seance.nom); setEditingNom(true) }}
             className="text-sm font-medium text-gray-800 hover:text-brand-600 transition-colors text-left group flex items-center gap-2">
             {seance.nom}
             <span className="text-xs text-gray-300 group-hover:text-brand-400">✎</span>
@@ -392,14 +389,13 @@ function SeanceEditor({ seance, getExosPourMuscle, onAddExercice, onUpdateExerci
       </div>
 
       <div className="p-4 space-y-3">
-        {/* En-têtes */}
         <div className="grid grid-cols-12 gap-2 px-1 text-xs text-gray-400 font-medium">
           <div className="col-span-2">Muscle</div>
           <div className="col-span-3">Exercice</div>
           <div className="col-span-1 text-center">Sets</div>
           <div className="col-span-2">Reps</div>
           <div className="col-span-2">Repos</div>
-          <div className="col-span-2">Indication</div>
+          <div className="col-span-1"></div>
         </div>
 
         {(seance.exercices || []).sort((a, b) => a.ordre - b.ordre).map(ex => (
@@ -410,10 +406,7 @@ function SeanceEditor({ seance, getExosPourMuscle, onAddExercice, onUpdateExerci
             onAddCustomExo={onAddCustomExo}
           />
         ))}
-
-        <button onClick={onAddExercice} className="mt-1 text-sm text-brand-600 hover:text-brand-800 font-medium">
-          + Ajouter un exercice
-        </button>
+        <button onClick={onAddExercice} className="mt-1 text-sm text-brand-600 hover:text-brand-800 font-medium">+ Ajouter un exercice</button>
       </div>
     </div>
   )
@@ -453,15 +446,12 @@ function ExerciceRow({ exercice, getExosPourMuscle, onUpdate, onDelete, onAddCus
   return (
     <div className="space-y-1.5">
       <div className="grid grid-cols-12 gap-2 items-start">
-        {/* Muscle */}
         <div className="col-span-2">
           <select value={muscle} onChange={e => handleMuscleChange(e.target.value)} className={sel}>
             <option value="">—</option>
             {MUSCLES.map(m => <option key={m} value={m}>{m}</option>)}
           </select>
         </div>
-
-        {/* Exercice */}
         <div className="col-span-3">
           {addingExo ? (
             <div className="flex gap-1">
@@ -479,45 +469,34 @@ function ExerciceRow({ exercice, getExosPourMuscle, onUpdate, onDelete, onAddCus
             </select>
           )}
         </div>
-
-        {/* Sets */}
         <div className="col-span-1">
           <input type="number" value={sets} min={1} max={10}
             onChange={e => setSets(e.target.value)} onBlur={() => onUpdate('sets', sets)}
             className={sel + " text-center"} />
         </div>
-
-        {/* Rep range */}
         <div className="col-span-2">
-          <input value={repRange} onChange={e => setRepRange(e.target.value)}
-            onBlur={() => onUpdate('rep_range', repRange)} placeholder="8-10" className={sel} />
+          <input value={repRange} onChange={e => setRepRange(e.target.value)} onBlur={() => onUpdate('rep_range', repRange)}
+            placeholder="8-10" className={sel} />
         </div>
-
-        {/* Repos */}
         <div className="col-span-2">
           <select value={repos} onChange={e => { setRepos(e.target.value); onUpdate('repos', e.target.value) }} className={sel}>
             {TEMPS_REPOS.map(t => <option key={t} value={t}>{t}</option>)}
           </select>
         </div>
-
-        {/* Supprimer */}
         <div className="col-span-1 flex justify-center pt-1">
           <button onClick={onDelete} className="text-gray-300 hover:text-red-400 text-lg leading-none">×</button>
         </div>
       </div>
-
-      {/* Indication — ligne séparée pleine largeur */}
-      <div className="pl-0">
-        <textarea
-          value={indication}
-          onChange={e => setIndication(e.target.value)}
-          onBlur={() => onUpdate('indications', indication)}
-          placeholder="Indication / note coach (ex: garder les coudes serrés, augmenter charge si 10 reps faciles…)"
-          rows={1}
-          className="w-full border border-gray-100 rounded px-2 py-1.5 text-xs text-gray-600 focus:outline-none focus:ring-1 focus:ring-brand-400 hover:border-gray-300 bg-gray-50 resize-none overflow-hidden placeholder-gray-300"
-          onInput={e => { e.target.style.height = 'auto'; e.target.style.height = e.target.scrollHeight + 'px' }}
-        />
-      </div>
+      {/* Indication — pleine largeur, non propagée */}
+      <textarea
+        value={indication}
+        onChange={e => setIndication(e.target.value)}
+        onBlur={() => onUpdate('indications', indication)}
+        placeholder="Indication coach (spécifique à cette semaine — non propagée)"
+        rows={1}
+        className="w-full border border-gray-100 rounded px-2 py-1.5 text-xs text-gray-600 focus:outline-none focus:ring-1 focus:ring-amber-300 hover:border-gray-300 bg-amber-50/30 resize-none overflow-hidden placeholder-gray-300"
+        onInput={e => { e.target.style.height = 'auto'; e.target.style.height = e.target.scrollHeight + 'px' }}
+      />
     </div>
   )
 }
@@ -530,9 +509,7 @@ function BonusEditor({ seance }) {
       </div>
       <div className="p-4 flex flex-wrap gap-2">
         {(seance.activites_bonus || []).sort((a, b) => a.ordre - b.ordre).map(act => (
-          <span key={act.id} className="bg-brand-50 text-brand-700 text-xs px-3 py-1.5 rounded-full font-medium">
-            {act.nom}
-          </span>
+          <span key={act.id} className="bg-brand-50 text-brand-700 text-xs px-3 py-1.5 rounded-full font-medium">{act.nom}</span>
         ))}
       </div>
     </div>

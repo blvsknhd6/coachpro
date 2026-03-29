@@ -1,19 +1,18 @@
 import { useState, useEffect } from 'react'
-import { useParams, Link } from 'react-router-dom'
+import { useParams, Link, useNavigate } from 'react-router-dom'
 import { supabase } from '../../lib/supabase'
 import Layout from '../../components/shared/Layout'
 
 export default function CoachAthleteView() {
-  const { athleteId, semaineId } = useParams()
-  const [athlete, setAthlete]     = useState(null)
-  const [seances, setSeances]     = useState([])
-  const [semaines, setSemaines]   = useState([])
-  const [activeSemaine, setActiveSemaine] = useState(null)
-  const [blocs, setBlocs]         = useState([])
+  const { athleteId } = useParams()
+  const navigate = useNavigate()
+  const [athlete, setAthlete]       = useState(null)
+  const [blocs, setBlocs]           = useState([])
   const [activeBloc, setActiveBloc] = useState(null)
-  const [loading, setLoading]     = useState(true)
-  const [activeSeance, setActiveSeance] = useState(null)
-  const [seanceData, setSeanceData] = useState(null)
+  const [semaines, setSemaines]     = useState([])
+  const [activeSemaine, setActiveSemaine] = useState(null)
+  const [seances, setSeances]       = useState([])
+  const [loading, setLoading]       = useState(true)
 
   useEffect(() => { fetchData() }, [athleteId])
   useEffect(() => { if (activeSemaine) fetchSeances(activeSemaine.id) }, [activeSemaine])
@@ -23,10 +22,8 @@ export default function CoachAthleteView() {
     setAthlete(ath)
     const { data: bl } = await supabase.from('blocs').select('*').eq('athlete_id', athleteId).order('created_at', { ascending: false })
     setBlocs(bl || [])
-    if (bl && bl.length > 0) {
-      setActiveBloc(bl[0])
-      fetchSemaines(bl[0].id)
-    } else setLoading(false)
+    if (bl && bl.length > 0) { setActiveBloc(bl[0]); fetchSemaines(bl[0].id) }
+    else setLoading(false)
   }
 
   async function fetchSemaines(blocId) {
@@ -44,12 +41,10 @@ export default function CoachAthleteView() {
       .eq('semaine_id', semaineId)
       .order('ordre')
     setSeances(data || [])
-    setActiveSeance(null)
     setLoading(false)
   }
 
   const isFemme = athlete?.genre === 'femme'
-  const accent = isFemme ? 'pink' : 'brand'
 
   return (
     <Layout>
@@ -61,12 +56,11 @@ export default function CoachAthleteView() {
           </div>
           <div>
             <h1 className="text-xl font-semibold">Vue de {athlete?.full_name}</h1>
-            <p className="text-xs text-gray-400">Tel que vu par le coaché</p>
+            <p className="text-xs text-gray-400">Cliquez sur une séance pour l'éditer</p>
           </div>
         </div>
       </div>
 
-      {/* Sélecteur blocs */}
       {blocs.length > 1 && (
         <div className="flex gap-2 mb-4 flex-wrap">
           {blocs.map(b => (
@@ -78,13 +72,12 @@ export default function CoachAthleteView() {
         </div>
       )}
 
-      {/* Sélecteur semaines */}
       {semaines.length > 0 && (
         <div className="flex gap-2 mb-6 flex-wrap">
           {semaines.map(s => (
             <button key={s.id} onClick={() => setActiveSemaine(s)}
               className={`px-3 py-1.5 rounded-lg text-sm transition-colors ${activeSemaine?.id === s.id ? 'bg-gray-900 text-white' : 'bg-white border border-gray-200 text-gray-600'}`}>
-              Semaine {s.numero}
+              S{s.numero}
             </button>
           ))}
         </div>
@@ -93,10 +86,12 @@ export default function CoachAthleteView() {
       {loading ? <p className="text-sm text-gray-400">Chargement…</p> : (
         <div className="space-y-4">
           {seances.filter(s => s.nom !== 'Bonus').map(seance => (
-            <SeanceReadOnly key={seance.id} seance={seance} athleteId={athleteId} isFemme={isFemme} />
+            <SeanceCard key={seance.id} seance={seance} semaineId={activeSemaine?.id}
+              athleteId={athleteId} isFemme={isFemme} navigate={navigate} />
           ))}
           {seances.filter(s => s.nom === 'Bonus').map(seance => (
-            <BonusReadOnly key={seance.id} seance={seance} athleteId={athleteId} isFemme={isFemme} />
+            <BonusCard key={seance.id} seance={seance} semaineId={activeSemaine?.id}
+              athleteId={athleteId} isFemme={isFemme} navigate={navigate} />
           ))}
         </div>
       )}
@@ -104,56 +99,55 @@ export default function CoachAthleteView() {
   )
 }
 
-function SeanceReadOnly({ seance, athleteId, isFemme }) {
+function SeanceCard({ seance, semaineId, athleteId, isFemme, navigate }) {
   const [open, setOpen] = useState(false)
   const totalEx = seance.exercices?.length || 0
-  const doneEx  = seance.exercices?.filter(e => (e.series_realisees?.length || 0) > 0).length || 0
+  const doneEx  = seance.exercices?.filter(e => (e.series_realisees || []).some(s => s.reps || s.charge)).length || 0
   const pct = totalEx > 0 ? Math.round((doneEx / totalEx) * 100) : 0
-  const progressColor = isFemme ? 'bg-pink-500' : 'bg-brand-500'
 
   return (
     <div className="bg-white border border-gray-100 rounded-xl overflow-hidden">
-      <button onClick={() => setOpen(o => !o)} className="w-full px-5 py-4 flex items-center justify-between hover:bg-gray-50 transition-colors">
-        <div className="text-left">
+      <div className="px-5 py-4 flex items-center justify-between">
+        <button onClick={() => setOpen(o => !o)} className="flex-1 text-left">
           <p className="font-medium text-sm text-gray-900">{seance.nom}</p>
           <p className="text-xs text-gray-400 mt-0.5">{totalEx} exercices · {pct}% complété</p>
-        </div>
-        <div className="flex items-center gap-3">
-          <div className="w-24 h-1.5 bg-gray-100 rounded-full overflow-hidden">
-            <div className={`h-full ${progressColor} rounded-full`} style={{ width: `${pct}%` }} />
+          <div className="mt-2 h-1.5 bg-gray-100 rounded-full overflow-hidden w-full max-w-48">
+            <div className={`h-full ${isFemme ? 'bg-pink-500' : 'bg-brand-500'} rounded-full`} style={{ width: `${pct}%` }} />
           </div>
-          <span className="text-gray-400 text-sm">{open ? '▲' : '▼'}</span>
-        </div>
-      </button>
+        </button>
+        {/* Bouton éditer → va vers AthleteSeance avec le bon semaineId */}
+        <button
+          onClick={() => navigate(`/athlete/seance/${seance.id}/semaine/${semaineId}`)}
+          className={`ml-4 px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors flex-shrink-0 ${isFemme ? 'border-pink-200 text-pink-600 hover:bg-pink-50' : 'border-brand-200 text-brand-600 hover:bg-brand-50'}`}>
+          Éditer ✎
+        </button>
+      </div>
 
       {open && (
         <div className="border-t border-gray-50 px-5 pb-4 pt-3 space-y-3">
           {(seance.exercices || []).sort((a, b) => a.ordre - b.ordre).map(ex => {
-            const seriesDone = ex.series_realisees || []
+            const seriesDone = (ex.series_realisees || []).sort((a, b) => a.numero_set - b.numero_set)
             return (
-              <div key={ex.id} className="space-y-1">
-                <div className="flex items-center justify-between">
+              <div key={ex.id}>
+                <div className="flex items-center justify-between mb-1">
                   <p className="text-sm font-medium text-gray-800">{ex.nom}</p>
                   <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
                     seriesDone.length >= ex.sets ? 'bg-green-50 text-green-700'
                     : seriesDone.length > 0 ? 'bg-amber-50 text-amber-700'
                     : 'bg-gray-50 text-gray-400'
-                  }`}>
-                    {seriesDone.length}/{ex.sets}
-                  </span>
+                  }`}>{seriesDone.length}/{ex.sets}</span>
                 </div>
-                <p className="text-xs text-gray-400">{ex.muscle} · {ex.sets}×{ex.rep_range} · repos {ex.repos}</p>
-                {seriesDone.length > 0 && (
-                  <div className="flex flex-wrap gap-1.5 mt-1">
-                    {seriesDone.sort((a, b) => a.numero_set - b.numero_set).map(s => (
-                      <span key={s.id} className={`text-xs px-2 py-1 rounded-lg font-medium ${isFemme ? 'bg-pink-50 text-pink-700' : 'bg-brand-50 text-brand-700'}`}>
-                        Set {s.numero_set} : {s.charge ? `${s.charge}kg` : '—'} × {s.reps || '—'} reps
-                        {s.notes ? ` · ${s.notes}` : ''}
+                <p className="text-xs text-gray-400 mb-1">{ex.muscle} · {ex.sets}×{ex.rep_range} · repos {ex.repos}</p>
+                {ex.indications && <p className="text-xs text-amber-600 mb-1">{ex.indications}</p>}
+                {seriesDone.length > 0 ? (
+                  <div className="flex flex-wrap gap-1">
+                    {seriesDone.map(s => (
+                      <span key={s.id} className={`text-xs px-2 py-0.5 rounded-md border ${isFemme ? 'bg-pink-50 border-pink-100 text-pink-700' : 'bg-brand-50 border-brand-100 text-brand-700'}`}>
+                        S{s.numero_set} : {s.charge ? `${s.charge}kg` : '—'} × {s.reps || '—'}{s.notes ? ` · ${s.notes}` : ''}
                       </span>
                     ))}
                   </div>
-                )}
-                {seriesDone.length === 0 && (
+                ) : (
                   <p className="text-xs text-gray-300 italic">Pas encore réalisé</p>
                 )}
               </div>
@@ -165,24 +159,29 @@ function SeanceReadOnly({ seance, athleteId, isFemme }) {
   )
 }
 
-function BonusReadOnly({ seance, isFemme }) {
+function BonusCard({ seance, semaineId, isFemme, navigate }) {
   const activites = seance.activites_bonus || []
   const doneCount = activites.filter(a => (a.activites_realisees || []).some(r => r.realisee)).length
 
   return (
     <div className="bg-white border border-gray-100 rounded-xl p-5">
       <div className="flex items-center justify-between mb-3">
-        <h3 className="text-sm font-medium text-gray-800">Activités bonus</h3>
-        <span className="text-xs text-gray-400">{doneCount}/{activites.length} réalisées</span>
+        <div>
+          <h3 className="text-sm font-medium text-gray-800">Activités bonus</h3>
+          <p className="text-xs text-gray-400">{doneCount}/{activites.length} réalisées</p>
+        </div>
+        <button
+          onClick={() => navigate(`/athlete/seance/${seance.id}/semaine/${semaineId}`)}
+          className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${isFemme ? 'border-pink-200 text-pink-600 hover:bg-pink-50' : 'border-brand-200 text-brand-600 hover:bg-brand-50'}`}>
+          Éditer ✎
+        </button>
       </div>
       <div className="flex flex-wrap gap-2">
         {activites.sort((a, b) => a.ordre - b.ordre).map(act => {
           const done = (act.activites_realisees || []).some(r => r.realisee)
           return (
-            <span key={act.id} className={`text-xs px-3 py-1.5 rounded-full font-medium transition-colors ${
-              done
-                ? isFemme ? 'bg-pink-100 text-pink-700' : 'bg-brand-100 text-brand-700'
-                : 'bg-gray-100 text-gray-400'
+            <span key={act.id} className={`text-xs px-3 py-1.5 rounded-full font-medium ${
+              done ? (isFemme ? 'bg-pink-100 text-pink-700' : 'bg-brand-100 text-brand-700') : 'bg-gray-100 text-gray-400'
             }`}>
               {done ? '✓ ' : ''}{act.nom}
             </span>

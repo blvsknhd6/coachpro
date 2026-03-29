@@ -1,12 +1,11 @@
 import { useState, useEffect } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { Link } from 'react-router-dom'
 import { supabase } from '../../lib/supabase'
 import { useAuth } from '../../hooks/useAuth'
 import Layout from '../../components/shared/Layout'
 
 export default function CoachDashboard() {
   const { profile } = useAuth()
-  const navigate = useNavigate()
   const [athletes, setAthletes] = useState([])
   const [loading, setLoading]   = useState(true)
   const [showAdd, setShowAdd]   = useState(false)
@@ -19,8 +18,11 @@ export default function CoachDashboard() {
   async function fetchAthletes() {
     if (!profile) return
     const { data } = await supabase
-      .from('profiles').select('*, blocs(id)')
-      .eq('coach_id', profile.id).order('full_name')
+      .from('profiles')
+      .select('*, blocs(id)')
+      .eq('coach_id', profile.id)
+      .order('is_self', { ascending: false }) // profil "Moi" en premier
+      .order('full_name')
     setAthletes(data || [])
     setLoading(false)
   }
@@ -30,48 +32,38 @@ export default function CoachDashboard() {
     setSaving(true)
     setErr('')
     try {
-      const { data: authData, error: authError } = await supabase.auth.signUp({ email: form.email, password: form.password })
+      const { data: authData, error: authError } = await supabase.auth.signUp({
+        email: form.email,
+        password: form.password,
+      })
       if (authError) throw authError
       const { error: profileError } = await supabase.from('profiles').insert({
-        id: authData.user.id, role: 'athlete', full_name: form.full_name,
-        email: form.email, genre: form.genre, coach_id: profile.id,
+        id: authData.user.id,
+        role: 'athlete',
+        full_name: form.full_name,
+        email: form.email,
+        genre: form.genre,
+        coach_id: profile.id,
+        is_self: false,
       })
       if (profileError) throw profileError
       setForm({ full_name: '', email: '', password: '', genre: 'homme' })
       setShowAdd(false)
       fetchAthletes()
-    } catch (e) { setErr(e.message) }
+    } catch (e) {
+      setErr(e.message)
+    }
     setSaving(false)
-  }
-
-  async function goToMyTraining() {
-    // Vérifier si le coach a un profil athlète associé
-    const { data: existing } = await supabase
-      .from('profiles').select('id').eq('id', profile.id).single()
-    // Le coach utilise son propre profil comme athlète
-    // On redirige vers une version athlète en passant l'ID du coach comme athlete_id
-    navigate(`/coach/my-training`)
   }
 
   const initiales = (name) => name?.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2) || '?'
 
   return (
     <Layout>
-      {/* Bannière "Mon entraînement" */}
-      <div className="bg-gradient-to-r from-brand-600 to-brand-500 rounded-xl p-4 mb-6 flex items-center justify-between">
-        <div>
-          <p className="text-white font-medium text-sm">Mon entraînement</p>
-          <p className="text-brand-100 text-xs mt-0.5">Accède à ton propre programme</p>
-        </div>
-        <Link to="/coach/my-training"
-          className="bg-white text-brand-700 px-4 py-2 rounded-lg text-sm font-medium hover:bg-brand-50 transition-colors">
-          Voir →
-        </Link>
-      </div>
-
       <div className="flex items-center justify-between mb-6">
         <h1 className="text-xl font-semibold">Mes coachés</h1>
-        <button onClick={() => setShowAdd(true)} className="bg-brand-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-brand-700 transition-colors">
+        <button onClick={() => setShowAdd(true)}
+          className="bg-brand-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-brand-700 transition-colors">
           + Ajouter
         </button>
       </div>
@@ -112,15 +104,19 @@ export default function CoachDashboard() {
                 <button type="submit" disabled={saving} className="flex-1 bg-brand-600 text-white rounded-lg py-2 text-sm font-medium hover:bg-brand-700 disabled:opacity-50">
                   {saving ? 'Création…' : 'Créer le compte'}
                 </button>
-                <button type="button" onClick={() => setShowAdd(false)} className="flex-1 border border-gray-200 rounded-lg py-2 text-sm text-gray-600 hover:bg-gray-50">Annuler</button>
+                <button type="button" onClick={() => setShowAdd(false)} className="flex-1 border border-gray-200 rounded-lg py-2 text-sm text-gray-600 hover:bg-gray-50">
+                  Annuler
+                </button>
               </div>
             </form>
           </div>
         </div>
       )}
 
-      {loading ? <p className="text-gray-400 text-sm">Chargement…</p> : athletes.length === 0 ? (
-        <div className="text-center py-12 text-gray-400 text-sm">Aucun coaché pour l'instant.</div>
+      {loading ? (
+        <p className="text-gray-400 text-sm">Chargement…</p>
+      ) : athletes.length === 0 ? (
+        <div className="text-center py-16 text-gray-400 text-sm">Aucun coaché pour l'instant.</div>
       ) : (
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
           {athletes.map(a => (
@@ -130,9 +126,14 @@ export default function CoachDashboard() {
                 <div className={`w-9 h-9 rounded-full flex items-center justify-center text-sm font-medium ${a.genre === 'femme' ? 'bg-pink-100 text-pink-700' : 'bg-brand-100 text-brand-700'}`}>
                   {initiales(a.full_name)}
                 </div>
-                <div>
-                  <p className="font-medium text-sm text-gray-900 group-hover:text-brand-700">{a.full_name}</p>
-                  <p className="text-xs text-gray-400">{a.genre === 'femme' ? '♀' : '♂'} · {a.email}</p>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2">
+                    <p className="font-medium text-sm text-gray-900 group-hover:text-brand-700 truncate">{a.full_name}</p>
+                    {a.is_self && (
+                      <span className="text-xs bg-brand-100 text-brand-700 px-2 py-0.5 rounded-full font-medium flex-shrink-0">Moi</span>
+                    )}
+                  </div>
+                  <p className="text-xs text-gray-400">{a.genre === 'femme' ? '♀ Femme' : '♂ Homme'}</p>
                 </div>
               </div>
               <p className="text-xs text-gray-400">{(a.blocs || []).length} bloc{(a.blocs || []).length !== 1 ? 's' : ''}</p>

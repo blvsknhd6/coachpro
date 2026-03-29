@@ -6,86 +6,68 @@ import RecapTracking from '../../components/coach/RecapTracking'
 
 export default function CoachAthlete() {
   const { athleteId } = useParams()
-  const [athlete, setAthlete] = useState(null)
-  const [blocs, setBlocs] = useState([])
+  const [athlete, setAthlete]   = useState(null)
+  const [blocs, setBlocs]       = useState([])
   const [activeBloc, setActiveBloc] = useState(null)
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading]   = useState(true)
   const [showNewBloc, setShowNewBloc] = useState(false)
   const [newBlocName, setNewBlocName] = useState('')
   const [editingProfile, setEditingProfile] = useState(false)
   const [profileForm, setProfileForm] = useState({ full_name: '', genre: 'homme' })
   const [savingProfile, setSavingProfile] = useState(false)
+  const [profileErr, setProfileErr] = useState('')
   const [confirmDeleteBloc, setConfirmDeleteBloc] = useState(null)
   const [editingBlocName, setEditingBlocName] = useState(null)
   const [editBlocNameVal, setEditBlocNameVal] = useState('')
 
-  useEffect(() => {
-    fetchData()
-  }, [athleteId])
+  useEffect(() => { fetchData() }, [athleteId])
 
   async function fetchData() {
     setLoading(true)
     const { data: ath } = await supabase.from('profiles').select('*').eq('id', athleteId).single()
-    
     if (ath) {
       setAthlete(ath)
-      // On initialise le formulaire avec les vraies données
-      setProfileForm({ 
-        full_name: ath.full_name || '', 
-        genre: ath.genre || 'homme' 
-      })
+      setProfileForm({ full_name: ath.full_name || '', genre: ath.genre || 'homme' })
     }
-
     const { data: bl } = await supabase
-      .from('blocs')
-      .select('*, objectifs_bloc(*)')
-      .eq('athlete_id', athleteId)
-      .order('created_at', { ascending: false })
-    
+      .from('blocs').select('*, objectifs_bloc(*)')
+      .eq('athlete_id', athleteId).order('created_at', { ascending: false })
     setBlocs(bl || [])
     if (bl && bl.length > 0) setActiveBloc(bl[0])
     setLoading(false)
   }
 
-  // --- LOGIQUE DE MODIFICATION DU PROFIL ---
-  
-  const handleStartEdit = () => {
-    // Crucial : On synchronise le formulaire avec l'état actuel de l'athlète
-    // pour éviter de repartir sur des valeurs par défaut
-    setProfileForm({
-      full_name: athlete?.full_name || '',
-      genre: athlete?.genre || 'homme'
-    })
+  function handleStartEdit() {
+    setProfileForm({ full_name: athlete?.full_name || '', genre: athlete?.genre || 'homme' })
+    setProfileErr('')
     setEditingProfile(true)
   }
 
   async function saveProfile() {
     if (!profileForm.full_name.trim()) return
-    
     setSavingProfile(true)
-    const { error } = await supabase
+    setProfileErr('')
+    const { data, error } = await supabase
       .from('profiles')
-      .update({
-        full_name: profileForm.full_name.trim(),
-        genre: profileForm.genre,
-      })
+      .update({ full_name: profileForm.full_name.trim(), genre: profileForm.genre })
       .eq('id', athleteId)
+      .select()
+      .single()
 
-    if (!error) {
-      // On met à jour l'athlète localement pour refléter les changements immédiatement
-      setAthlete(prev => ({ ...prev, ...profileForm }))
+    if (!error && data) {
+      setAthlete(data)
+      setProfileForm({ full_name: data.full_name, genre: data.genre })
       setEditingProfile(false)
     } else {
-      console.error("Erreur lors de la sauvegarde :", error.message)
+      setProfileErr(error?.message || 'Erreur lors de la sauvegarde')
     }
     setSavingProfile(false)
   }
 
-  // --- LOGIQUE DES BLOCS ---
-
   async function createBloc() {
     if (!newBlocName.trim()) return
-    const { data } = await supabase.from('blocs').insert({ athlete_id: athleteId, name: newBlocName.trim() }).select().single()
+    const { data } = await supabase.from('blocs')
+      .insert({ athlete_id: athleteId, name: newBlocName.trim() }).select().single()
     setBlocs(b => [data, ...b])
     setActiveBloc(data)
     setNewBlocName('')
@@ -101,28 +83,32 @@ export default function CoachAthlete() {
   }
 
   async function duplicateBloc(bloc) {
-    const { data: newBloc } = await supabase.from('blocs').insert({
-      athlete_id: athleteId, name: bloc.name + ' (copie)'
-    }).select().single()
+    const { data: newBloc } = await supabase.from('blocs')
+      .insert({ athlete_id: athleteId, name: bloc.name + ' (copie)' }).select().single()
 
     const objData = Array.isArray(bloc.objectifs_bloc) ? bloc.objectifs_bloc[0] : bloc.objectifs_bloc
     if (objData) {
-      const obj = objData
       await supabase.from('objectifs_bloc').insert({
-        bloc_id: newBloc.id, poids_cible: obj.poids_cible, kcal: obj.kcal,
-        proteines: obj.proteines, glucides: obj.glucides, lipides: obj.lipides,
-        sommeil: obj.sommeil, pas_journaliers: obj.pas_journaliers, stress_cible: obj.stress_cible,
+        bloc_id: newBloc.id, poids_cible: objData.poids_cible, kcal: objData.kcal,
+        proteines: objData.proteines, glucides: objData.glucides, lipides: objData.lipides,
+        sommeil: objData.sommeil, pas_journaliers: objData.pas_journaliers, stress_cible: objData.stress_cible,
       })
     }
 
     const { data: semaines } = await supabase.from('semaines').select('*').eq('bloc_id', bloc.id).order('numero')
     for (const sem of semaines || []) {
-      const { data: newSem } = await supabase.from('semaines').insert({ bloc_id: newBloc.id, numero: sem.numero }).select().single()
-      const { data: seances } = await supabase.from('seances').select('*, exercices(*), activites_bonus(*)').eq('semaine_id', sem.id).order('ordre')
+      const { data: newSem } = await supabase.from('semaines')
+        .insert({ bloc_id: newBloc.id, numero: sem.numero }).select().single()
+      const { data: seances } = await supabase.from('seances')
+        .select('*, exercices(*), activites_bonus(*)').eq('semaine_id', sem.id).order('ordre')
       for (const sc of seances || []) {
-        const { data: newSc } = await supabase.from('seances').insert({ semaine_id: newSem.id, nom: sc.nom, ordre: sc.ordre }).select().single()
+        const { data: newSc } = await supabase.from('seances')
+          .insert({ semaine_id: newSem.id, nom: sc.nom, ordre: sc.ordre }).select().single()
         for (const ex of sc.exercices || []) {
-          await supabase.from('exercices').insert({ seance_id: newSc.id, muscle: ex.muscle, nom: ex.nom, sets: ex.sets, rep_range: ex.rep_range, repos: ex.repos, indications: ex.indications, ordre: ex.ordre })
+          await supabase.from('exercices').insert({
+            seance_id: newSc.id, muscle: ex.muscle, nom: ex.nom, sets: ex.sets,
+            rep_range: ex.rep_range, repos: ex.repos, indications: ex.indications, ordre: ex.ordre
+          })
         }
         for (const act of sc.activites_bonus || []) {
           await supabase.from('activites_bonus').insert({ seance_id: newSc.id, nom: act.nom, ordre: act.ordre })
@@ -160,61 +146,52 @@ export default function CoachAthlete() {
         </div>
       )}
 
-      {/* Header */}
       <div className="flex items-center gap-3 mb-6">
         <Link to="/coach" className="text-sm text-gray-400 hover:text-gray-700">← Retour</Link>
         <div className="flex items-center gap-3 flex-1">
-          <div className={`w-9 h-9 rounded-full flex items-center justify-center text-sm font-medium ${athlete?.genre === 'femme' ? 'bg-pink-100 text-pink-700' : 'bg-brand-100 text-brand-700'}`}>
+          <div className={`w-9 h-9 rounded-full flex items-center justify-center text-sm font-medium flex-shrink-0 ${athlete?.genre === 'femme' ? 'bg-pink-100 text-pink-700' : 'bg-brand-100 text-brand-700'}`}>
             {initiales(athlete?.full_name)}
           </div>
           <div className="flex-1">
             {editingProfile ? (
-              <div className="flex items-center gap-2 flex-wrap">
-                <input 
-                  value={profileForm.full_name}
-                  onChange={e => setProfileForm(f => ({ ...f, full_name: e.target.value }))}
-                  className="border border-gray-200 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400" 
-                />
-                <div className="flex gap-1">
-                  {['homme', 'femme'].map(g => (
-                    <button 
-                      key={g} 
-                      type="button" 
-                      onClick={() => setProfileForm(f => ({ ...f, genre: g }))}
-                      className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${profileForm.genre === g ? 'bg-brand-600 text-white border-brand-600' : 'border-gray-200 text-gray-600'}`}
-                    >
-                      {g === 'homme' ? '♂' : '♀'} {g}
-                    </button>
-                  ))}
+              <div className="space-y-2">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <input value={profileForm.full_name}
+                    onChange={e => setProfileForm(f => ({ ...f, full_name: e.target.value }))}
+                    className="border border-gray-200 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400" />
+                  <div className="flex gap-1">
+                    {['homme', 'femme'].map(g => (
+                      <button key={g} type="button"
+                        onClick={() => setProfileForm(f => ({ ...f, genre: g }))}
+                        className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${profileForm.genre === g ? 'bg-brand-600 text-white border-brand-600' : 'border-gray-200 text-gray-600'}`}>
+                        {g === 'homme' ? '♂' : '♀'} {g}
+                      </button>
+                    ))}
+                  </div>
+                  <button onClick={saveProfile} disabled={savingProfile}
+                    className="text-sm text-brand-600 font-medium hover:text-brand-800">
+                    {savingProfile ? 'Enregistrement…' : 'Enregistrer'}
+                  </button>
+                  <button onClick={() => setEditingProfile(false)} className="text-sm text-gray-400">Annuler</button>
                 </div>
-                <button 
-                  onClick={saveProfile} 
-                  disabled={savingProfile}
-                  className="text-sm text-brand-600 font-medium hover:text-brand-800"
-                >
-                  {savingProfile ? 'Enregistrement…' : 'Enregistrer'}
-                </button>
-                <button onClick={() => setEditingProfile(false)} className="text-sm text-gray-400">Annuler</button>
+                {profileErr && <p className="text-xs text-red-500">{profileErr}</p>}
               </div>
             ) : (
               <div className="flex items-center gap-2">
                 <div>
-                  <h1 className="text-xl font-semibold">{athlete?.full_name}</h1>
-                  <p className="text-xs text-gray-400">{athlete?.genre === 'femme' ? '♀ Femme' : '♂ Homme'} · {athlete?.email}</p>
+                  <div className="flex items-center gap-2">
+                    <h1 className="text-xl font-semibold">{athlete?.full_name}</h1>
+                    {athlete?.is_self && <span className="text-xs bg-brand-100 text-brand-700 px-2 py-0.5 rounded-full font-medium">Moi</span>}
+                  </div>
+                  <p className="text-xs text-gray-400">{athlete?.genre === 'femme' ? '♀ Femme' : '♂ Homme'}{!athlete?.is_self ? ` · ${athlete?.email}` : ''}</p>
                 </div>
-                <button 
-                  onClick={handleStartEdit} 
-                  className="text-xs text-gray-400 hover:text-brand-600 ml-2"
-                >
-                  Modifier
-                </button>
+                <button onClick={handleStartEdit} className="text-xs text-gray-400 hover:text-brand-600 ml-2">Modifier</button>
               </div>
             )}
           </div>
         </div>
       </div>
 
-      {/* Sélecteur blocs */}
       <div className="flex items-center gap-2 mb-6 flex-wrap">
         {blocs.map(b => (
           <div key={b.id} className="flex items-center group">
@@ -266,16 +243,18 @@ export default function CoachAthlete() {
           <div className="flex items-center justify-between">
             <h2 className="font-medium text-gray-900">{activeBloc.name}</h2>
             <div className="flex items-center gap-4">
-              <Link to={`/coach/athlete/${athleteId}/view`} className="text-sm text-gray-500 hover:text-gray-800 font-medium">
-                👁 Vue coaché
+              <Link to={`/coach/athlete/${athleteId}/view`}
+                className="text-sm text-gray-500 hover:text-gray-800 font-medium">
+                👁 Vue athlète
               </Link>
-              <Link to={`/coach/bloc/${activeBloc.id}/edit`} className="text-sm text-brand-600 hover:text-brand-800 font-medium">
+              <Link to={`/coach/bloc/${activeBloc.id}/edit`}
+                className="text-sm text-brand-600 hover:text-brand-800 font-medium">
                 Éditer le programme →
               </Link>
             </div>
           </div>
           <ObjectifsBloc bloc={activeBloc} onSave={fetchData} />
-          <RecapTracking athleteId={athleteId} blocId={activeBloc.id} />
+          {!athlete?.is_self && <RecapTracking athleteId={athleteId} blocId={activeBloc.id} />}
         </div>
       ) : (
         <div className="text-center py-16 text-gray-400 text-sm">Crée un premier bloc pour commencer.</div>
@@ -284,11 +263,10 @@ export default function CoachAthlete() {
   )
 }
 
-// Le composant ObjectifsBloc reste globalement le même mais vérifie bien tes clés Supabase
 function ObjectifsBloc({ bloc, onSave }) {
-  const [obj, setObj] = useState(null)
+  const [obj, setObj]       = useState(null)
   const [editing, setEditing] = useState(false)
-  const [form, setForm] = useState({})
+  const [form, setForm]     = useState({})
   const [saving, setSaving] = useState(false)
 
   useEffect(() => { fetchObj() }, [bloc.id])
@@ -303,13 +281,8 @@ function ObjectifsBloc({ bloc, onSave }) {
   async function saveObj() {
     setSaving(true)
     const payload = { ...form, bloc_id: bloc.id }
-    
-    if (obj) {
-      await supabase.from('objectifs_bloc').update(payload).eq('id', obj.id)
-    } else {
-      await supabase.from('objectifs_bloc').insert(payload)
-    }
-    
+    if (obj) await supabase.from('objectifs_bloc').update(payload).eq('id', obj.id)
+    else await supabase.from('objectifs_bloc').insert(payload)
     await fetchObj()
     if (onSave) onSave()
     setEditing(false)
@@ -320,12 +293,9 @@ function ObjectifsBloc({ bloc, onSave }) {
     <div key={key}>
       <label className="text-xs text-gray-500">{label}</label>
       <div className="flex items-center gap-1 mt-0.5">
-        <input 
-          type="number" 
-          value={form[key] || ''}
+        <input type="number" value={form[key] || ''}
           onChange={e => setForm(f => ({ ...f, [key]: e.target.value }))}
-          className="w-24 border border-gray-200 rounded px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-brand-400" 
-        />
+          className="w-24 border border-gray-200 rounded px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-brand-400" />
         {unit && <span className="text-xs text-gray-400">{unit}</span>}
       </div>
     </div>
@@ -346,7 +316,6 @@ function ObjectifsBloc({ bloc, onSave }) {
           <button onClick={() => setEditing(true)} className="text-sm text-brand-600 hover:text-brand-800">Modifier</button>
         )}
       </div>
-      
       {editing ? (
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
           {field('poids_cible', 'Poids cible', 'kg')}
@@ -360,21 +329,13 @@ function ObjectifsBloc({ bloc, onSave }) {
         </div>
       ) : obj ? (
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-          {[
-            ['Poids cible', obj.poids_cible, 'kg'], 
-            ['Kcal', obj.kcal, 'kcal'], 
-            ['Protéines', obj.proteines, 'g'], 
-            ['Glucides', obj.glucides, 'g'], 
-            ['Lipides', obj.lipides, 'g'], 
-            ['Sommeil', obj.sommeil, 'h'], 
-            ['Pas / jour', obj.pas_journaliers, ''], 
-            ['Stress cible', obj.stress_cible, '/10']
+          {[['Poids cible', obj.poids_cible, 'kg'], ['Kcal', obj.kcal, 'kcal'], ['Protéines', obj.proteines, 'g'],
+            ['Glucides', obj.glucides, 'g'], ['Lipides', obj.lipides, 'g'], ['Sommeil', obj.sommeil, 'h'],
+            ['Pas / jour', obj.pas_journaliers, ''], ['Stress cible', obj.stress_cible, '/10']
           ].map(([label, val, unit]) => (
             <div key={label}>
               <p className="text-xs text-gray-400">{label}</p>
-              <p className="text-sm font-medium text-gray-900">
-                {val ?? '—'}{val && unit ? ' ' + unit : ''}
-              </p>
+              <p className="text-sm font-medium text-gray-900">{val ?? '—'}{val && unit ? ' ' + unit : ''}</p>
             </div>
           ))}
         </div>
