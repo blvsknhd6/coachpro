@@ -15,7 +15,7 @@ function playBeep() {
       gain.connect(ctx.destination)
       osc.frequency.value = freq
       osc.type = 'sine'
-      gain.gain.setValueAtTime(0.3, ctx.currentTime + start)
+      gain.gain.setValueAtTime(0.4, ctx.currentTime + start)
       gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + start + dur)
       osc.start(ctx.currentTime + start)
       osc.stop(ctx.currentTime + start + dur)
@@ -23,6 +23,8 @@ function playBeep() {
     playTone(880, 0, 0.15)
     playTone(1046, 0.2, 0.15)
     playTone(1318, 0.4, 0.3)
+    // Vibration Android
+    if (navigator.vibrate) navigator.vibrate([200, 100, 200, 100, 400])
   } catch (e) {}
 }
 
@@ -31,12 +33,16 @@ export default function AthleteSeance() {
   const { profile } = useAuth()
   const theme = useTheme()
   const navigate = useNavigate()
+
   const [seance, setSeance]           = useState(null)
   const [exercices, setExercices]     = useState([])
   const [activites, setActivites]     = useState([])
   const [series, setSeries]           = useState({})
   const [seriesPrev, setSeriesPrev]   = useState({})
+  const [notePrev, setNotePrev]       = useState('')
   const [activitesRealisees, setActivitesRealisees] = useState({})
+  const [noteSeance, setNoteSeance]   = useState('')
+  const [noteSaved, setNoteSaved]     = useState(false)
   const [loading, setLoading]         = useState(true)
   const [isCoachEditing, setIsCoachEditing] = useState(false)
   const [targetAthleteId, setTargetAthleteId] = useState(null)
@@ -56,9 +62,7 @@ export default function AthleteSeance() {
 
     const athId = bloc?.athlete_id || profile.id
     setTargetAthleteId(athId)
-
-    const editingForOther = profile.role === 'coach' && athId !== profile.id
-    setIsCoachEditing(editingForOther)
+    setIsCoachEditing(profile.role === 'coach' && athId !== profile.id)
 
     if (sc?.nom === 'Bonus') {
       const { data: acts } = await supabase.from('activites_bonus').select('*').eq('seance_id', seanceId).order('ordre')
@@ -77,11 +81,15 @@ export default function AthleteSeance() {
     const { data: sr } = await supabase.from('series_realisees').select('*')
       .eq('semaine_id', semaineId).eq('athlete_id', athId)
       .in('exercice_id', (exs || []).map(e => e.id)).order('numero_set')
-
     const map = {}
     ;(exs || []).forEach(ex => { map[ex.id] = [] })
     ;(sr || []).forEach(s => { if (map[s.exercice_id]) map[s.exercice_id].push(s) })
     setSeries(map)
+
+    // Note de la séance courante
+    const { data: noteData } = await supabase.from('notes_seances').select('contenu')
+      .eq('athlete_id', athId).eq('seance_id', seanceId).eq('semaine_id', semaineId).single()
+    setNoteSeance(noteData?.contenu || '')
 
     await fetchSeriesPrev(exs || [], semaineId, athId, sc?.nom)
     setLoading(false)
@@ -99,8 +107,12 @@ export default function AthleteSeance() {
       .eq('semaine_id', semPrev.id).eq('nom', seanceNom || '').single()
     if (!seancePrev) return
 
-    const { data: exsPrev } = await supabase.from('exercices').select('*').eq('seance_id', seancePrev.id).order('ordre')
+    // Note de la séance de la semaine précédente
+    const { data: notePrevData } = await supabase.from('notes_seances').select('contenu')
+      .eq('athlete_id', athId).eq('seance_id', seancePrev.id).eq('semaine_id', semPrev.id).single()
+    setNotePrev(notePrevData?.contenu || '')
 
+    const { data: exsPrev } = await supabase.from('exercices').select('*').eq('seance_id', seancePrev.id).order('ordre')
     const { data: srPrev } = await supabase.from('series_realisees').select('*')
       .eq('semaine_id', semPrev.id).eq('athlete_id', athId)
       .in('exercice_id', (exsPrev || []).map(e => e.id)).order('numero_set')
@@ -112,6 +124,18 @@ export default function AthleteSeance() {
       if (ex && mapByNom[ex.nom]) mapByNom[ex.nom].push(s)
     })
     setSeriesPrev(mapByNom)
+  }
+
+  async function saveNoteSeance(contenu) {
+    if (!targetAthleteId) return
+    await supabase.from('notes_seances').upsert({
+      athlete_id: targetAthleteId,
+      seance_id: seanceId,
+      semaine_id: semaineId,
+      contenu: contenu.trim() || null,
+    }, { onConflict: 'athlete_id,seance_id,semaine_id' })
+    setNoteSaved(true)
+    setTimeout(() => setNoteSaved(false), 2000)
   }
 
   async function addSerie(exerciceId, numeroSet) {
@@ -153,6 +177,7 @@ export default function AthleteSeance() {
 
   if (loading) return <Layout><p className="text-sm text-gray-400">Chargement…</p></Layout>
 
+  // Vue Bonus
   if (seance?.nom === 'Bonus') {
     const doneCount = activites.filter(a => activitesRealisees[a.id]).length
     return (
@@ -192,6 +217,7 @@ export default function AthleteSeance() {
   const totalSeries = exercices.reduce((acc, ex) => acc + ex.sets, 0)
   const doneSeries  = Object.values(series).reduce((acc, arr) => acc + arr.filter(s => s.reps || s.charge).length, 0)
   const pct = totalSeries > 0 ? Math.round((doneSeries / totalSeries) * 100) : 0
+  const hasSeriesPrev = Object.values(seriesPrev).some(arr => arr.some(s => s.charge || s.reps))
 
   return (
     <Layout>
@@ -211,8 +237,17 @@ export default function AthleteSeance() {
         </div>
       </div>
 
-      <RecapSemainePrev exercices={exercices} seriesPrev={seriesPrev} theme={theme} />
+      {/* Récap semaine précédente */}
+      {(hasSeriesPrev || notePrev) && (
+        <RecapSemainePrev
+          exercices={exercices}
+          seriesPrev={seriesPrev}
+          notePrev={notePrev}
+          theme={theme}
+        />
+      )}
 
+      {/* Exercices */}
       <div className="space-y-3">
         {exercices.map(ex => (
           <ExerciceCard key={ex.id} exercice={ex}
@@ -227,34 +262,65 @@ export default function AthleteSeance() {
         ))}
       </div>
 
+      {/* Note générale de séance */}
+      <div className="mt-4 bg-white border border-gray-100 rounded-xl p-4">
+        <p className="text-xs font-medium text-gray-500 mb-2">📝 Note générale de séance</p>
+        <textarea
+          value={noteSeance}
+          onChange={e => setNoteSeance(e.target.value)}
+          onBlur={() => saveNoteSeance(noteSeance)}
+          placeholder="Comment s'est passée la séance ? Fatigue, ressenti, observations…"
+          rows={3}
+          className={`w-full border border-gray-100 rounded-lg px-3 py-2.5 text-sm focus:outline-none bg-gray-50 focus:bg-white transition-colors resize-none ${
+            theme.isFemme ? 'focus:ring-2 focus:ring-pink-300' : 'focus:ring-2 focus:ring-brand-400'
+          }`}
+        />
+        {noteSaved && <p className="text-xs text-green-500 mt-1">✓ Note enregistrée</p>}
+      </div>
+
       {chrono && <ChronoRepos duree={chrono.duree} onClose={() => setChrono(null)} />}
     </Layout>
   )
 }
 
-function RecapSemainePrev({ exercices, seriesPrev, theme }) {
+function RecapSemainePrev({ exercices, seriesPrev, notePrev, theme }) {
+  const [open, setOpen] = useState(true)
   const exsAvecPerfs = exercices.filter(ex => (seriesPrev[ex.nom] || []).some(s => s.charge || s.reps))
-  if (exsAvecPerfs.length === 0) return null
 
   return (
-    <div className="bg-gray-50 border border-gray-100 rounded-xl p-4 mb-4">
-      <p className="text-xs font-medium text-gray-500 mb-3">📊 Semaine précédente</p>
-      <div className="space-y-2.5">
-        {exsAvecPerfs.map(ex => (
-          <div key={ex.id}>
-            <p className="text-xs font-medium text-gray-600 mb-1">{ex.nom}</p>
-            <div className="flex flex-wrap gap-1">
-              {(seriesPrev[ex.nom] || []).map((s, i) => (
-                <span key={i} className={`text-xs border px-2 py-0.5 rounded-md ${
-                  theme.isFemme ? 'bg-pink-50 border-pink-100 text-pink-600' : 'bg-brand-50 border-brand-100 text-brand-600'
-                }`}>
-                  S{i+1} : {s.charge ? `${s.charge}kg` : '—'} × {s.reps || '—'}{s.notes ? ` · ${s.notes}` : ''}
-                </span>
-              ))}
+    <div className="bg-gray-50 border border-gray-100 rounded-xl mb-4 overflow-hidden">
+      <button onClick={() => setOpen(o => !o)}
+        className="w-full flex items-center justify-between px-4 py-3 text-left">
+        <p className="text-xs font-medium text-gray-500">📊 Semaine précédente</p>
+        <span className="text-xs text-gray-400">{open ? '▲' : '▼'}</span>
+      </button>
+
+      {open && (
+        <div className="px-4 pb-3 space-y-2.5">
+          {/* Note générale S-1 en premier */}
+          {notePrev && (
+            <div className="bg-white border border-gray-200 rounded-lg px-3 py-2 text-xs text-gray-600 italic">
+              💬 {notePrev}
             </div>
-          </div>
-        ))}
-      </div>
+          )}
+
+          {/* Perfs par exercice */}
+          {exsAvecPerfs.map(ex => (
+            <div key={ex.id}>
+              <p className="text-xs font-medium text-gray-600 mb-1">{ex.nom}</p>
+              <div className="flex flex-wrap gap-1">
+                {(seriesPrev[ex.nom] || []).map((s, i) => (
+                  <span key={i} className={`text-xs border px-2 py-0.5 rounded-md ${
+                    theme.isFemme ? 'bg-pink-50 border-pink-100 text-pink-600' : 'bg-brand-50 border-brand-100 text-brand-600'
+                  }`}>
+                    S{i+1} : {s.charge ? `${s.charge}kg` : '—'} × {s.reps || '—'}{s.notes ? ` · ${s.notes}` : ''}
+                  </span>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   )
 }
@@ -323,7 +389,7 @@ function ExerciceCard({ exercice, series, prevSeries, onAddSerie, onUpdate, onDe
   )
 }
 
-function SerieRow({ serie, index, prevSerie, repRange, repos, onUpdate, onDelete, theme, onStartChrono }) {
+function SerieRow({ serie, index, prevSerie, repRange, onUpdate, onDelete, theme, onStartChrono }) {
   const [charge, setCharge] = useState(serie.charge ?? '')
   const [reps, setReps]     = useState(serie.reps ?? '')
   const [notes, setNotes]   = useState(serie.notes ?? '')
@@ -338,7 +404,6 @@ function SerieRow({ serie, index, prevSerie, repRange, repos, onUpdate, onDelete
 
   return (
     <div className="space-y-1 pb-2 border-b border-gray-50 last:border-0 last:pb-0">
-      {/* Ligne 1 : numéro + charge + reps + supprimer */}
       <div className="flex items-center gap-2">
         <span className="w-5 text-xs font-medium text-gray-400 text-center flex-shrink-0">{index}</span>
         <input ref={chargeRef} type="number" inputMode="decimal" value={charge}
@@ -353,17 +418,13 @@ function SerieRow({ serie, index, prevSerie, repRange, repos, onUpdate, onDelete
           className={inputBase + " flex-1"} />
         <button onClick={onDelete} className="text-gray-200 hover:text-red-400 text-xl flex-shrink-0">×</button>
       </div>
-
-      {/* Ligne 2 : note pleine largeur */}
       <div className="flex gap-2 items-center pl-7">
         <input type="text" value={notes}
-          placeholder="Note (ex: facile, douleur épaule…)"
+          placeholder="Note (facile, douleur épaule…)"
           onChange={e => setNotes(e.target.value)}
           onBlur={() => onUpdate('notes', notes)}
           className={inputBase + " flex-1 text-xs py-2"} />
       </div>
-
-      {/* Ligne 3 : perfs S-1 */}
       {prevSerie && (prevSerie.charge || prevSerie.reps) && (
         <div className="pl-7">
           <p className="text-xs text-gray-300">
@@ -431,15 +492,17 @@ function ChronoRepos({ duree, onClose }) {
         <p className="text-sm font-medium">
           {isDone ? "C'est reparti !" : remaining <= 10 ? 'Presque fini…' : 'Temps de repos'}
         </p>
-        <p className="text-xs opacity-70">{isDone ? 'Lance ton prochain set' : `${duree} de récupération`}</p>
+        <p className="text-xs opacity-70">
+          {isDone ? 'Lance ton prochain set' : `${duree} · garde l'écran allumé`}
+        </p>
       </div>
       <div className="flex gap-2">
         {!isDone && (
-          <button onClick={() => setRunning(r => !r)} className="text-sm bg-white/10 hover:bg-white/20 px-3 py-1.5 rounded-lg transition-colors">
+          <button onClick={() => setRunning(r => !r)} className="text-sm bg-white/10 hover:bg-white/20 px-3 py-1.5 rounded-lg">
             {running ? '⏸' : '▶'}
           </button>
         )}
-        <button onClick={onClose} className="text-sm bg-white/10 hover:bg-white/20 px-3 py-1.5 rounded-lg transition-colors">✕</button>
+        <button onClick={onClose} className="text-sm bg-white/10 hover:bg-white/20 px-3 py-1.5 rounded-lg">✕</button>
       </div>
     </div>
   )
