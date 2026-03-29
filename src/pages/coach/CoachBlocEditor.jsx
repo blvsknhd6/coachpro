@@ -23,7 +23,7 @@ export default function CoachBlocEditor() {
     setBloc(b)
     const { data: s } = await supabase.from('semaines').select('*').eq('bloc_id', blocId).order('numero')
     setSemaines(s || [])
-    if (s && s.length > 0) setActiveSemaine(s[0])
+    if (s?.length) setActiveSemaine(s[0])
     else { setLoading(false); setShowCreateBloc(true) }
     fetchCustomExos()
   }
@@ -46,8 +46,8 @@ export default function CoachBlocEditor() {
 
   async function fetchSeances(semaineId) {
     setLoading(true)
-    const { data } = await supabase
-      .from('seances').select('*, exercices(*), activites_bonus(*)')
+    const { data } = await supabase.from('seances')
+      .select('*, exercices(*), activites_bonus(*)')
       .eq('semaine_id', semaineId).order('ordre')
     setSeances(data || [])
     setLoading(false)
@@ -86,11 +86,13 @@ export default function CoachBlocEditor() {
         for (const ex of sc.exercices || []) {
           await supabase.from('exercices').insert({
             seance_id: newSc.id, muscle: ex.muscle, nom: ex.nom, sets: ex.sets,
-            rep_range: ex.rep_range, repos: ex.repos, indications: ex.indications, ordre: ex.ordre
+            rep_range: ex.rep_range, repos: ex.repos, indications: ex.indications,
+            charge_indicative: ex.charge_indicative, rpe_cible: ex.rpe_cible,
+            unilateral: ex.unilateral, ordre: ex.ordre
           })
         }
         for (const act of sc.activites_bonus || []) {
-          await supabase.from('activites_bonus').insert({ seance_id: newSc.id, nom: act.nom, ordre: act.ordre })
+          await supabase.from('activites_bonus').insert({ seance_id: newSc.id, nom: act.nom, description: act.description, ordre: act.ordre })
         }
       }
     }
@@ -110,51 +112,26 @@ export default function CoachBlocEditor() {
     setConfirmDeleteSemaine(null)
   }
 
-  // Propage les modifications à partir de la semaine active vers toutes les semaines suivantes
-  // On ne propage PAS les indications (notes coach spécifiques à la semaine)
   async function propagateFromCurrentSemaine(seanceNom, currentSemaineNumero) {
     const semainesSuivantes = semaines.filter(s => s.numero > currentSemaineNumero)
-    if (semainesSuivantes.length === 0) return
-
-    // Récupérer les exercices de la séance dans la semaine courante
+    if (!semainesSuivantes.length) return
     const seanceCourante = seances.find(s => s.nom === seanceNom)
     if (!seanceCourante) return
-
-    const { data: exsCourants } = await supabase.from('exercices')
-      .select('*').eq('seance_id', seanceCourante.id).order('ordre')
-
+    const { data: exsCourants } = await supabase.from('exercices').select('*').eq('seance_id', seanceCourante.id).order('ordre')
     for (const semSuivante of semainesSuivantes) {
-      const { data: scSuivante } = await supabase.from('seances')
-        .select('id').eq('semaine_id', semSuivante.id).eq('nom', seanceNom).single()
+      const { data: scSuivante } = await supabase.from('seances').select('id').eq('semaine_id', semSuivante.id).eq('nom', seanceNom).single()
       if (!scSuivante) continue
-
-      // Récupérer les exercices existants pour préserver leurs indications
-      const { data: exsExistants } = await supabase.from('exercices')
-        .select('*').eq('seance_id', scSuivante.id).order('ordre')
-
+      const { data: exsExistants } = await supabase.from('exercices').select('*').eq('seance_id', scSuivante.id).order('ordre')
       await supabase.from('exercices').delete().eq('seance_id', scSuivante.id)
-
       for (const ex of exsCourants || []) {
-        // Retrouver l'indication existante pour cet exercice (par ordre)
         const exExistant = exsExistants?.find(e => e.ordre === ex.ordre)
         await supabase.from('exercices').insert({
-          seance_id: scSuivante.id,
-          muscle: ex.muscle,
-          nom: ex.nom,
-          sets: ex.sets,
-          rep_range: ex.rep_range,
-          repos: ex.repos,
-          indications: exExistant?.indications ?? ex.indications, // préserve l'indication existante
-          ordre: ex.ordre
+          seance_id: scSuivante.id, muscle: ex.muscle, nom: ex.nom, sets: ex.sets,
+          rep_range: ex.rep_range, repos: ex.repos, charge_indicative: ex.charge_indicative,
+          rpe_cible: ex.rpe_cible, unilateral: ex.unilateral, ordre: ex.ordre,
+          indications: exExistant?.indications ?? ex.indications
         })
       }
-    }
-  }
-
-  async function propagateSeanceNom(ancienNom, nouveauNom, currentSemaineNumero) {
-    const semainesSuivantes = semaines.filter(s => s.numero > currentSemaineNumero)
-    for (const sem of semainesSuivantes) {
-      await supabase.from('seances').update({ nom: nouveauNom }).eq('semaine_id', sem.id).eq('nom', ancienNom)
     }
   }
 
@@ -168,12 +145,9 @@ export default function CoachBlocEditor() {
 
   async function updateExercice(id, field, value, seanceNom) {
     await supabase.from('exercices').update({ [field]: value }).eq('id', id)
-    // Ne pas propager les indications
     if (field !== 'indications') {
-      // Mettre à jour le state local pour que la propagation utilise la valeur fraîche
       setSeances(prev => prev.map(sc => ({
-        ...sc,
-        exercices: (sc.exercices || []).map(ex => ex.id === id ? { ...ex, [field]: value } : ex)
+        ...sc, exercices: (sc.exercices || []).map(ex => ex.id === id ? { ...ex, [field]: value } : ex)
       })))
       await propagateFromCurrentSemaine(seanceNom, activeSemaine.numero)
     }
@@ -188,7 +162,10 @@ export default function CoachBlocEditor() {
   async function updateSeanceNom(seanceId, ancienNom, nouveauNom) {
     await supabase.from('seances').update({ nom: nouveauNom }).eq('id', seanceId)
     setSeances(prev => prev.map(s => s.id === seanceId ? { ...s, nom: nouveauNom } : s))
-    await propagateSeanceNom(ancienNom, nouveauNom, activeSemaine.numero)
+    const semainesSuivantes = semaines.filter(s => s.numero > activeSemaine.numero)
+    for (const sem of semainesSuivantes) {
+      await supabase.from('seances').update({ nom: nouveauNom }).eq('semaine_id', sem.id).eq('nom', ancienNom)
+    }
   }
 
   async function addCustomExo(muscle, nom) {
@@ -209,6 +186,29 @@ export default function CoachBlocEditor() {
     fetchSeances(activeSemaine.id)
   }
 
+  // Activités bonus CRUD
+  async function addActiviteBonus(seanceId) {
+    const nom = prompt('Nom de l\'activité ?')
+    if (!nom?.trim()) return
+    const ordre = (seances.find(s => s.id === seanceId)?.activites_bonus?.length || 0)
+    await supabase.from('activites_bonus').insert({ seance_id: seanceId, nom: nom.trim(), ordre })
+    fetchSeances(activeSemaine.id)
+  }
+
+  async function updateActiviteBonus(id, field, value) {
+    await supabase.from('activites_bonus').update({ [field]: value }).eq('id', id)
+  }
+
+  async function deleteActiviteBonus(id) {
+    await supabase.from('activites_bonus').delete().eq('id', id)
+    fetchSeances(activeSemaine.id)
+  }
+
+  async function toggleBlocOption(field, value) {
+    await supabase.from('blocs').update({ [field]: value }).eq('id', blocId)
+    setBloc(b => ({ ...b, [field]: value }))
+  }
+
   if (showCreateBloc || semaines.length === 0) {
     return (
       <Layout>
@@ -221,8 +221,7 @@ export default function CoachBlocEditor() {
     )
   }
 
-  const currentNumero = activeSemaine?.numero || 1
-  const hasSemainesSuivantes = semaines.some(s => s.numero > currentNumero)
+  const hasSemainesSuivantes = semaines.some(s => s.numero > (activeSemaine?.numero || 1))
 
   return (
     <Layout>
@@ -230,23 +229,34 @@ export default function CoachBlocEditor() {
         <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-2xl p-6 w-full max-w-sm shadow-xl">
             <h3 className="text-base font-semibold mb-2">Supprimer cette semaine ?</h3>
-            <p className="text-sm text-gray-500 mb-5">Tous les exercices et séries réalisées seront supprimés définitivement.</p>
+            <p className="text-sm text-gray-500 mb-5">Tous les exercices et séries seront supprimés définitivement.</p>
             <div className="flex gap-2">
-              <button onClick={() => deleteSemaine(confirmDeleteSemaine)} className="flex-1 bg-red-500 text-white rounded-lg py-2 text-sm font-medium hover:bg-red-600">Supprimer</button>
+              <button onClick={() => deleteSemaine(confirmDeleteSemaine)} className="flex-1 bg-red-500 text-white rounded-lg py-2 text-sm font-medium">Supprimer</button>
               <button onClick={() => setConfirmDeleteSemaine(null)} className="flex-1 border border-gray-200 rounded-lg py-2 text-sm text-gray-600">Annuler</button>
             </div>
           </div>
         </div>
       )}
 
-      <div className="flex items-center gap-3 mb-4">
+      <div className="flex items-center gap-3 mb-4 flex-wrap">
         <Link to={`/coach/athlete/${bloc?.athlete_id}`} className="text-sm text-gray-400 hover:text-gray-700">← Retour</Link>
-        <h1 className="text-xl font-semibold">{bloc?.name} — Programme</h1>
+        <h1 className="text-xl font-semibold flex-1">{bloc?.name} — Programme</h1>
+        {/* Options colonnes */}
+        <div className="flex gap-2">
+          <button onClick={() => toggleBlocOption('show_charge_indicative', !bloc?.show_charge_indicative)}
+            className={`text-xs px-3 py-1.5 rounded-lg border transition-colors ${bloc?.show_charge_indicative ? 'bg-brand-600 text-white border-brand-600' : 'border-gray-200 text-gray-500 hover:border-gray-300'}`}>
+            Charge indic.
+          </button>
+          <button onClick={() => toggleBlocOption('show_rpe', !bloc?.show_rpe)}
+            className={`text-xs px-3 py-1.5 rounded-lg border transition-colors ${bloc?.show_rpe ? 'bg-brand-600 text-white border-brand-600' : 'border-gray-200 text-gray-500 hover:border-gray-300'}`}>
+            RPE
+          </button>
+        </div>
       </div>
 
       {hasSemainesSuivantes && (
         <div className="mb-4 bg-amber-50 border border-amber-200 rounded-lg px-4 py-2 text-xs text-amber-700">
-          ✏️ Modifications en <strong>S{currentNumero}</strong> → propagées automatiquement sur S{currentNumero + 1} à S{semaines[semaines.length - 1]?.numero}. Les indications restent spécifiques à chaque semaine.
+          ✏️ Modifications en S{activeSemaine?.numero} propagées sur S{activeSemaine?.numero + 1}→S{semaines[semaines.length-1]?.numero} (sauf indications)
         </div>
       )}
 
@@ -258,13 +268,12 @@ export default function CoachBlocEditor() {
               S{s.numero}
             </button>
             <button onClick={() => setConfirmDeleteSemaine(s.id)}
-              className={`px-2 py-1.5 rounded-r-lg text-sm border-t border-b border-r transition-colors ${activeSemaine?.id === s.id ? 'bg-brand-700 text-brand-200 border-brand-700 hover:bg-brand-800' : 'bg-white border-gray-200 text-gray-300 hover:text-red-400 hover:border-red-200'}`}>
+              className={`px-2 py-1.5 rounded-r-lg text-sm border-t border-b border-r transition-colors ${activeSemaine?.id === s.id ? 'bg-brand-700 text-brand-200 border-brand-700' : 'bg-white border-gray-200 text-gray-300 hover:text-red-400'}`}>
               ×
             </button>
           </div>
         ))}
-        <button onClick={addSemaine}
-          className="px-3 py-1.5 rounded-lg text-sm border border-dashed border-gray-300 text-gray-400 hover:border-brand-400 hover:text-brand-600">
+        <button onClick={addSemaine} className="px-3 py-1.5 rounded-lg text-sm border border-dashed border-gray-300 text-gray-400 hover:border-brand-400 hover:text-brand-600">
           + Semaine
         </button>
       </div>
@@ -273,6 +282,8 @@ export default function CoachBlocEditor() {
         <div className="space-y-6">
           {seances.filter(s => s.nom !== 'Bonus').map(seance => (
             <SeanceEditor key={seance.id} seance={seance}
+              showChargeIndicative={bloc?.show_charge_indicative}
+              showRpe={bloc?.show_rpe}
               getExosPourMuscle={getExosPourMuscle}
               onAddExercice={() => addExercice(seance.id, seance.nom)}
               onUpdateExercice={(id, field, val) => updateExercice(id, field, val, seance.nom)}
@@ -283,7 +294,11 @@ export default function CoachBlocEditor() {
             />
           ))}
           {seances.filter(s => s.nom === 'Bonus').map(seance => (
-            <BonusEditor key={seance.id} seance={seance} />
+            <BonusEditor key={seance.id} seance={seance}
+              onAdd={() => addActiviteBonus(seance.id)}
+              onUpdate={updateActiviteBonus}
+              onDelete={deleteActiviteBonus}
+            />
           ))}
           <button onClick={() => addSeanceToSemaine(activeSemaine.id)}
             className="w-full py-3 border border-dashed border-gray-200 rounded-xl text-sm text-gray-400 hover:border-brand-400 hover:text-brand-600 transition-colors">
@@ -301,8 +316,7 @@ function CreateBlocForm({ onSubmit }) {
   const [saving, setSaving] = useState(false)
 
   async function handleSubmit(e) {
-    e.preventDefault()
-    setSaving(true)
+    e.preventDefault(); setSaving(true)
     await onSubmit({ nomsSeances: nomsSeances.filter(n => n.trim()), nbSemaines })
     setSaving(false)
   }
@@ -314,9 +328,9 @@ function CreateBlocForm({ onSubmit }) {
         <div>
           <label className="text-sm font-medium text-gray-700 block mb-2">Nombre de semaines</label>
           <div className="flex gap-2 flex-wrap">
-            {[2, 3, 4, 5, 6, 8, 10, 12].map(n => (
+            {[2,3,4,5,6,8,10,12].map(n => (
               <button key={n} type="button" onClick={() => setNbSemaines(n)}
-                className={`w-12 h-10 rounded-lg text-sm font-medium transition-colors ${nbSemaines === n ? 'bg-brand-600 text-white' : 'bg-gray-50 text-gray-600 border border-gray-200'}`}>
+                className={`w-12 h-10 rounded-lg text-sm font-medium ${nbSemaines === n ? 'bg-brand-600 text-white' : 'bg-gray-50 text-gray-600 border border-gray-200'}`}>
                 {n}
               </button>
             ))}
@@ -324,27 +338,22 @@ function CreateBlocForm({ onSubmit }) {
         </div>
         <div>
           <label className="text-sm font-medium text-gray-700 block mb-2">Séances par semaine</label>
-          <p className="text-xs text-gray-400 mb-3">Même structure pour toutes les semaines. Modifie S1 pour propager sur S2, S3… etc.</p>
+          <p className="text-xs text-gray-400 mb-3">Modifie S1 pour propager sur S2, S3…</p>
           <div className="space-y-2">
             {nomsSeances.map((nom, i) => (
               <div key={i} className="flex gap-2 items-center">
                 <input value={nom} onChange={e => setNomsSeances(s => s.map((n, idx) => idx === i ? e.target.value : n))}
-                  placeholder={`Jour ${i + 1}`}
                   className="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400" />
-                {nomsSeances.length > 1 && (
-                  <button type="button" onClick={() => setNomsSeances(s => s.filter((_, idx) => idx !== i))} className="text-gray-300 hover:text-red-400 text-lg">×</button>
-                )}
+                {nomsSeances.length > 1 && <button type="button" onClick={() => setNomsSeances(s => s.filter((_, idx) => idx !== i))} className="text-gray-300 hover:text-red-400 text-lg">×</button>}
               </div>
             ))}
           </div>
           <button type="button" onClick={() => setNomsSeances(s => [...s, `Jour ${s.length + 1}`])}
             className="mt-2 text-sm text-brand-600 hover:text-brand-800 font-medium">+ Ajouter une séance</button>
         </div>
-        <div className="bg-gray-50 rounded-lg p-3 text-xs text-gray-500">
-          Une séance <strong>Bonus</strong> sera ajoutée automatiquement.
-        </div>
+        <div className="bg-gray-50 rounded-lg p-3 text-xs text-gray-500">Une séance <strong>Bonus</strong> sera ajoutée automatiquement.</div>
         <button type="submit" disabled={saving || nomsSeances.filter(n => n.trim()).length === 0}
-          className="w-full bg-brand-600 text-white rounded-lg py-2.5 text-sm font-medium hover:bg-brand-700 disabled:opacity-50 transition-colors">
+          className="w-full bg-brand-600 text-white rounded-lg py-2.5 text-sm font-medium hover:bg-brand-700 disabled:opacity-50">
           {saving ? 'Génération…' : `Générer ${nbSemaines} semaines →`}
         </button>
       </form>
@@ -352,16 +361,18 @@ function CreateBlocForm({ onSubmit }) {
   )
 }
 
-function SeanceEditor({ seance, getExosPourMuscle, onAddExercice, onUpdateExercice, onDeleteExercice, onAddCustomExo, onDeleteSeance, onUpdateNom }) {
-  const [editingNom, setEditingNom]   = useState(false)
-  const [nom, setNom]                 = useState(seance.nom)
+function SeanceEditor({ seance, showChargeIndicative, showRpe, getExosPourMuscle, onAddExercice, onUpdateExercice, onDeleteExercice, onAddCustomExo, onDeleteSeance, onUpdateNom }) {
+  const [editingNom, setEditingNom] = useState(false)
+  const [nom, setNom]               = useState(seance.nom)
   const [confirmDelete, setConfirmDelete] = useState(false)
-  const ancienNomRef = useState(seance.nom)[0]
 
   function handleNomBlur() {
     if (nom.trim() && nom !== seance.nom) onUpdateNom(seance.nom, nom.trim())
     setEditingNom(false)
   }
+
+  // Colonnes dynamiques selon options bloc
+  const totalCols = 10 + (showChargeIndicative ? 1 : 0) + (showRpe ? 1 : 0)
 
   return (
     <div className="bg-white border border-gray-100 rounded-xl overflow-hidden">
@@ -372,34 +383,37 @@ function SeanceEditor({ seance, getExosPourMuscle, onAddExercice, onUpdateExerci
             className="flex-1 bg-white border border-brand-300 rounded px-2 py-1 text-sm font-medium focus:outline-none focus:ring-1 focus:ring-brand-400 mr-4" />
         ) : (
           <button onClick={() => { setNom(seance.nom); setEditingNom(true) }}
-            className="text-sm font-medium text-gray-800 hover:text-brand-600 transition-colors text-left group flex items-center gap-2">
-            {seance.nom}
-            <span className="text-xs text-gray-300 group-hover:text-brand-400">✎</span>
+            className="text-sm font-medium text-gray-800 hover:text-brand-600 group flex items-center gap-2">
+            {seance.nom}<span className="text-xs text-gray-300 group-hover:text-brand-400">✎</span>
           </button>
         )}
         {confirmDelete ? (
           <div className="flex items-center gap-2 text-xs">
             <span className="text-gray-500">Supprimer ?</span>
-            <button onClick={onDeleteSeance} className="text-red-500 font-medium hover:text-red-700">Oui</button>
+            <button onClick={onDeleteSeance} className="text-red-500 font-medium">Oui</button>
             <button onClick={() => setConfirmDelete(false)} className="text-gray-400">Non</button>
           </div>
         ) : (
-          <button onClick={() => setConfirmDelete(true)} className="text-xs text-gray-300 hover:text-red-400 transition-colors">Supprimer</button>
+          <button onClick={() => setConfirmDelete(true)} className="text-xs text-gray-300 hover:text-red-400">Supprimer</button>
         )}
       </div>
-
       <div className="p-4 space-y-3">
-        <div className="grid grid-cols-12 gap-2 px-1 text-xs text-gray-400 font-medium">
+        <div className="grid gap-2 px-1 text-xs text-gray-400 font-medium"
+          style={{ gridTemplateColumns: `repeat(${totalCols}, minmax(0, 1fr))` }}>
           <div className="col-span-2">Muscle</div>
-          <div className="col-span-3">Exercice</div>
-          <div className="col-span-1 text-center">Sets</div>
-          <div className="col-span-2">Reps</div>
-          <div className="col-span-2">Repos</div>
-          <div className="col-span-1"></div>
+          <div className="col-span-2">Exercice</div>
+          <div className="text-center">Sets</div>
+          <div>Reps</div>
+          <div>Repos</div>
+          {showChargeIndicative && <div>Charge</div>}
+          {showRpe && <div>RPE</div>}
+          <div className="col-span-2">Indication</div>
         </div>
-
         {(seance.exercices || []).sort((a, b) => a.ordre - b.ordre).map(ex => (
           <ExerciceRow key={ex.id} exercice={ex}
+            showChargeIndicative={showChargeIndicative}
+            showRpe={showRpe}
+            totalCols={totalCols}
             getExosPourMuscle={getExosPourMuscle}
             onUpdate={(field, val) => onUpdateExercice(ex.id, field, val)}
             onDelete={() => onDeleteExercice(ex.id)}
@@ -412,15 +426,18 @@ function SeanceEditor({ seance, getExosPourMuscle, onAddExercice, onUpdateExerci
   )
 }
 
-function ExerciceRow({ exercice, getExosPourMuscle, onUpdate, onDelete, onAddCustomExo }) {
-  const [muscle, setMuscle]         = useState(exercice.muscle || '')
-  const [nom, setNom]               = useState(exercice.nom || '')
-  const [sets, setSets]             = useState(exercice.sets || 3)
-  const [repRange, setRepRange]     = useState(exercice.rep_range || '8-10')
-  const [repos, setRepos]           = useState(exercice.repos || "2'")
-  const [indication, setIndication] = useState(exercice.indications || '')
-  const [addingExo, setAddingExo]   = useState(false)
-  const [newExoName, setNewExoName] = useState('')
+function ExerciceRow({ exercice, showChargeIndicative, showRpe, totalCols, getExosPourMuscle, onUpdate, onDelete, onAddCustomExo }) {
+  const [muscle, setMuscle]                   = useState(exercice.muscle || '')
+  const [nom, setNom]                         = useState(exercice.nom || '')
+  const [sets, setSets]                       = useState(exercice.sets || 3)
+  const [repRange, setRepRange]               = useState(exercice.rep_range || '8-10')
+  const [repos, setRepos]                     = useState(exercice.repos || "2'")
+  const [chargeIndicative, setChargeIndicative] = useState(exercice.charge_indicative || '')
+  const [rpe, setRpe]                         = useState(exercice.rpe_cible || '')
+  const [indication, setIndication]           = useState(exercice.indications || '')
+  const [unilateral, setUnilateral]           = useState(exercice.unilateral || false)
+  const [addingExo, setAddingExo]             = useState(false)
+  const [newExoName, setNewExoName]           = useState('')
 
   const exosDispo = muscle ? getExosPourMuscle(muscle) : []
 
@@ -441,18 +458,24 @@ function ExerciceRow({ exercice, getExosPourMuscle, onUpdate, onDelete, onAddCus
     setNewExoName(''); setAddingExo(false)
   }
 
-  const sel = "w-full border border-gray-100 rounded px-2 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-brand-400 hover:border-gray-300 bg-gray-50"
+  function toggleUnilateral() {
+    const newVal = !unilateral
+    setUnilateral(newVal)
+    onUpdate('unilateral', newVal)
+  }
+
+  const sel = "w-full border border-gray-100 rounded px-1.5 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-brand-400 hover:border-gray-300 bg-gray-50"
 
   return (
     <div className="space-y-1.5">
-      <div className="grid grid-cols-12 gap-2 items-start">
+      <div className="grid gap-2 items-start" style={{ gridTemplateColumns: `repeat(${totalCols}, minmax(0, 1fr))` }}>
         <div className="col-span-2">
           <select value={muscle} onChange={e => handleMuscleChange(e.target.value)} className={sel}>
             <option value="">—</option>
             {MUSCLES.map(m => <option key={m} value={m}>{m}</option>)}
           </select>
         </div>
-        <div className="col-span-3">
+        <div className="col-span-2">
           {addingExo ? (
             <div className="flex gap-1">
               <input autoFocus value={newExoName} onChange={e => setNewExoName(e.target.value)}
@@ -469,48 +492,99 @@ function ExerciceRow({ exercice, getExosPourMuscle, onUpdate, onDelete, onAddCus
             </select>
           )}
         </div>
-        <div className="col-span-1">
+        <div>
           <input type="number" value={sets} min={1} max={10}
             onChange={e => setSets(e.target.value)} onBlur={() => onUpdate('sets', sets)}
             className={sel + " text-center"} />
         </div>
-        <div className="col-span-2">
+        <div>
           <input value={repRange} onChange={e => setRepRange(e.target.value)} onBlur={() => onUpdate('rep_range', repRange)}
             placeholder="8-10" className={sel} />
         </div>
-        <div className="col-span-2">
+        <div>
           <select value={repos} onChange={e => { setRepos(e.target.value); onUpdate('repos', e.target.value) }} className={sel}>
             {TEMPS_REPOS.map(t => <option key={t} value={t}>{t}</option>)}
           </select>
         </div>
-        <div className="col-span-1 flex justify-center pt-1">
-          <button onClick={onDelete} className="text-gray-300 hover:text-red-400 text-lg leading-none">×</button>
+        {showChargeIndicative && (
+          <div className="flex items-center gap-1">
+            <input type="number" value={chargeIndicative} onChange={e => setChargeIndicative(e.target.value)}
+              onBlur={() => onUpdate('charge_indicative', chargeIndicative)}
+              placeholder="kg" className={sel} />
+            <button onClick={toggleUnilateral} title="Unilatéral (×2 pour tonnage)"
+              className={`text-xs px-1 py-1.5 rounded border transition-colors flex-shrink-0 ${unilateral ? 'bg-brand-600 text-white border-brand-600' : 'bg-gray-50 text-gray-400 border-gray-100'}`}>
+              ×2
+            </button>
+          </div>
+        )}
+        {showRpe && (
+          <input value={rpe} onChange={e => setRpe(e.target.value)} onBlur={() => onUpdate('rpe_cible', rpe)}
+            placeholder="@8" className={sel} />
+        )}
+        <div className="col-span-2 flex items-start gap-1">
+          <textarea value={indication} onChange={e => setIndication(e.target.value)}
+            onBlur={() => onUpdate('indications', indication)}
+            placeholder="Note coach…" rows={1}
+            className="flex-1 border border-gray-100 rounded px-2 py-1.5 text-xs text-gray-600 focus:outline-none focus:ring-1 focus:ring-amber-300 bg-amber-50/30 resize-none overflow-hidden placeholder-gray-300"
+            onInput={e => { e.target.style.height = 'auto'; e.target.style.height = e.target.scrollHeight + 'px' }} />
+          <button onClick={onDelete} className="text-gray-300 hover:text-red-400 text-lg leading-none mt-0.5 flex-shrink-0">×</button>
         </div>
       </div>
-      {/* Indication — pleine largeur, non propagée */}
-      <textarea
-        value={indication}
-        onChange={e => setIndication(e.target.value)}
-        onBlur={() => onUpdate('indications', indication)}
-        placeholder="Indication coach (spécifique à cette semaine — non propagée)"
-        rows={1}
-        className="w-full border border-gray-100 rounded px-2 py-1.5 text-xs text-gray-600 focus:outline-none focus:ring-1 focus:ring-amber-300 hover:border-gray-300 bg-amber-50/30 resize-none overflow-hidden placeholder-gray-300"
-        onInput={e => { e.target.style.height = 'auto'; e.target.style.height = e.target.scrollHeight + 'px' }}
-      />
+      {/* Badge unilatéral si pas show_charge_indicative */}
+      {!showChargeIndicative && (
+        <div className="flex items-center gap-2">
+          <button onClick={toggleUnilateral}
+            className={`text-xs px-2 py-0.5 rounded border transition-colors ${unilateral ? 'bg-brand-600 text-white border-brand-600' : 'bg-gray-50 text-gray-400 border-gray-100 hover:border-gray-300'}`}>
+            {unilateral ? '✓ Unilatéral' : 'Unilatéral'}
+          </button>
+        </div>
+      )}
     </div>
   )
 }
 
-function BonusEditor({ seance }) {
+// Activités bonus avec édition complète
+function BonusEditor({ seance, onAdd, onUpdate, onDelete }) {
+  const [activites, setActivites] = useState(seance.activites_bonus || [])
+  const [editingId, setEditingId] = useState(null)
+  const [editVal, setEditVal] = useState('')
+
+  useEffect(() => { setActivites(seance.activites_bonus || []) }, [seance])
+
+  function startEdit(act) { setEditingId(act.id); setEditVal(act.nom) }
+
+  async function saveEdit(id) {
+    if (editVal.trim()) { await onUpdate(id, 'nom', editVal.trim()); setActivites(prev => prev.map(a => a.id === id ? { ...a, nom: editVal.trim() } : a)) }
+    setEditingId(null)
+  }
+
   return (
     <div className="bg-white border border-gray-100 rounded-xl overflow-hidden">
-      <div className="bg-gray-50 border-b border-gray-100 px-5 py-3">
+      <div className="bg-gray-50 border-b border-gray-100 px-5 py-3 flex items-center justify-between">
         <h3 className="text-sm font-medium text-gray-800">Activités bonus</h3>
+        <button onClick={onAdd} className="text-xs text-brand-600 hover:text-brand-800 font-medium">+ Ajouter</button>
       </div>
-      <div className="p-4 flex flex-wrap gap-2">
-        {(seance.activites_bonus || []).sort((a, b) => a.ordre - b.ordre).map(act => (
-          <span key={act.id} className="bg-brand-50 text-brand-700 text-xs px-3 py-1.5 rounded-full font-medium">{act.nom}</span>
+      <div className="p-4 space-y-2">
+        {activites.sort((a, b) => a.ordre - b.ordre).map(act => (
+          <div key={act.id} className="flex items-center gap-2">
+            {editingId === act.id ? (
+              <>
+                <input autoFocus value={editVal} onChange={e => setEditVal(e.target.value)}
+                  onBlur={() => saveEdit(act.id)} onKeyDown={e => e.key === 'Enter' && saveEdit(act.id)}
+                  className="flex-1 border border-brand-300 rounded px-2 py-1 text-sm focus:outline-none" />
+                <button onClick={() => setEditingId(null)} className="text-xs text-gray-400">Annuler</button>
+              </>
+            ) : (
+              <>
+                <span className="flex-1 text-sm text-gray-700">{act.nom}</span>
+                <button onClick={() => startEdit(act)} className="text-xs text-gray-400 hover:text-brand-500">✎</button>
+                <button onClick={() => { onDelete(act.id); setActivites(prev => prev.filter(a => a.id !== act.id)) }}
+                  className="text-xs text-gray-300 hover:text-red-400">×</button>
+              </>
+            )}
+          </div>
         ))}
+        {activites.length === 0 && <p className="text-xs text-gray-400">Aucune activité. Clique sur + Ajouter.</p>}
       </div>
     </div>
   )
