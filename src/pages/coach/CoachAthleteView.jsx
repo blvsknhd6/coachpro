@@ -13,6 +13,8 @@ export default function CoachAthleteView() {
   const [activeSemaine, setActiveSemaine] = useState(null)
   const [seances, setSeances]       = useState([])
   const [loading, setLoading]       = useState(true)
+  const [showExport, setShowExport] = useState(false)
+  const [exportText, setExportText] = useState('')
 
   useEffect(() => { fetchData() }, [athleteId])
   useEffect(() => { if (activeSemaine) fetchSeances(activeSemaine.id) }, [activeSemaine])
@@ -20,63 +22,136 @@ export default function CoachAthleteView() {
   async function fetchData() {
     const { data: ath } = await supabase.from('profiles').select('*').eq('id', athleteId).single()
     setAthlete(ath)
-    const { data: bl } = await supabase.from('blocs').select('*').eq('athlete_id', athleteId).order('created_at', { ascending: false })
+    const { data: bl } = await supabase.from('blocs').select('*, objectifs_bloc(*)').eq('athlete_id', athleteId).order('created_at', { ascending: false })
     setBlocs(bl || [])
-    if (bl && bl.length > 0) { setActiveBloc(bl[0]); fetchSemaines(bl[0].id) }
+    if (bl?.[0]) { setActiveBloc(bl[0]); fetchSemaines(bl[0].id) }
     else setLoading(false)
   }
 
   async function fetchSemaines(blocId) {
     const { data } = await supabase.from('semaines').select('*').eq('bloc_id', blocId).order('numero')
     setSemaines(data || [])
-    if (data && data.length > 0) setActiveSemaine(data[data.length - 1])
-    else setLoading(false)
+    if (data?.length) {
+      // Bug 8 fix: semaine active = dernière avec activité
+      let active = data[0]
+      for (let i = data.length - 1; i >= 0; i--) {
+        const { data: scIds } = await supabase.from('seances').select('id').eq('semaine_id', data[i].id)
+        if (!scIds?.length) continue
+        const { data: sr } = await supabase.from('series_realisees').select('id')
+          .eq('athlete_id', athleteId).in('exercice_id', scIds.map(s => s.id)).limit(1)
+        if (sr?.length) { active = data[i]; break }
+      }
+      setActiveSemaine(active)
+    } else setLoading(false)
   }
 
   async function fetchSeances(semaineId) {
     setLoading(true)
-    const { data } = await supabase
-      .from('seances')
+    const { data } = await supabase.from('seances')
       .select('*, exercices(*, series_realisees(*)), activites_bonus(*, activites_realisees(*))')
-      .eq('semaine_id', semaineId)
-      .order('ordre')
+      .eq('semaine_id', semaineId).order('ordre')
     setSeances(data || [])
     setLoading(false)
   }
 
+  async function generateExport() {
+    let text = `=== COMPTE RENDU ${athlete?.full_name} — ${activeBloc?.name} — Semaine ${activeSemaine?.numero} ===\n\n`
+    for (const sc of seances.filter(s => s.nom !== 'Bonus')) {
+      text += `## ${sc.nom}\n`
+      const note = await supabase.from('notes_seances').select('contenu')
+        .eq('athlete_id', athleteId).eq('seance_id', sc.id).eq('semaine_id', activeSemaine.id).single()
+      if (note.data?.contenu) text += `Note globale : ${note.data.contenu}\n`
+      for (const ex of (sc.exercices || []).sort((a, b) => a.ordre - b.ordre)) {
+        const series = (ex.series_realisees || []).sort((a, b) => a.numero_set - b.numero_set)
+        if (series.length === 0) { text += `  ${ex.nom} : non réalisé\n`; continue }
+        const sStr = series.map(s => `${s.charge || '?'}kg×${s.reps || '?'}${s.notes ? ` (${s.notes})` : ''}`).join(' | ')
+        text += `  ${ex.nom} (${ex.sets}×${ex.rep_range}) : ${sStr}\n`
+      }
+      text += '\n'
+    }
+    // Activités bonus
+    const bonus = seances.find(s => s.nom === 'Bonus')
+    if (bonus) {
+      const done = (bonus.activites_bonus || []).filter(a => (a.activites_realisees || []).some(r => r.realisee))
+      if (done.length) text += `## Bonus réalisés\n${done.map(a => `  ✓ ${a.nom}`).join('\n')}\n\n`
+    }
+    // Tracking
+    const monday = new Date()
+    monday.setDate(monday.getDate() - (activeSemaine.numero - 1) * 7 - monday.getDay() + 1)
+    const { data: tracking } = await supabase.from('data_tracking').select('*')
+      .eq('athlete_id', athleteId).order('date').limit(7)
+    if (tracking?.length) {
+      text += `## Nutrition (moyennes)\n`
+      const avg = (key) => { const vals = tracking.map(t => t[key]).filter(v => v); return vals.length ? Math.round(vals.reduce((a, b) => a + b, 0) / vals.length) : '—' }
+      text += `  Kcal: ${avg('kcal')} | Prot: ${avg('proteines')}g | Gluc: ${avg('glucides')}g | Lip: ${avg('lipides')}g\n`
+      text += `  Sommeil: ${avg('sommeil')}h | Pas: ${avg('pas_journaliers')}/j | Stress: ${avg('stress')}/10\n`
+    }
+    setExportText(text)
+    setShowExport(true)
+  }
+
   const isFemme = athlete?.genre === 'femme'
+  const obj = Array.isArray(activeBloc?.objectifs_bloc) ? activeBloc?.objectifs_bloc[0] : activeBloc?.objectifs_bloc
+
+  const planLabel = { prise_de_masse: '💪 Prise de masse', maintien: '⚖️ Maintien', seche: '🔥 Sèche' }
 
   return (
     <Layout>
-      <div className="flex items-center gap-3 mb-6">
-        <Link to={`/coach/athlete/${athleteId}`} className="text-sm text-gray-400 hover:text-gray-700">← Retour</Link>
-        <div className="flex items-center gap-3">
-          <div className={`w-9 h-9 rounded-full flex items-center justify-center text-sm font-medium ${isFemme ? 'bg-pink-100 text-pink-700' : 'bg-brand-100 text-brand-700'}`}>
-            {athlete?.full_name?.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2)}
-          </div>
-          <div>
-            <h1 className="text-xl font-semibold">Vue de {athlete?.full_name}</h1>
-            <p className="text-xs text-gray-400">Cliquez sur une séance pour l'éditer</p>
+      {showExport && (
+        <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl p-6 w-full max-w-2xl shadow-xl max-h-[80vh] flex flex-col">
+            <h3 className="text-base font-semibold mb-2">Export — copie et colle dans ton IA</h3>
+            <textarea readOnly value={exportText}
+              className="flex-1 border border-gray-200 rounded-lg p-3 text-xs font-mono text-gray-700 resize-none min-h-64"
+              onClick={e => e.target.select()} />
+            <div className="flex gap-2 mt-4">
+              <button onClick={() => { navigator.clipboard.writeText(exportText) }}
+                className="flex-1 bg-brand-600 text-white rounded-lg py-2 text-sm font-medium hover:bg-brand-700">
+                Copier
+              </button>
+              <button onClick={() => setShowExport(false)} className="flex-1 border border-gray-200 rounded-lg py-2 text-sm text-gray-600">Fermer</button>
+            </div>
           </div>
         </div>
+      )}
+
+      <div className="flex items-center gap-3 mb-4 flex-wrap">
+        <Link to={`/coach/athlete/${athleteId}`} className="text-sm text-gray-400 hover:text-gray-700">← Retour</Link>
+        <div className="flex items-center gap-2 flex-1">
+          <div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-medium ${isFemme ? 'bg-pink-100 text-pink-700' : 'bg-brand-100 text-brand-700'}`}>
+            {athlete?.full_name?.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2)}
+          </div>
+          <h1 className="text-lg font-semibold">{athlete?.full_name}</h1>
+        </div>
+        <button onClick={generateExport}
+          className="px-3 py-1.5 border border-gray-200 rounded-lg text-xs text-gray-600 hover:border-brand-300 hover:text-brand-600 transition-colors">
+          📋 Exporter pour IA
+        </button>
       </div>
 
+      {/* Plan nutritionnel */}
+      {obj?.plan_nutritionnel && (
+        <div className="mb-4 bg-gray-50 border border-gray-100 rounded-lg px-4 py-2 text-sm text-gray-700">
+          {planLabel[obj.plan_nutritionnel]}
+        </div>
+      )}
+
+      {/* Sélecteurs */}
       {blocs.length > 1 && (
-        <div className="flex gap-2 mb-4 flex-wrap">
+        <div className="flex gap-2 mb-3 flex-wrap">
           {blocs.map(b => (
             <button key={b.id} onClick={() => { setActiveBloc(b); fetchSemaines(b.id) }}
-              className={`px-3 py-1.5 rounded-lg text-sm transition-colors ${activeBloc?.id === b.id ? `${isFemme ? 'bg-pink-600' : 'bg-brand-600'} text-white` : 'bg-white border border-gray-200 text-gray-600'}`}>
+              className={`px-3 py-1.5 rounded-lg text-sm ${activeBloc?.id === b.id ? `${isFemme ? 'bg-pink-600' : 'bg-brand-600'} text-white` : 'bg-white border border-gray-200 text-gray-600'}`}>
               {b.name}
             </button>
           ))}
         </div>
       )}
-
       {semaines.length > 0 && (
         <div className="flex gap-2 mb-6 flex-wrap">
           {semaines.map(s => (
             <button key={s.id} onClick={() => setActiveSemaine(s)}
-              className={`px-3 py-1.5 rounded-lg text-sm transition-colors ${activeSemaine?.id === s.id ? 'bg-gray-900 text-white' : 'bg-white border border-gray-200 text-gray-600'}`}>
+              className={`px-3 py-1.5 rounded-lg text-sm ${activeSemaine?.id === s.id ? 'bg-gray-900 text-white' : 'bg-white border border-gray-200 text-gray-600'}`}>
               S{s.numero}
             </button>
           ))}
@@ -85,12 +160,12 @@ export default function CoachAthleteView() {
 
       {loading ? <p className="text-sm text-gray-400">Chargement…</p> : (
         <div className="space-y-4">
-          {seances.filter(s => s.nom !== 'Bonus').map(seance => (
-            <SeanceCard key={seance.id} seance={seance} semaineId={activeSemaine?.id}
+          {seances.filter(s => s.nom !== 'Bonus').map(sc => (
+            <SeanceCard key={sc.id} seance={sc} semaineId={activeSemaine?.id}
               athleteId={athleteId} isFemme={isFemme} navigate={navigate} />
           ))}
-          {seances.filter(s => s.nom === 'Bonus').map(seance => (
-            <BonusCard key={seance.id} seance={seance} semaineId={activeSemaine?.id}
+          {seances.filter(s => s.nom === 'Bonus').map(sc => (
+            <BonusCard key={sc.id} seance={sc} semaineId={activeSemaine?.id}
               athleteId={athleteId} isFemme={isFemme} navigate={navigate} />
           ))}
         </div>
@@ -101,9 +176,16 @@ export default function CoachAthleteView() {
 
 function SeanceCard({ seance, semaineId, athleteId, isFemme, navigate }) {
   const [open, setOpen] = useState(false)
+  const [note, setNote] = useState('')
   const totalEx = seance.exercices?.length || 0
   const doneEx  = seance.exercices?.filter(e => (e.series_realisees || []).some(s => s.reps || s.charge)).length || 0
   const pct = totalEx > 0 ? Math.round((doneEx / totalEx) * 100) : 0
+
+  useEffect(() => {
+    supabase.from('notes_seances').select('contenu')
+      .eq('athlete_id', athleteId).eq('seance_id', seance.id).eq('semaine_id', semaineId)
+      .single().then(({ data }) => { if (data) setNote(data.contenu || '') })
+  }, [seance.id, semaineId])
 
   return (
     <div className="bg-white border border-gray-100 rounded-xl overflow-hidden">
@@ -115,16 +197,14 @@ function SeanceCard({ seance, semaineId, athleteId, isFemme, navigate }) {
             <div className={`h-full ${isFemme ? 'bg-pink-500' : 'bg-brand-500'} rounded-full`} style={{ width: `${pct}%` }} />
           </div>
         </button>
-        {/* Bouton éditer → va vers AthleteSeance avec le bon semaineId */}
-        <button
-          onClick={() => navigate(`/athlete/seance/${seance.id}/semaine/${semaineId}`)}
-          className={`ml-4 px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors flex-shrink-0 ${isFemme ? 'border-pink-200 text-pink-600 hover:bg-pink-50' : 'border-brand-200 text-brand-600 hover:bg-brand-50'}`}>
+        <button onClick={() => navigate(`/athlete/seance/${seance.id}/semaine/${semaineId}`)}
+          className={`ml-4 px-3 py-1.5 rounded-lg text-xs font-medium border flex-shrink-0 ${isFemme ? 'border-pink-200 text-pink-600 hover:bg-pink-50' : 'border-brand-200 text-brand-600 hover:bg-brand-50'}`}>
           Éditer ✎
         </button>
       </div>
-
       {open && (
         <div className="border-t border-gray-50 px-5 pb-4 pt-3 space-y-3">
+          {note && <div className="bg-gray-50 rounded-lg px-3 py-2 text-xs text-gray-600 italic">💬 {note}</div>}
           {(seance.exercices || []).sort((a, b) => a.ordre - b.ordre).map(ex => {
             const seriesDone = (ex.series_realisees || []).sort((a, b) => a.numero_set - b.numero_set)
             return (
@@ -132,9 +212,7 @@ function SeanceCard({ seance, semaineId, athleteId, isFemme, navigate }) {
                 <div className="flex items-center justify-between mb-1">
                   <p className="text-sm font-medium text-gray-800">{ex.nom}</p>
                   <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
-                    seriesDone.length >= ex.sets ? 'bg-green-50 text-green-700'
-                    : seriesDone.length > 0 ? 'bg-amber-50 text-amber-700'
-                    : 'bg-gray-50 text-gray-400'
+                    seriesDone.length >= ex.sets ? 'bg-green-50 text-green-700' : seriesDone.length > 0 ? 'bg-amber-50 text-amber-700' : 'bg-gray-50 text-gray-400'
                   }`}>{seriesDone.length}/{ex.sets}</span>
                 </div>
                 <p className="text-xs text-gray-400 mb-1">{ex.muscle} · {ex.sets}×{ex.rep_range} · repos {ex.repos}</p>
@@ -147,9 +225,7 @@ function SeanceCard({ seance, semaineId, athleteId, isFemme, navigate }) {
                       </span>
                     ))}
                   </div>
-                ) : (
-                  <p className="text-xs text-gray-300 italic">Pas encore réalisé</p>
-                )}
+                ) : <p className="text-xs text-gray-300 italic">Pas encore réalisé</p>}
               </div>
             )
           })}
@@ -159,35 +235,31 @@ function SeanceCard({ seance, semaineId, athleteId, isFemme, navigate }) {
   )
 }
 
+// Bug 9 fix: affiche les étiquettes des activités réalisées, pas le nombre
 function BonusCard({ seance, semaineId, isFemme, navigate }) {
   const activites = seance.activites_bonus || []
-  const doneCount = activites.filter(a => (a.activites_realisees || []).some(r => r.realisee)).length
+  const done = activites.filter(a => (a.activites_realisees || []).some(r => r.realisee && r.semaine_id === semaineId))
 
   return (
     <div className="bg-white border border-gray-100 rounded-xl p-5">
       <div className="flex items-center justify-between mb-3">
-        <div>
-          <h3 className="text-sm font-medium text-gray-800">Activités bonus</h3>
-          <p className="text-xs text-gray-400">{doneCount}/{activites.length} réalisées</p>
-        </div>
-        <button
-          onClick={() => navigate(`/athlete/seance/${seance.id}/semaine/${semaineId}`)}
-          className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${isFemme ? 'border-pink-200 text-pink-600 hover:bg-pink-50' : 'border-brand-200 text-brand-600 hover:bg-brand-50'}`}>
+        <h3 className="text-sm font-medium text-gray-800">Activités bonus</h3>
+        <button onClick={() => navigate(`/athlete/seance/${seance.id}/semaine/${semaineId}`)}
+          className={`px-3 py-1.5 rounded-lg text-xs font-medium border ${isFemme ? 'border-pink-200 text-pink-600 hover:bg-pink-50' : 'border-brand-200 text-brand-600 hover:bg-brand-50'}`}>
           Éditer ✎
         </button>
       </div>
-      <div className="flex flex-wrap gap-2">
-        {activites.sort((a, b) => a.ordre - b.ordre).map(act => {
-          const done = (act.activites_realisees || []).some(r => r.realisee)
-          return (
-            <span key={act.id} className={`text-xs px-3 py-1.5 rounded-full font-medium ${
-              done ? (isFemme ? 'bg-pink-100 text-pink-700' : 'bg-brand-100 text-brand-700') : 'bg-gray-100 text-gray-400'
-            }`}>
-              {done ? '✓ ' : ''}{act.nom}
+      {done.length > 0 ? (
+        <div className="flex flex-wrap gap-2">
+          {done.map(a => (
+            <span key={a.id} className={`text-xs px-3 py-1.5 rounded-full font-medium ${isFemme ? 'bg-pink-100 text-pink-700' : 'bg-brand-100 text-brand-700'}`}>
+              ✓ {a.nom}
             </span>
-          )
-        })}
-      </div>
+          ))}
+        </div>
+      ) : (
+        <p className="text-xs text-gray-400">Aucune activité réalisée cette semaine</p>
+      )}
     </div>
   )
 }

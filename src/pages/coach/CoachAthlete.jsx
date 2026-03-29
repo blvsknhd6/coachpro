@@ -317,27 +317,46 @@ function ObjectifsBloc({ bloc, onSave }) {
         )}
       </div>
       {editing ? (
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-          {field('poids_cible', 'Poids cible', 'kg')}
-          {field('kcal', 'Kcal / jour', 'kcal')}
-          {field('proteines', 'Protéines', 'g')}
-          {field('glucides', 'Glucides', 'g')}
-          {field('lipides', 'Lipides', 'g')}
-          {field('sommeil', 'Sommeil', 'h')}
-          {field('pas_journaliers', 'Pas / jour', '')}
-          {field('stress_cible', 'Stress cible', '/10')}
+        <div className="space-y-4">
+          <div>
+            <label className="text-xs text-gray-500 block mb-1">Plan nutritionnel</label>
+            <div className="flex gap-2">
+              {[['prise_de_masse','💪 Prise de masse'],['maintien','⚖️ Maintien'],['seche','🔥 Sèche']].map(([val, label]) => (
+                <button key={val} type="button" onClick={() => setForm(f => ({ ...f, plan_nutritionnel: val }))}
+                  className={`flex-1 py-2 rounded-lg text-xs font-medium border transition-colors ${form.plan_nutritionnel === val ? 'bg-brand-600 text-white border-brand-600' : 'border-gray-200 text-gray-600'}`}>
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+            {field('kcal', 'Kcal / jour', 'kcal')}
+            {field('proteines', 'Protéines', 'g')}
+            {field('glucides', 'Glucides', 'g')}
+            {field('lipides', 'Lipides', 'g')}
+            {field('sommeil', 'Sommeil', 'h')}
+            {field('pas_journaliers', 'Pas / jour', '')}
+            {field('stress_cible', 'Stress cible', '/10')}
+          </div>
         </div>
       ) : obj ? (
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-          {[['Poids cible', obj.poids_cible, 'kg'], ['Kcal', obj.kcal, 'kcal'], ['Protéines', obj.proteines, 'g'],
-            ['Glucides', obj.glucides, 'g'], ['Lipides', obj.lipides, 'g'], ['Sommeil', obj.sommeil, 'h'],
-            ['Pas / jour', obj.pas_journaliers, ''], ['Stress cible', obj.stress_cible, '/10']
-          ].map(([label, val, unit]) => (
-            <div key={label}>
-              <p className="text-xs text-gray-400">{label}</p>
-              <p className="text-sm font-medium text-gray-900">{val ?? '—'}{val && unit ? ' ' + unit : ''}</p>
+        <div className="space-y-3">
+          {obj.plan_nutritionnel && (
+            <div className="text-sm font-medium text-gray-800">
+              {{'prise_de_masse':'💪 Prise de masse','maintien':'⚖️ Maintien','seche':'🔥 Sèche'}[obj.plan_nutritionnel]}
             </div>
-          ))}
+          )}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+            {[['Kcal', obj.kcal, 'kcal'], ['Protéines', obj.proteines, 'g'],
+              ['Glucides', obj.glucides, 'g'], ['Lipides', obj.lipides, 'g'], ['Sommeil', obj.sommeil, 'h'],
+              ['Pas / jour', obj.pas_journaliers, ''], ['Stress cible', obj.stress_cible, '/10']
+            ].map(([label, val, unit]) => (
+              <div key={label}>
+                <p className="text-xs text-gray-400">{label}</p>
+                <p className="text-sm font-medium text-gray-900">{val ?? '—'}{val && unit ? ' ' + unit : ''}</p>
+              </div>
+            ))}
+          </div>
         </div>
       ) : (
         <p className="text-sm text-gray-400">Aucun objectif défini.</p>
