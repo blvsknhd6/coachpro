@@ -3,6 +3,7 @@ import { useParams, Link } from 'react-router-dom'
 import { supabase } from '../../lib/supabase'
 import Layout from '../../components/shared/Layout'
 import RecapTracking from '../../components/coach/RecapTracking'
+import ProgressionPanel from '../../components/shared/ProgressionPanel'
 
 export default function CoachAthlete() {
   const { athleteId } = useParams()
@@ -255,6 +256,12 @@ export default function CoachAthlete() {
           </div>
           <ObjectifsBloc bloc={activeBloc} onSave={fetchData} />
           {!athlete?.is_self && <RecapTracking athleteId={athleteId} blocId={activeBloc.id} />}
+          <ProgressionPanel
+            athleteId={athleteId}
+            config={{ metric: 'tonnage', display: 'graph', fav_exercices: [], muscles_filter: [] }}
+            onConfigChange={() => {}}
+            color={athlete?.genre === 'femme' ? '#ec4899' : '#6366f1'}
+          />
         </div>
       ) : (
         <div className="text-center py-16 text-gray-400 text-sm">Crée un premier bloc pour commencer.</div>
@@ -330,6 +337,7 @@ function ObjectifsBloc({ bloc, onSave }) {
             </div>
           </div>
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+            {field('seances_par_semaine', 'Séances / sem.', '')}
             {field('kcal', 'Kcal / jour', 'kcal')}
             {field('proteines', 'Protéines', 'g')}
             {field('glucides', 'Glucides', 'g')}
@@ -347,7 +355,7 @@ function ObjectifsBloc({ bloc, onSave }) {
             </div>
           )}
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-            {[['Kcal', obj.kcal, 'kcal'], ['Protéines', obj.proteines, 'g'],
+            {[['Séances / sem.', obj.seances_par_semaine, ''], ['Kcal', obj.kcal, 'kcal'], ['Protéines', obj.proteines, 'g'],
               ['Glucides', obj.glucides, 'g'], ['Lipides', obj.lipides, 'g'], ['Sommeil', obj.sommeil, 'h'],
               ['Pas / jour', obj.pas_journaliers, ''], ['Stress cible', obj.stress_cible, '/10']
             ].map(([label, val, unit]) => (

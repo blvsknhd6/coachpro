@@ -24,17 +24,13 @@ export default function Layout({ children }) {
 
   const athleteTabs = [
     { to: '/athlete', label: 'Accueil', exact: true },
-    { to: '/athlete/seances', label: 'Mes séances' },
+    { to: '/athlete/entrainement', label: 'Mon entraînement' },
     { to: '/athlete/tracking', label: 'Mon suivi' },
     { to: '/athlete/progression', label: 'Progression' },
   ]
 
   const tabs = isCoach ? coachTabs : athleteTabs
-
-  const activeColor = isFemme
-    ? 'bg-pink-50 text-pink-700 font-medium'
-    : 'bg-brand-50 text-brand-700 font-medium'
-
+  const accentColor = isFemme ? 'text-pink-600 border-pink-600' : 'text-brand-600 border-brand-600'
   const logoColor = isFemme ? 'text-pink-600' : 'text-brand-700'
 
   function isActive(tab) {
@@ -46,25 +42,22 @@ export default function Layout({ children }) {
     <div className="min-h-screen flex flex-col bg-gray-50">
       <header className="bg-white border-b border-gray-100 sticky top-0 z-10">
         <div className="max-w-5xl mx-auto px-4">
-          <div className="h-14 flex items-center justify-between">
+          <div className="h-12 flex items-center justify-between">
             <Link to={homeRoute} className={`font-semibold text-base ${logoColor} hover:opacity-80 transition-opacity`}>
               CoachPro
             </Link>
             <div className="flex items-center gap-3">
               <span className="text-sm text-gray-500 hidden sm:block">{profile?.full_name}</span>
-              <button onClick={handleSignOut} className="text-sm text-gray-400 hover:text-gray-700 transition-colors">
+              <button onClick={handleSignOut} className="text-sm text-gray-400 hover:text-gray-700">
                 Déconnexion
               </button>
             </div>
           </div>
-          {/* Onglets */}
-          <nav className="flex gap-1 pb-0 overflow-x-auto scrollbar-hide">
+          <nav className="flex gap-0 overflow-x-auto" style={{ scrollbarWidth: 'none' }}>
             {tabs.map(tab => (
               <Link key={tab.to} to={tab.to}
-                className={`px-3 py-2 text-sm whitespace-nowrap border-b-2 transition-colors ${
-                  isActive(tab)
-                    ? `border-current ${isFemme ? 'text-pink-600 border-pink-600' : 'text-brand-600 border-brand-600'} font-medium`
-                    : 'text-gray-500 border-transparent hover:text-gray-800 hover:border-gray-300'
+                className={`px-3 py-2 text-sm whitespace-nowrap border-b-2 transition-colors flex-shrink-0 ${
+                  isActive(tab) ? `font-medium ${accentColor}` : 'text-gray-500 border-transparent hover:text-gray-800'
                 }`}>
                 {tab.label}
               </Link>
@@ -72,7 +65,7 @@ export default function Layout({ children }) {
           </nav>
         </div>
       </header>
-      <main className="flex-1 max-w-5xl mx-auto w-full px-4 py-6">
+      <main className="flex-1 max-w-5xl mx-auto w-full px-4 py-5">
         {children}
       </main>
     </div>
