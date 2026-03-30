@@ -10,6 +10,7 @@ export const MUSCLES = [
   'biceps',
   'triceps',
   'abdos',
+  'mollets'
 ]
 
 export const EXERCICES_PAR_MUSCLE = {
@@ -69,6 +70,7 @@ export const EXERCICES_PAR_MUSCLE = {
   pecs: [
     'Bench',
     'Incline Chest Press',
+    'Incline Smith',
     'Larsen',
     'Dips',
     'Écarté haltères',
@@ -92,6 +94,7 @@ export const EXERCICES_PAR_MUSCLE = {
     'Crunch',
     'Relevé de jambes',
   ],
+  mollets : ['Extensions mollets assis','Extensions mollets debout']
 }
 
 export const TEMPS_REPOS = [
@@ -109,9 +112,8 @@ export const TEMPS_REPOS = [
 
 export const BONUS_DEFAUT = [
   'Abdos 1',
-  'Abdos 2',
   'Run Zone 2',
   'Run Fractionné',
   'Pilates',
-  'Circuit Cross Training',
+  'Rando',
 ]
