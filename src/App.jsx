@@ -6,7 +6,7 @@ import CoachAthletes from './pages/coach/CoachAthletes'
 import CoachAthlete from './pages/coach/CoachAthlete'
 import CoachBlocEditor from './pages/coach/CoachBlocEditor'
 import CoachAthleteView from './pages/coach/CoachAthleteView'
-import CoachMonProgramme from './pages/coach/CoachMonProgramme'
+import CoachMyTraining from './pages/coach/CoachMyTraining'
 import AthleteHome from './pages/athlete/AthleteHome'
 import AthleteEntrainement from './pages/athlete/AthleteEntrainement'
 import AthleteSeance from './pages/athlete/AthleteSeance'
@@ -30,10 +30,12 @@ export default function App() {
       <Route path="/login" element={<LoginPage />} />
       <Route path="/coach" element={<PrivateRoute role="coach"><CoachHome /></PrivateRoute>} />
       <Route path="/coach/athletes" element={<PrivateRoute role="coach"><CoachAthletes /></PrivateRoute>} />
-      <Route path="/coach/mon-programme" element={<PrivateRoute role="coach"><CoachMonProgramme /></PrivateRoute>} />
+      <Route path="/coach/mon-programme" element={<PrivateRoute role="coach"><CoachMyTraining /></PrivateRoute>} />
       <Route path="/coach/athlete/:athleteId" element={<PrivateRoute role="coach"><CoachAthlete /></PrivateRoute>} />
       <Route path="/coach/athlete/:athleteId/view" element={<PrivateRoute role="coach"><CoachAthleteView /></PrivateRoute>} />
       <Route path="/coach/bloc/:blocId/edit" element={<PrivateRoute role="coach"><CoachBlocEditor /></PrivateRoute>} />
+      {/* Route séance pour l'entraînement personnel du coach */}
+      <Route path="/coach/my-training/seance/:seanceId/semaine/:semaineId" element={<PrivateRoute role="coach"><AthleteSeance /></PrivateRoute>} />
       <Route path="/athlete" element={<PrivateRoute role="athlete"><AthleteHome /></PrivateRoute>} />
       <Route path="/athlete/entrainement" element={<PrivateRoute role="athlete"><AthleteEntrainement /></PrivateRoute>} />
       <Route path="/athlete/tracking" element={<PrivateRoute role="athlete"><AthleteDataTracking /></PrivateRoute>} />

@@ -39,16 +39,18 @@ export default function CoachBlocEditor() {
   }
 
   function getExosPourMuscle(muscle) {
-    const base = EXERCICES_PAR_MUSCLE[muscle] || []
+    const base   = EXERCICES_PAR_MUSCLE[muscle] || []
     const custom = customExos[muscle] || []
     return [...base, ...custom.filter(c => !base.includes(c))]
   }
 
   async function fetchSeances(semaineId) {
     setLoading(true)
-    const { data } = await supabase.from('seances')
+    const { data } = await supabase
+      .from('seances')
       .select('*, exercices(*), activites_bonus(*)')
-      .eq('semaine_id', semaineId).order('ordre')
+      .eq('semaine_id', semaineId)
+      .order('ordre')
     setSeances(data || [])
     setLoading(false)
   }
@@ -56,17 +58,27 @@ export default function CoachBlocEditor() {
   async function createBlocStructure({ nomsSeances, nbSemaines }) {
     const semaineCrees = []
     for (let i = 1; i <= nbSemaines; i++) {
-      const { data: sem } = await supabase.from('semaines').insert({ bloc_id: blocId, numero: i }).select().single()
+      const { data: sem } = await supabase
+        .from('semaines')
+        .insert({ bloc_id: blocId, numero: i })
+        .select()
+        .single()
       semaineCrees.push(sem)
     }
     for (let si = 0; si < semaineCrees.length; si++) {
-      for (let j = 0; j < nomsSeances.length; j++) {
-        await supabase.from('seances').insert({ semaine_id: semaineCrees[si].id, nom: nomsSeances[j], ordre: j })
-      }
-      const { data: bonus } = await supabase.from('seances')
-        .insert({ semaine_id: semaineCrees[si].id, nom: 'Bonus', ordre: nomsSeances.length }).select().single()
-      for (let k = 0; k < BONUS_DEFAUT.length; k++) {
-        await supabase.from('activites_bonus').insert({ seance_id: bonus.id, nom: BONUS_DEFAUT[k], ordre: k })
+      // Créer toutes les séances d'un coup
+      const seancesPayload = nomsSeances.map((nom, j) => ({
+        semaine_id: semaineCrees[si].id, nom, ordre: j
+      }))
+      seancesPayload.push({ semaine_id: semaineCrees[si].id, nom: 'Bonus', ordre: nomsSeances.length })
+      const { data: newSeances } = await supabase.from('seances').insert(seancesPayload).select()
+      // Ajouter les activités bonus en batch
+      const bonusSeance = (newSeances || []).find(s => s.nom === 'Bonus')
+      if (bonusSeance) {
+        const bonusPayload = BONUS_DEFAUT.map((nom, k) => ({
+          seance_id: bonusSeance.id, nom, ordre: k
+        }))
+        await supabase.from('activites_bonus').insert(bonusPayload)
       }
     }
     setSemaines(semaineCrees)
@@ -76,23 +88,43 @@ export default function CoachBlocEditor() {
 
   async function addSemaine() {
     const num = (semaines[semaines.length - 1]?.numero || 0) + 1
-    const { data: newSem } = await supabase.from('semaines').insert({ bloc_id: blocId, numero: num }).select().single()
+    const { data: newSem } = await supabase
+      .from('semaines')
+      .insert({ bloc_id: blocId, numero: num })
+      .select()
+      .single()
+
     if (semaines.length > 0) {
-      const { data: seancesRef } = await supabase.from('seances')
-        .select('*, exercices(*), activites_bonus(*)').eq('semaine_id', semaines[0].id).order('ordre')
+      const { data: seancesRef } = await supabase
+        .from('seances')
+        .select('*, exercices(*), activites_bonus(*)')
+        .eq('semaine_id', semaines[0].id)
+        .order('ordre')
+
       for (const sc of seancesRef || []) {
-        const { data: newSc } = await supabase.from('seances')
-          .insert({ semaine_id: newSem.id, nom: sc.nom, ordre: sc.ordre }).select().single()
-        for (const ex of sc.exercices || []) {
-          await supabase.from('exercices').insert({
-            seance_id: newSc.id, muscle: ex.muscle, nom: ex.nom, sets: ex.sets,
-            rep_range: ex.rep_range, repos: ex.repos, indications: ex.indications,
-            charge_indicative: ex.charge_indicative, rpe_cible: ex.rpe_cible,
-            unilateral: ex.unilateral, ordre: ex.ordre
-          })
+        const { data: newSc } = await supabase
+          .from('seances')
+          .insert({ semaine_id: newSem.id, nom: sc.nom, ordre: sc.ordre })
+          .select()
+          .single()
+
+        // Inserts en batch (fix perfs)
+        if (sc.exercices?.length) {
+          await supabase.from('exercices').insert(
+            sc.exercices.map(ex => ({
+              seance_id: newSc.id, muscle: ex.muscle, nom: ex.nom, sets: ex.sets,
+              rep_range: ex.rep_range, repos: ex.repos, indications: ex.indications,
+              charge_indicative: ex.charge_indicative, rpe_cible: ex.rpe_cible,
+              unilateral: ex.unilateral, ordre: ex.ordre
+            }))
+          )
         }
-        for (const act of sc.activites_bonus || []) {
-          await supabase.from('activites_bonus').insert({ seance_id: newSc.id, nom: act.nom, description: act.description, ordre: act.ordre })
+        if (sc.activites_bonus?.length) {
+          await supabase.from('activites_bonus').insert(
+            sc.activites_bonus.map(act => ({
+              seance_id: newSc.id, nom: act.nom, description: act.description, ordre: act.ordre
+            }))
+          )
         }
       }
     }
@@ -103,6 +135,7 @@ export default function CoachBlocEditor() {
   async function deleteSemaine(semaineId) {
     await supabase.from('semaines').delete().eq('id', semaineId)
     const remaining = semaines.filter(s => s.id !== semaineId)
+    // Renuméroter en batch (toujours séquentiel mais inévitable)
     for (let i = 0; i < remaining.length; i++) {
       await supabase.from('semaines').update({ numero: i + 1 }).eq('id', remaining[i].id)
       remaining[i] = { ...remaining[i], numero: i + 1 }
@@ -117,27 +150,45 @@ export default function CoachBlocEditor() {
     if (!semainesSuivantes.length) return
     const seanceCourante = seances.find(s => s.nom === seanceNom)
     if (!seanceCourante) return
-    const { data: exsCourants } = await supabase.from('exercices').select('*').eq('seance_id', seanceCourante.id).order('ordre')
+    const { data: exsCourants } = await supabase
+      .from('exercices')
+      .select('*')
+      .eq('seance_id', seanceCourante.id)
+      .order('ordre')
+
     for (const semSuivante of semainesSuivantes) {
-      const { data: scSuivante } = await supabase.from('seances').select('id').eq('semaine_id', semSuivante.id).eq('nom', seanceNom).single()
+      const { data: scSuivante } = await supabase
+        .from('seances')
+        .select('id')
+        .eq('semaine_id', semSuivante.id)
+        .eq('nom', seanceNom)
+        .single()
       if (!scSuivante) continue
-      const { data: exsExistants } = await supabase.from('exercices').select('*').eq('seance_id', scSuivante.id).order('ordre')
+      const { data: exsExistants } = await supabase
+        .from('exercices')
+        .select('*')
+        .eq('seance_id', scSuivante.id)
+        .order('ordre')
       await supabase.from('exercices').delete().eq('seance_id', scSuivante.id)
-      for (const ex of exsCourants || []) {
-        const exExistant = exsExistants?.find(e => e.ordre === ex.ordre)
-        await supabase.from('exercices').insert({
-          seance_id: scSuivante.id, muscle: ex.muscle, nom: ex.nom, sets: ex.sets,
-          rep_range: ex.rep_range, repos: ex.repos, charge_indicative: ex.charge_indicative,
-          rpe_cible: ex.rpe_cible, unilateral: ex.unilateral, ordre: ex.ordre,
-          indications: exExistant?.indications ?? ex.indications
-        })
+      if (exsCourants?.length) {
+        await supabase.from('exercices').insert(
+          exsCourants.map(ex => {
+            const exExistant = exsExistants?.find(e => e.ordre === ex.ordre)
+            return {
+              seance_id: scSuivante.id, muscle: ex.muscle, nom: ex.nom, sets: ex.sets,
+              rep_range: ex.rep_range, repos: ex.repos, charge_indicative: ex.charge_indicative,
+              rpe_cible: ex.rpe_cible, unilateral: ex.unilateral, ordre: ex.ordre,
+              indications: exExistant?.indications ?? ex.indications
+            }
+          })
+        )
       }
     }
   }
 
   async function addExercice(seanceId, seanceNom) {
     const seance = seances.find(s => s.id === seanceId)
-    const ordre = (seance?.exercices?.length || 0)
+    const ordre = seance?.exercices?.length || 0
     await supabase.from('exercices').insert({ seance_id: seanceId, nom: '', sets: 3, rep_range: '8-10', repos: "2'", ordre })
     await fetchSeances(activeSemaine.id)
     await propagateFromCurrentSemaine(seanceNom, activeSemaine.numero)
@@ -147,7 +198,8 @@ export default function CoachBlocEditor() {
     await supabase.from('exercices').update({ [field]: value }).eq('id', id)
     if (field !== 'indications') {
       setSeances(prev => prev.map(sc => ({
-        ...sc, exercices: (sc.exercices || []).map(ex => ex.id === id ? { ...ex, [field]: value } : ex)
+        ...sc,
+        exercices: (sc.exercices || []).map(ex => ex.id === id ? { ...ex, [field]: value } : ex)
       })))
       await propagateFromCurrentSemaine(seanceNom, activeSemaine.numero)
     }
@@ -177,7 +229,11 @@ export default function CoachBlocEditor() {
 
   async function addSeanceToSemaine(semaineId) {
     const seancesActuelles = seances.filter(s => s.nom !== 'Bonus')
-    await supabase.from('seances').insert({ semaine_id: semaineId, nom: `Jour ${seancesActuelles.length + 1}`, ordre: seancesActuelles.length })
+    await supabase.from('seances').insert({
+      semaine_id: semaineId,
+      nom: `Jour ${seancesActuelles.length + 1}`,
+      ordre: seancesActuelles.length
+    })
     fetchSeances(semaineId)
   }
 
@@ -186,13 +242,20 @@ export default function CoachBlocEditor() {
     fetchSeances(activeSemaine.id)
   }
 
-  // Activités bonus CRUD
   async function addActiviteBonus(seanceId) {
-    const nom = prompt('Nom de l\'activité ?')
-    if (!nom?.trim()) return
-    const ordre = (seances.find(s => s.id === seanceId)?.activites_bonus?.length || 0)
+    setSeances(prev => prev.map(s =>
+      s.id === seanceId ? { ...s, _addingBonus: true } : s
+    ))
+  }
+
+  async function confirmAddActiviteBonus(seanceId, nom) {
+    if (!nom?.trim()) {
+      setSeances(prev => prev.map(s => s.id === seanceId ? { ...s, _addingBonus: false } : s))
+      return
+    }
+    const ordre = seances.find(s => s.id === seanceId)?.activites_bonus?.length || 0
     await supabase.from('activites_bonus').insert({ seance_id: seanceId, nom: nom.trim(), ordre })
-    fetchSeances(activeSemaine.id)
+    await fetchSeances(activeSemaine.id)
   }
 
   async function updateActiviteBonus(id, field, value) {
@@ -231,8 +294,10 @@ export default function CoachBlocEditor() {
             <h3 className="text-base font-semibold mb-2">Supprimer cette semaine ?</h3>
             <p className="text-sm text-gray-500 mb-5">Tous les exercices et séries seront supprimés définitivement.</p>
             <div className="flex gap-2">
-              <button onClick={() => deleteSemaine(confirmDeleteSemaine)} className="flex-1 bg-red-500 text-white rounded-lg py-2 text-sm font-medium">Supprimer</button>
-              <button onClick={() => setConfirmDeleteSemaine(null)} className="flex-1 border border-gray-200 rounded-lg py-2 text-sm text-gray-600">Annuler</button>
+              <button onClick={() => deleteSemaine(confirmDeleteSemaine)}
+                className="flex-1 bg-red-500 text-white rounded-lg py-2 text-sm font-medium">Supprimer</button>
+              <button onClick={() => setConfirmDeleteSemaine(null)}
+                className="flex-1 border border-gray-200 rounded-lg py-2 text-sm text-gray-600">Annuler</button>
             </div>
           </div>
         </div>
@@ -241,13 +306,14 @@ export default function CoachBlocEditor() {
       <div className="flex items-center gap-3 mb-4 flex-wrap">
         <Link to={`/coach/athlete/${bloc?.athlete_id}`} className="text-sm text-gray-400 hover:text-gray-700">← Retour</Link>
         <h1 className="text-xl font-semibold flex-1">{bloc?.name} — Programme</h1>
-        {/* Options colonnes */}
         <div className="flex gap-2">
-          <button onClick={() => toggleBlocOption('show_charge_indicative', !bloc?.show_charge_indicative)}
+          <button
+            onClick={() => toggleBlocOption('show_charge_indicative', !bloc?.show_charge_indicative)}
             className={`text-xs px-3 py-1.5 rounded-lg border transition-colors ${bloc?.show_charge_indicative ? 'bg-brand-600 text-white border-brand-600' : 'border-gray-200 text-gray-500 hover:border-gray-300'}`}>
             Charge indic.
           </button>
-          <button onClick={() => toggleBlocOption('show_rpe', !bloc?.show_rpe)}
+          <button
+            onClick={() => toggleBlocOption('show_rpe', !bloc?.show_rpe)}
             className={`text-xs px-3 py-1.5 rounded-lg border transition-colors ${bloc?.show_rpe ? 'bg-brand-600 text-white border-brand-600' : 'border-gray-200 text-gray-500 hover:border-gray-300'}`}>
             RPE
           </button>
@@ -256,7 +322,7 @@ export default function CoachBlocEditor() {
 
       {hasSemainesSuivantes && (
         <div className="mb-4 bg-amber-50 border border-amber-200 rounded-lg px-4 py-2 text-xs text-amber-700">
-          ✏️ Modifications en S{activeSemaine?.numero} propagées sur S{activeSemaine?.numero + 1}→S{semaines[semaines.length-1]?.numero} (sauf indications)
+          ✏️ Modifications en S{activeSemaine?.numero} propagées sur S{activeSemaine?.numero + 1}→S{semaines[semaines.length - 1]?.numero} (sauf indications)
         </div>
       )}
 
@@ -273,7 +339,8 @@ export default function CoachBlocEditor() {
             </button>
           </div>
         ))}
-        <button onClick={addSemaine} className="px-3 py-1.5 rounded-lg text-sm border border-dashed border-gray-300 text-gray-400 hover:border-brand-400 hover:text-brand-600">
+        <button onClick={addSemaine}
+          className="px-3 py-1.5 rounded-lg text-sm border border-dashed border-gray-300 text-gray-400 hover:border-brand-400 hover:text-brand-600">
           + Semaine
         </button>
       </div>
@@ -296,6 +363,7 @@ export default function CoachBlocEditor() {
           {seances.filter(s => s.nom === 'Bonus').map(seance => (
             <BonusEditor key={seance.id} seance={seance}
               onAdd={() => addActiviteBonus(seance.id)}
+              onConfirmAdd={(nom) => confirmAddActiviteBonus(seance.id, nom)}
               onUpdate={updateActiviteBonus}
               onDelete={deleteActiviteBonus}
             />
@@ -311,12 +379,13 @@ export default function CoachBlocEditor() {
 }
 
 function CreateBlocForm({ onSubmit }) {
-  const [nbSemaines, setNbSemaines] = useState(4)
+  const [nbSemaines, setNbSemaines]   = useState(4)
   const [nomsSeances, setNomsSeances] = useState(['Jour 1', 'Jour 2', 'Jour 3', 'Jour 4'])
-  const [saving, setSaving] = useState(false)
+  const [saving, setSaving]           = useState(false)
 
   async function handleSubmit(e) {
-    e.preventDefault(); setSaving(true)
+    e.preventDefault()
+    setSaving(true)
     await onSubmit({ nomsSeances: nomsSeances.filter(n => n.trim()), nbSemaines })
     setSaving(false)
   }
@@ -328,7 +397,7 @@ function CreateBlocForm({ onSubmit }) {
         <div>
           <label className="text-sm font-medium text-gray-700 block mb-2">Nombre de semaines</label>
           <div className="flex gap-2 flex-wrap">
-            {[2,3,4,5,6,8,10,12].map(n => (
+            {[2, 3, 4, 5, 6, 8, 10, 12].map(n => (
               <button key={n} type="button" onClick={() => setNbSemaines(n)}
                 className={`w-12 h-10 rounded-lg text-sm font-medium ${nbSemaines === n ? 'bg-brand-600 text-white' : 'bg-gray-50 text-gray-600 border border-gray-200'}`}>
                 {n}
@@ -342,17 +411,29 @@ function CreateBlocForm({ onSubmit }) {
           <div className="space-y-2">
             {nomsSeances.map((nom, i) => (
               <div key={i} className="flex gap-2 items-center">
-                <input value={nom} onChange={e => setNomsSeances(s => s.map((n, idx) => idx === i ? e.target.value : n))}
-                  className="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400" />
-                {nomsSeances.length > 1 && <button type="button" onClick={() => setNomsSeances(s => s.filter((_, idx) => idx !== i))} className="text-gray-300 hover:text-red-400 text-lg">×</button>}
+                <input value={nom}
+                  onChange={e => setNomsSeances(s => s.map((n, idx) => idx === i ? e.target.value : n))}
+                  className="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400"
+                />
+                {nomsSeances.length > 1 && (
+                  <button type="button"
+                    onClick={() => setNomsSeances(s => s.filter((_, idx) => idx !== i))}
+                    className="text-gray-300 hover:text-red-400 text-lg">×</button>
+                )}
               </div>
             ))}
           </div>
-          <button type="button" onClick={() => setNomsSeances(s => [...s, `Jour ${s.length + 1}`])}
-            className="mt-2 text-sm text-brand-600 hover:text-brand-800 font-medium">+ Ajouter une séance</button>
+          <button type="button"
+            onClick={() => setNomsSeances(s => [...s, `Jour ${s.length + 1}`])}
+            className="mt-2 text-sm text-brand-600 hover:text-brand-800 font-medium">
+            + Ajouter une séance
+          </button>
         </div>
-        <div className="bg-gray-50 rounded-lg p-3 text-xs text-gray-500">Une séance <strong>Bonus</strong> sera ajoutée automatiquement.</div>
-        <button type="submit" disabled={saving || nomsSeances.filter(n => n.trim()).length === 0}
+        <div className="bg-gray-50 rounded-lg p-3 text-xs text-gray-500">
+          Une séance <strong>Bonus</strong> sera ajoutée automatiquement.
+        </div>
+        <button type="submit"
+          disabled={saving || nomsSeances.filter(n => n.trim()).length === 0}
           className="w-full bg-brand-600 text-white rounded-lg py-2.5 text-sm font-medium hover:bg-brand-700 disabled:opacity-50">
           {saving ? 'Génération…' : `Générer ${nbSemaines} semaines →`}
         </button>
@@ -362,8 +443,8 @@ function CreateBlocForm({ onSubmit }) {
 }
 
 function SeanceEditor({ seance, showChargeIndicative, showRpe, getExosPourMuscle, onAddExercice, onUpdateExercice, onDeleteExercice, onAddCustomExo, onDeleteSeance, onUpdateNom }) {
-  const [editingNom, setEditingNom] = useState(false)
-  const [nom, setNom]               = useState(seance.nom)
+  const [editingNom, setEditingNom]   = useState(false)
+  const [nom, setNom]                 = useState(seance.nom)
   const [confirmDelete, setConfirmDelete] = useState(false)
 
   function handleNomBlur() {
@@ -371,16 +452,18 @@ function SeanceEditor({ seance, showChargeIndicative, showRpe, getExosPourMuscle
     setEditingNom(false)
   }
 
-  // Colonnes dynamiques selon options bloc
   const totalCols = 10 + (showChargeIndicative ? 1 : 0) + (showRpe ? 1 : 0)
 
   return (
     <div className="bg-white border border-gray-100 rounded-xl overflow-hidden">
       <div className="bg-gray-50 border-b border-gray-100 px-5 py-3 flex items-center justify-between">
         {editingNom ? (
-          <input autoFocus value={nom} onChange={e => setNom(e.target.value)}
-            onBlur={handleNomBlur} onKeyDown={e => e.key === 'Enter' && handleNomBlur()}
-            className="flex-1 bg-white border border-brand-300 rounded px-2 py-1 text-sm font-medium focus:outline-none focus:ring-1 focus:ring-brand-400 mr-4" />
+          <input autoFocus value={nom}
+            onChange={e => setNom(e.target.value)}
+            onBlur={handleNomBlur}
+            onKeyDown={e => e.key === 'Enter' && handleNomBlur()}
+            className="flex-1 bg-white border border-brand-300 rounded px-2 py-1 text-sm font-medium focus:outline-none focus:ring-1 focus:ring-brand-400 mr-4"
+          />
         ) : (
           <button onClick={() => { setNom(seance.nom); setEditingNom(true) }}
             className="text-sm font-medium text-gray-800 hover:text-brand-600 group flex items-center gap-2">
@@ -420,24 +503,26 @@ function SeanceEditor({ seance, showChargeIndicative, showRpe, getExosPourMuscle
             onAddCustomExo={onAddCustomExo}
           />
         ))}
-        <button onClick={onAddExercice} className="mt-1 text-sm text-brand-600 hover:text-brand-800 font-medium">+ Ajouter un exercice</button>
+        <button onClick={onAddExercice} className="mt-1 text-sm text-brand-600 hover:text-brand-800 font-medium">
+          + Ajouter un exercice
+        </button>
       </div>
     </div>
   )
 }
 
 function ExerciceRow({ exercice, showChargeIndicative, showRpe, totalCols, getExosPourMuscle, onUpdate, onDelete, onAddCustomExo }) {
-  const [muscle, setMuscle]                   = useState(exercice.muscle || '')
-  const [nom, setNom]                         = useState(exercice.nom || '')
-  const [sets, setSets]                       = useState(exercice.sets || 3)
-  const [repRange, setRepRange]               = useState(exercice.rep_range || '8-10')
-  const [repos, setRepos]                     = useState(exercice.repos || "2'")
+  const [muscle, setMuscle]                     = useState(exercice.muscle || '')
+  const [nom, setNom]                           = useState(exercice.nom || '')
+  const [sets, setSets]                         = useState(exercice.sets || 3)
+  const [repRange, setRepRange]                 = useState(exercice.rep_range || '8-10')
+  const [repos, setRepos]                       = useState(exercice.repos || "2'")
   const [chargeIndicative, setChargeIndicative] = useState(exercice.charge_indicative || '')
-  const [rpe, setRpe]                         = useState(exercice.rpe_cible || '')
-  const [indication, setIndication]           = useState(exercice.indications || '')
-  const [unilateral, setUnilateral]           = useState(exercice.unilateral || false)
-  const [addingExo, setAddingExo]             = useState(false)
-  const [newExoName, setNewExoName]           = useState('')
+  const [rpe, setRpe]                           = useState(exercice.rpe_cible || '')
+  const [indication, setIndication]             = useState(exercice.indications || '')
+  const [unilateral, setUnilateral]             = useState(exercice.unilateral || false)
+  const [addingExo, setAddingExo]               = useState(false)
+  const [newExoName, setNewExoName]             = useState('')
 
   const exosDispo = muscle ? getExosPourMuscle(muscle) : []
 
@@ -478,9 +563,12 @@ function ExerciceRow({ exercice, showChargeIndicative, showRpe, totalCols, getEx
         <div className="col-span-2">
           {addingExo ? (
             <div className="flex gap-1">
-              <input autoFocus value={newExoName} onChange={e => setNewExoName(e.target.value)}
-                onKeyDown={e => e.key === 'Enter' && handleAddCustom()} placeholder="Nom…"
-                className="flex-1 border border-brand-300 rounded px-2 py-1.5 text-sm focus:outline-none bg-white" />
+              <input autoFocus value={newExoName}
+                onChange={e => setNewExoName(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && handleAddCustom()}
+                placeholder="Nom…"
+                className="flex-1 border border-brand-300 rounded px-2 py-1.5 text-sm focus:outline-none bg-white"
+              />
               <button onClick={handleAddCustom} className="text-brand-600 text-sm font-medium px-1">✓</button>
               <button onClick={() => setAddingExo(false)} className="text-gray-400 text-sm px-1">✕</button>
             </div>
@@ -494,12 +582,17 @@ function ExerciceRow({ exercice, showChargeIndicative, showRpe, totalCols, getEx
         </div>
         <div>
           <input type="number" value={sets} min={1} max={10}
-            onChange={e => setSets(e.target.value)} onBlur={() => onUpdate('sets', sets)}
-            className={sel + " text-center"} />
+            onChange={e => setSets(e.target.value)}
+            onBlur={() => onUpdate('sets', sets)}
+            className={sel + " text-center"}
+          />
         </div>
         <div>
-          <input value={repRange} onChange={e => setRepRange(e.target.value)} onBlur={() => onUpdate('rep_range', repRange)}
-            placeholder="8-10" className={sel} />
+          <input value={repRange}
+            onChange={e => setRepRange(e.target.value)}
+            onBlur={() => onUpdate('rep_range', repRange)}
+            placeholder="8-10" className={sel}
+          />
         </div>
         <div>
           <select value={repos} onChange={e => { setRepos(e.target.value); onUpdate('repos', e.target.value) }} className={sel}>
@@ -508,9 +601,11 @@ function ExerciceRow({ exercice, showChargeIndicative, showRpe, totalCols, getEx
         </div>
         {showChargeIndicative && (
           <div className="flex items-center gap-1">
-            <input type="number" value={chargeIndicative} onChange={e => setChargeIndicative(e.target.value)}
+            <input type="number" value={chargeIndicative}
+              onChange={e => setChargeIndicative(e.target.value)}
               onBlur={() => onUpdate('charge_indicative', chargeIndicative)}
-              placeholder="kg" className={sel} />
+              placeholder="kg" className={sel}
+            />
             <button onClick={toggleUnilateral} title="Unilatéral (×2 pour tonnage)"
               className={`text-xs px-1 py-1.5 rounded border transition-colors flex-shrink-0 ${unilateral ? 'bg-brand-600 text-white border-brand-600' : 'bg-gray-50 text-gray-400 border-gray-100'}`}>
               ×2
@@ -518,19 +613,23 @@ function ExerciceRow({ exercice, showChargeIndicative, showRpe, totalCols, getEx
           </div>
         )}
         {showRpe && (
-          <input value={rpe} onChange={e => setRpe(e.target.value)} onBlur={() => onUpdate('rpe_cible', rpe)}
-            placeholder="@8" className={sel} />
+          <input value={rpe}
+            onChange={e => setRpe(e.target.value)}
+            onBlur={() => onUpdate('rpe_cible', rpe)}
+            placeholder="@8" className={sel}
+          />
         )}
         <div className="col-span-2 flex items-start gap-1">
-          <textarea value={indication} onChange={e => setIndication(e.target.value)}
+          <textarea value={indication}
+            onChange={e => setIndication(e.target.value)}
             onBlur={() => onUpdate('indications', indication)}
             placeholder="Note coach…" rows={1}
             className="flex-1 border border-gray-100 rounded px-2 py-1.5 text-xs text-gray-600 focus:outline-none focus:ring-1 focus:ring-amber-300 bg-amber-50/30 resize-none overflow-hidden placeholder-gray-300"
-            onInput={e => { e.target.style.height = 'auto'; e.target.style.height = e.target.scrollHeight + 'px' }} />
+            onInput={e => { e.target.style.height = 'auto'; e.target.style.height = e.target.scrollHeight + 'px' }}
+          />
           <button onClick={onDelete} className="text-gray-300 hover:text-red-400 text-lg leading-none mt-0.5 flex-shrink-0">×</button>
         </div>
       </div>
-      {/* Badge unilatéral si pas show_charge_indicative */}
       {!showChargeIndicative && (
         <div className="flex items-center gap-2">
           <button onClick={toggleUnilateral}
@@ -543,48 +642,77 @@ function ExerciceRow({ exercice, showChargeIndicative, showRpe, totalCols, getEx
   )
 }
 
-// Activités bonus avec édition complète
-function BonusEditor({ seance, onAdd, onUpdate, onDelete }) {
-  const [activites, setActivites] = useState(seance.activites_bonus || [])
-  const [editingId, setEditingId] = useState(null)
-  const [editVal, setEditVal] = useState('')
+// BonusEditor avec input inline (remplace window.prompt)
+function BonusEditor({ seance, onAdd, onConfirmAdd, onUpdate, onDelete }) {
+  const [activites, setActivites]   = useState(seance.activites_bonus || [])
+  const [editingId, setEditingId]   = useState(null)
+  const [editVal, setEditVal]       = useState('')
+  const [adding, setAdding]         = useState(false)
+  const [newNom, setNewNom]         = useState('')
 
   useEffect(() => { setActivites(seance.activites_bonus || []) }, [seance])
 
   function startEdit(act) { setEditingId(act.id); setEditVal(act.nom) }
 
   async function saveEdit(id) {
-    if (editVal.trim()) { await onUpdate(id, 'nom', editVal.trim()); setActivites(prev => prev.map(a => a.id === id ? { ...a, nom: editVal.trim() } : a)) }
+    if (editVal.trim()) {
+      await onUpdate(id, 'nom', editVal.trim())
+      setActivites(prev => prev.map(a => a.id === id ? { ...a, nom: editVal.trim() } : a))
+    }
     setEditingId(null)
+  }
+
+  async function handleAdd() {
+    await onConfirmAdd(newNom)
+    setNewNom('')
+    setAdding(false)
   }
 
   return (
     <div className="bg-white border border-gray-100 rounded-xl overflow-hidden">
       <div className="bg-gray-50 border-b border-gray-100 px-5 py-3 flex items-center justify-between">
         <h3 className="text-sm font-medium text-gray-800">Activités bonus</h3>
-        <button onClick={onAdd} className="text-xs text-brand-600 hover:text-brand-800 font-medium">+ Ajouter</button>
+        <button onClick={() => setAdding(true)} className="text-xs text-brand-600 hover:text-brand-800 font-medium">+ Ajouter</button>
       </div>
       <div className="p-4 space-y-2">
         {activites.sort((a, b) => a.ordre - b.ordre).map(act => (
           <div key={act.id} className="flex items-center gap-2">
             {editingId === act.id ? (
               <>
-                <input autoFocus value={editVal} onChange={e => setEditVal(e.target.value)}
-                  onBlur={() => saveEdit(act.id)} onKeyDown={e => e.key === 'Enter' && saveEdit(act.id)}
-                  className="flex-1 border border-brand-300 rounded px-2 py-1 text-sm focus:outline-none" />
+                <input autoFocus value={editVal}
+                  onChange={e => setEditVal(e.target.value)}
+                  onBlur={() => saveEdit(act.id)}
+                  onKeyDown={e => e.key === 'Enter' && saveEdit(act.id)}
+                  className="flex-1 border border-brand-300 rounded px-2 py-1 text-sm focus:outline-none"
+                />
                 <button onClick={() => setEditingId(null)} className="text-xs text-gray-400">Annuler</button>
               </>
             ) : (
               <>
                 <span className="flex-1 text-sm text-gray-700">{act.nom}</span>
                 <button onClick={() => startEdit(act)} className="text-xs text-gray-400 hover:text-brand-500">✎</button>
-                <button onClick={() => { onDelete(act.id); setActivites(prev => prev.filter(a => a.id !== act.id)) }}
+                <button
+                  onClick={() => { onDelete(act.id); setActivites(prev => prev.filter(a => a.id !== act.id)) }}
                   className="text-xs text-gray-300 hover:text-red-400">×</button>
               </>
             )}
           </div>
         ))}
-        {activites.length === 0 && <p className="text-xs text-gray-400">Aucune activité. Clique sur + Ajouter.</p>}
+        {adding && (
+          <div className="flex gap-2 mt-1">
+            <input autoFocus value={newNom}
+              onChange={e => setNewNom(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') handleAdd(); if (e.key === 'Escape') { setAdding(false); setNewNom('') } }}
+              placeholder="Nom de l'activité…"
+              className="flex-1 border border-brand-300 rounded px-2 py-1.5 text-sm focus:outline-none"
+            />
+            <button onClick={handleAdd} className="text-brand-600 text-sm font-medium px-2">✓</button>
+            <button onClick={() => { setAdding(false); setNewNom('') }} className="text-gray-400 text-sm px-1">✕</button>
+          </div>
+        )}
+        {activites.length === 0 && !adding && (
+          <p className="text-xs text-gray-400">Aucune activité. Clique sur + Ajouter.</p>
+        )}
       </div>
     </div>
   )
