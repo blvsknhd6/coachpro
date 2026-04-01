@@ -7,6 +7,7 @@ import { usePreferences } from '../../hooks/usePreferences'
 import Layout from '../../components/shared/Layout'
 import WidgetConfig from '../../components/shared/WidgetConfig'
 import { findActiveSemaine } from '../../lib/semaine'
+import { metricColor, computeAverages } from '../../lib/tracking'
 
 export default function AthleteHome() {
   const { profile } = useAuth()
@@ -15,83 +16,73 @@ export default function AthleteHome() {
   const { isWidgetEnabled, prefs } = usePreferences()
   const [showConfig, setShowConfig] = useState(false)
 
-  const [nextSeance, setNextSeance]     = useState(null)
-  const [streak, setStreak]             = useState(0)
-  const [objectifs, setObjectifs]       = useState(null)
+  const [nextSeance, setNextSeance]       = useState(null)
+  const [streak, setStreak]               = useState(0)
+  const [objectifs, setObjectifs]         = useState(null)
   const [activeSemaine, setActiveSemaine] = useState(null)
-  const [seances, setSeances]           = useState([])
-  const [loading, setLoading]           = useState(true)
+  const [seances, setSeances]             = useState([])
+  const [loading, setLoading]             = useState(true)
+  const [activeBlocId, setActiveBlocId]   = useState(null)
 
-  const [repasInput, setRepasInput]     = useState('')
-  const [repasJour, setRepasJour]       = useState([])
+  const [repasInput, setRepasInput]       = useState('')
+  const [repasJour, setRepasJour]         = useState([])
   const [analyzeLoading, setAnalyzeLoading] = useState(false)
-  const [showFavoris, setShowFavoris]   = useState(false)
-  const [favoris, setFavoris]           = useState([])
-  const [totalMacros, setTotalMacros]   = useState({ kcal: 0, proteines: 0, glucides: 0, lipides: 0 })
+  const [showFavoris, setShowFavoris]     = useState(false)
+  const [favoris, setFavoris]             = useState([])
+  const [totalMacros, setTotalMacros]     = useState({ kcal: 0, proteines: 0, glucides: 0, lipides: 0 })
 
-  const today = new Date().toISOString().split('T')[0]
+  const [suiviSemaine, setSuiviSemaine]   = useState(null)
+
+  const today      = new Date().toISOString().split('T')[0]
   const accentBtn  = theme.isFemme ? 'bg-pink-600 hover:bg-pink-700 text-white' : 'bg-brand-600 hover:bg-brand-700 text-white'
   const accentText = theme.isFemme ? 'text-pink-600' : 'text-brand-600'
   const accentBg   = theme.isFemme ? 'bg-pink-600' : 'bg-brand-600'
+  const bornes     = objectifs?.bornes || {}
 
   useEffect(() => { if (profile) fetchAll() }, [profile])
 
   async function fetchAll() {
     const [blocsRes, streakRes] = await Promise.all([
-      supabase
-        .from('blocs')
-        .select('id, name, objectifs_bloc(*)')
-        .eq('athlete_id', profile.id)
-        .order('created_at', { ascending: false })
-        .limit(1),
-      supabase
-        .from('data_tracking')
-        .select('date')
-        .eq('athlete_id', profile.id)
-        .eq('sport_fait', true)
-        .order('date', { ascending: false })
-        .limit(30),
+      supabase.from('blocs').select('id, name, objectifs_bloc(*)')
+        .eq('athlete_id', profile.id).order('created_at', { ascending: false }).limit(1),
+      supabase.from('data_tracking').select('date')
+        .eq('athlete_id', profile.id).eq('sport_fait', true)
+        .order('date', { ascending: false }).limit(30),
     ])
 
     const blocs = blocsRes.data
     if (blocs?.[0]) {
+      setActiveBlocId(blocs[0].id)
       const obj = Array.isArray(blocs[0].objectifs_bloc) ? blocs[0].objectifs_bloc[0] : blocs[0].objectifs_bloc
       setObjectifs(obj)
       fetchSemaines(blocs[0].id)
+      fetchSuiviSemaine(blocs[0].id)
     } else {
       setLoading(false)
     }
 
-    // Calcul streak
     let s = 0
     const dates = (streakRes.data || []).map(t => t.date).sort().reverse()
     for (let i = 0; i < dates.length; i++) {
-      const expected = new Date()
-      expected.setDate(expected.getDate() - i)
+      const expected = new Date(); expected.setDate(expected.getDate() - i)
       if (dates[i] === expected.toISOString().split('T')[0]) s++; else break
     }
     setStreak(s)
-
     fetchRepasJour()
     fetchFavoris()
   }
 
   async function fetchSemaines(blocId) {
-    const { data: semaines } = await supabase
-      .from('semaines')
-      .select('id, numero')
-      .eq('bloc_id', blocId)
-      .order('numero')
+    const { data: semaines } = await supabase.from('semaines').select('id, numero')
+      .eq('bloc_id', blocId).order('numero')
     if (!semaines?.length) { setLoading(false); return }
 
     const activeSem = await findActiveSemaine(semaines, profile.id)
     setActiveSemaine(activeSem)
 
-    const { data: sc } = await supabase
-      .from('seances')
+    const { data: sc } = await supabase.from('seances')
       .select('id, nom, ordre, exercices(id, series_realisees(id))')
-      .eq('semaine_id', activeSem.id)
-      .order('ordre')
+      .eq('semaine_id', activeSem.id).order('ordre')
     setSeances(sc || [])
 
     const incomplete = (sc || []).find(s =>
@@ -102,13 +93,18 @@ export default function AthleteHome() {
     setLoading(false)
   }
 
+  async function fetchSuiviSemaine(blocId) {
+    const { data } = await supabase.from('data_tracking').select('*')
+      .eq('athlete_id', profile.id).eq('bloc_id', blocId)
+      .order('date', { ascending: false }).limit(7)
+    if (!data?.length) return
+    const avgs = computeAverages(data, ['kcal', 'proteines', 'glucides', 'lipides', 'sommeil', 'pas', 'stress'])
+    setSuiviSemaine({ avgs, sportJours: data.filter(d => d.sport_fait).length, nbJours: data.length })
+  }
+
   async function fetchRepasJour() {
-    const { data } = await supabase
-      .from('repas')
-      .select('*')
-      .eq('athlete_id', profile.id)
-      .eq('date', today)
-      .order('created_at')
+    const { data } = await supabase.from('repas').select('*')
+      .eq('athlete_id', profile.id).eq('date', today).order('created_at')
     const list = data || []
     setRepasJour(list)
     recalcTotals(list)
@@ -126,11 +122,7 @@ export default function AthleteHome() {
   }
 
   async function fetchFavoris() {
-    const { data } = await supabase
-      .from('repas_favoris')
-      .select('*')
-      .eq('athlete_id', profile.id)
-      .order('nom')
+    const { data } = await supabase.from('repas_favoris').select('*').eq('athlete_id', profile.id).order('nom')
     setFavoris(data || [])
   }
 
@@ -145,8 +137,7 @@ export default function AthleteHome() {
           model: 'claude-sonnet-4-20250514',
           max_tokens: 300,
           system: `Expert nutrition. Réponds UNIQUEMENT avec du JSON valide, sans markdown:
-{"kcal":number,"proteines":number,"glucides":number,"lipides":number}
-Estimation basée sur des portions standard si non précisé.`,
+{"kcal":number,"proteines":number,"glucides":number,"lipides":number}`,
           messages: [{ role: 'user', content: repasInput }]
         })
       })
@@ -154,92 +145,44 @@ Estimation basée sur des portions standard si non précisé.`,
       const text = data.content?.[0]?.text || '{}'
       const macros = JSON.parse(text.replace(/```[a-z]*|```/g, '').trim())
 
-      const newRepas = {
-        athlete_id: profile.id,
-        date: today,
-        description: repasInput.trim(),
+      await supabase.from('repas').insert({
+        athlete_id: profile.id, date: today, description: repasInput.trim(),
         kcal:      Math.round(macros.kcal      || 0),
         proteines: Math.round((macros.proteines || 0) * 10) / 10,
         glucides:  Math.round((macros.glucides  || 0) * 10) / 10,
         lipides:   Math.round((macros.lipides   || 0) * 10) / 10,
-      }
-
-      await supabase.from('repas').insert(newRepas)
+      })
       setRepasInput('')
-
-      // Recalcul complet des totaux après ajout (fix: on refetch plutôt que de calculer à la main)
-      const { data: allRepas } = await supabase
-        .from('repas')
-        .select('*')
-        .eq('athlete_id', profile.id)
-        .eq('date', today)
-        .order('created_at')
+      const { data: allRepas } = await supabase.from('repas').select('*')
+        .eq('athlete_id', profile.id).eq('date', today).order('created_at')
       const list = allRepas || []
       setRepasJour(list)
       const newTotals = recalcTotals(list)
-
-      // Sync data_tracking avec les totaux corrects
-      const { data: blocs } = await supabase
-        .from('blocs')
-        .select('id')
-        .eq('athlete_id', profile.id)
-        .order('created_at', { ascending: false })
-        .limit(1)
-      const bloc_id = blocs?.[0]?.id
-      if (bloc_id) {
+      if (activeBlocId) {
         await supabase.from('data_tracking').upsert({
-          athlete_id: profile.id,
-          date: today,
-          bloc_id,
+          athlete_id: profile.id, date: today, bloc_id: activeBlocId,
           kcal:      Math.round(newTotals.kcal),
           proteines: Math.round(newTotals.proteines * 10) / 10,
           glucides:  Math.round(newTotals.glucides  * 10) / 10,
           lipides:   Math.round(newTotals.lipides   * 10) / 10,
         }, { onConflict: 'athlete_id,date' })
       }
-    } catch (e) {
-      console.error('analyzeRepas:', e)
-    }
+    } catch (e) { console.error('analyzeRepas:', e) }
     setAnalyzeLoading(false)
   }
 
-  async function addFavori(repas) {
-    await supabase.from('repas').insert({
-      athlete_id: profile.id,
-      date: today,
-      description: repas.description,
-      kcal: repas.kcal,
-      proteines: repas.proteines,
-      glucides: repas.glucides,
-      lipides: repas.lipides,
-    })
-    await fetchRepasJour()
-    setShowFavoris(false)
+  async function addFavori(f) {
+    await supabase.from('repas').insert({ athlete_id: profile.id, date: today, description: f.description, kcal: f.kcal, proteines: f.proteines, glucides: f.glucides, lipides: f.lipides })
+    await fetchRepasJour(); setShowFavoris(false)
   }
-
   async function saveAsFavori(repas) {
-    const nom = window.prompt('Nom de ce repas favori ?', repas.description.slice(0, 40))
+    const nom = window.prompt('Nom ?', repas.description.slice(0, 40))
     if (!nom) return
-    await supabase.from('repas_favoris').insert({
-      athlete_id: profile.id,
-      nom,
-      description: repas.description,
-      kcal: repas.kcal,
-      proteines: repas.proteines,
-      glucides: repas.glucides,
-      lipides: repas.lipides,
-    })
+    await supabase.from('repas_favoris').insert({ athlete_id: profile.id, nom, description: repas.description, kcal: repas.kcal, proteines: repas.proteines, glucides: repas.glucides, lipides: repas.lipides })
     await fetchFavoris()
   }
-
-  async function deleteRepas(id) {
-    await supabase.from('repas').delete().eq('id', id)
-    await fetchRepasJour()
-  }
-  async function deleteFavori(id) {
-    await supabase.from('repas_favoris').delete().eq('id', id)
-    await fetchFavoris()
-  }
+  async function deleteRepas(id) { await supabase.from('repas').delete().eq('id', id); await fetchRepasJour() }
+  async function deleteFavori(id) { await supabase.from('repas_favoris').delete().eq('id', id); await fetchFavoris() }
 
   const MacroBar = ({ label, val, target, color }) => {
     const pct = target && val ? Math.min(100, Math.round((val / target) * 100)) : 0
@@ -247,13 +190,26 @@ Estimation basée sur des portions standard si non précisé.`,
       <div>
         <div className="flex justify-between text-xs mb-1">
           <span className="text-gray-500">{label}</span>
-          <span className="text-gray-700 font-medium">
-            {Math.round(val || 0)}{label === 'Kcal' ? '' : 'g'} / {target || '—'}{target && label !== 'Kcal' ? 'g' : ''}
-          </span>
+          <span className="text-gray-700 font-medium">{Math.round(val || 0)}{label === 'Kcal' ? '' : 'g'} / {target || '—'}{target && label !== 'Kcal' ? 'g' : ''}</span>
         </div>
         <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
           <div className={`h-full ${color} rounded-full`} style={{ width: `${pct}%` }} />
         </div>
+      </div>
+    )
+  }
+
+  // Métrique du widget suivi avec couleur
+  const SuiviVal = ({ label, value, bilanKey, unit = '', isInt = true }) => {
+    if (value == null) return null
+    const displayed = isInt ? Math.round(value) : parseFloat(value).toFixed(1)
+    const color = metricColor(value, bilanKey, objectifs, bornes)
+    return (
+      <div className="flex flex-col items-center min-w-0">
+        <span className={`text-sm font-semibold tabular-nums ${color || 'text-gray-800'}`}>
+          {bilanKey === 'pas' ? Math.round(value).toLocaleString('fr') : displayed}{unit}
+        </span>
+        <span className="text-xs text-gray-400 mt-0.5 truncate">{label}</span>
       </div>
     )
   }
@@ -276,17 +232,15 @@ Estimation basée sur des portions standard si non précisé.`,
       </div>
 
       {loading ? (
-        <div className="space-y-3">
-          {[1, 2, 3].map(i => <div key={i} className="h-20 bg-gray-100 rounded-xl animate-pulse" />)}
-        </div>
+        <div className="space-y-3">{[1, 2, 3].map(i => <div key={i} className="h-20 bg-gray-100 rounded-xl animate-pulse" />)}</div>
       ) : (
         <div className="space-y-3">
+
           {isWidgetEnabled('next_seance') && nextSeance && (
             <div className={`${accentBg} text-white rounded-2xl p-4`}>
               <p className="text-xs font-medium opacity-70 mb-0.5">Prochaine séance</p>
               <p className="text-base font-semibold mb-2">{nextSeance.seance.nom}</p>
-              <button
-                onClick={() => navigate(`/athlete/seance/${nextSeance.seance.id}/semaine/${nextSeance.semaineId}`)}
+              <button onClick={() => navigate(`/athlete/seance/${nextSeance.seance.id}/semaine/${nextSeance.semaineId}`)}
                 className="bg-white px-3 py-1.5 rounded-xl text-xs font-medium hover:opacity-90"
                 style={{ color: theme.isFemme ? '#db2777' : '#4f46e5' }}>
                 Commencer
@@ -313,6 +267,35 @@ Estimation basée sur des portions standard si non précisé.`,
             </div>
           )}
 
+          {/* ── Widget Suivi du bloc ── */}
+          {isWidgetEnabled('suivi_bloc') && suiviSemaine && (
+            <div className="bg-white border border-gray-100 rounded-xl p-4">
+              <div className="flex items-center justify-between mb-3">
+                <p className="text-sm font-medium text-gray-700">Suivi — 7 derniers jours</p>
+                <Link to="/athlete/tracking" className={`text-xs ${accentText} font-medium`}>Détail →</Link>
+              </div>
+              <div className="grid grid-cols-4 gap-x-3 gap-y-2 sm:grid-cols-8">
+                {/* Sport : clé 'seances' dans bornes */}
+                <div className="flex flex-col items-center">
+                  <span className={`text-sm font-semibold ${metricColor(suiviSemaine.sportJours, 'seances', objectifs, bornes) || 'text-gray-800'}`}>
+                    {suiviSemaine.sportJours}j
+                  </span>
+                  <span className="text-xs text-gray-400 mt-0.5">Sport</span>
+                </div>
+                <SuiviVal label="Kcal"     value={suiviSemaine.avgs.kcal}      bilanKey="kcal"      />
+                <SuiviVal label="Prot."    value={suiviSemaine.avgs.proteines}  bilanKey="proteines" unit="g" />
+                <SuiviVal label="Gluc."    value={suiviSemaine.avgs.glucides}   bilanKey="glucides"  unit="g" />
+                <SuiviVal label="Lip."     value={suiviSemaine.avgs.lipides}    bilanKey="lipides"   unit="g" />
+                <SuiviVal label="Sommeil"  value={suiviSemaine.avgs.sommeil}    bilanKey="sommeil"   unit="h"   isInt={false} />
+                <SuiviVal label="Pas"      value={suiviSemaine.avgs.pas}        bilanKey="pas"       />
+                <SuiviVal label="Stress"   value={suiviSemaine.avgs.stress}     bilanKey="stress"    unit="/10" isInt={false} />
+              </div>
+              <p className="text-xs text-gray-300 mt-2 text-right">
+                moyennes sur {suiviSemaine.nbJours} entrée{suiviSemaine.nbJours > 1 ? 's' : ''}
+              </p>
+            </div>
+          )}
+
           {isWidgetEnabled('saisie_repas') && (
             <div className="bg-white border border-gray-100 rounded-xl p-4">
               <div className="flex items-center justify-between mb-2">
@@ -322,51 +305,42 @@ Estimation basée sur des portions standard si non précisé.`,
                   Mes repas
                 </button>
               </div>
-
               {showFavoris && (
                 <div className="mb-3 space-y-1 max-h-40 overflow-y-auto">
-                  {favoris.length === 0 ? (
-                    <p className="text-xs text-gray-400 text-center py-2">Aucun repas enregistré.</p>
-                  ) : favoris.map(f => (
-                    <div key={f.id} className="flex items-center justify-between bg-gray-50 rounded-lg px-3 py-1.5">
-                      <div className="flex-1 min-w-0">
-                        <p className="text-xs font-medium text-gray-700 truncate">{f.nom}</p>
-                        <p className="text-xs text-gray-400">{f.kcal} kcal</p>
+                  {favoris.length === 0
+                    ? <p className="text-xs text-gray-400 text-center py-2">Aucun repas enregistré.</p>
+                    : favoris.map(f => (
+                      <div key={f.id} className="flex items-center justify-between bg-gray-50 rounded-lg px-3 py-1.5">
+                        <div className="flex-1 min-w-0">
+                          <p className="text-xs font-medium text-gray-700 truncate">{f.nom}</p>
+                          <p className="text-xs text-gray-400">{f.kcal} kcal</p>
+                        </div>
+                        <div className="flex gap-1 ml-2">
+                          <button onClick={() => addFavori(f)} className={`text-xs px-2 py-1 rounded-lg ${accentBtn}`}>Ajouter</button>
+                          <button onClick={() => deleteFavori(f.id)} className="text-xs text-gray-300 hover:text-red-400 px-1">×</button>
+                        </div>
                       </div>
-                      <div className="flex gap-1 ml-2">
-                        <button onClick={() => addFavori(f)} className={`text-xs px-2 py-1 rounded-lg ${accentBtn}`}>Ajouter</button>
-                        <button onClick={() => deleteFavori(f.id)} className="text-xs text-gray-300 hover:text-red-400 px-1">×</button>
-                      </div>
-                    </div>
-                  ))}
+                    ))}
                 </div>
               )}
-
               <div className="flex gap-2">
-                <input
-                  value={repasInput}
-                  onChange={e => setRepasInput(e.target.value)}
+                <input value={repasInput} onChange={e => setRepasInput(e.target.value)}
                   onKeyDown={e => e.key === 'Enter' && analyzeRepas()}
                   placeholder="Ex: 2 oeufs, 80g flocons, 200ml lait…"
                   className="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-gray-300"
                 />
-                <button
-                  onClick={analyzeRepas}
-                  disabled={analyzeLoading || !repasInput.trim()}
+                <button onClick={analyzeRepas} disabled={analyzeLoading || !repasInput.trim()}
                   className={`${accentBtn} px-3 py-2 rounded-lg text-sm font-medium disabled:opacity-50 flex-shrink-0`}>
                   {analyzeLoading ? '…' : 'OK'}
                 </button>
               </div>
-
               {repasJour.length > 0 && (
                 <div className="mt-2 space-y-1">
                   {repasJour.map(r => (
                     <div key={r.id} className="flex items-center justify-between bg-gray-50 rounded-lg px-3 py-1.5 gap-2">
                       <div className="flex-1 min-w-0">
                         <p className="text-xs text-gray-700 truncate">{r.description}</p>
-                        <p className={`text-xs font-medium mt-0.5 ${accentText}`}>
-                          {r.kcal} kcal · P{Math.round(r.proteines)}g G{Math.round(r.glucides)}g L{Math.round(r.lipides)}g
-                        </p>
+                        <p className={`text-xs font-medium mt-0.5 ${accentText}`}>{r.kcal} kcal · P{Math.round(r.proteines)}g G{Math.round(r.glucides)}g L{Math.round(r.lipides)}g</p>
                       </div>
                       <div className="flex gap-1 flex-shrink-0">
                         <button onClick={() => saveAsFavori(r)} className="text-xs text-gray-300 hover:text-amber-400">★</button>
@@ -376,9 +350,7 @@ Estimation basée sur des portions standard si non précisé.`,
                   ))}
                   <div className={`flex justify-between px-3 py-1.5 rounded-lg text-xs font-medium ${theme.isFemme ? 'bg-pink-50 text-pink-700' : 'bg-brand-50 text-brand-700'}`}>
                     <span>Total</span>
-                    <span>
-                      {Math.round(totalMacros.kcal)} kcal · P{Math.round(totalMacros.proteines)}g G{Math.round(totalMacros.glucides)}g L{Math.round(totalMacros.lipides)}g
-                    </span>
+                    <span>{Math.round(totalMacros.kcal)} kcal · P{Math.round(totalMacros.proteines)}g G{Math.round(totalMacros.glucides)}g L{Math.round(totalMacros.lipides)}g</span>
                   </div>
                 </div>
               )}

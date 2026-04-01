@@ -3,56 +3,55 @@ import { supabase } from '../lib/supabase'
 import { useAuth } from './useAuth'
 
 const DEFAULT_ATHLETE_WIDGETS = [
-  { id: 'next_seance', label: 'Prochaine séance', enabled: true },
-  { id: 'streak', label: 'Streak', enabled: true },
-  { id: 'macros_jour', label: 'Macros du jour', enabled: true },
-  { id: 'saisie_repas', label: 'Saisie repas IA', enabled: true },
-  { id: 'semaine_seances', label: 'Séances de la semaine', enabled: true },
+  { id: 'next_seance',    label: 'Prochaine séance',       enabled: true  },
+  { id: 'streak',         label: 'Streak',                  enabled: true  },
+  { id: 'macros_jour',    label: 'Macros du jour',          enabled: true  },
+  { id: 'saisie_repas',   label: 'Saisie repas IA',         enabled: true  },
+  { id: 'suivi_bloc',     label: 'Suivi du bloc (semaine)', enabled: true  },
+  { id: 'semaine_seances',label: 'Séances de la semaine',   enabled: true  },
 ]
 
 const DEFAULT_COACH_WIDGETS = [
-  { id: 'next_seance', label: 'Ma prochaine séance', enabled: true },
-  { id: 'stats_coachés', label: 'Stats coachés', enabled: true },
-  { id: 'alertes', label: 'Alertes inactivité', enabled: true },
-  { id: 'liste_coachés', label: 'Liste coachés', enabled: true },
+  { id: 'next_seance',   label: 'Ma prochaine séance',  enabled: true },
+  { id: 'stats_coachés', label: 'Stats coachés',         enabled: true },
+  { id: 'alertes',       label: 'Alertes inactivité',    enabled: true },
+  { id: 'liste_coachés', label: 'Liste coachés',         enabled: true },
 ]
 
 const DEFAULT_PROGRESSION_CONFIG = {
-  mode: 'graphe', // 'graphe' | 'tableau' | 'les_deux'
-  metric: 'tonnage', // 'tonnage' | 'series' | 'les_deux'
+  mode:          'graphe',
+  metric:        'tonnage',
   fav_exercices: [],
-  muscles_exclus: [],
+  muscles_exclus:[],
 }
 
 export function usePreferences() {
   const { profile } = useAuth()
-  const [prefs, setPrefs] = useState(null)
+  const [prefs, setPrefs]   = useState(null)
   const [loading, setLoading] = useState(true)
 
-  const isCoach = profile?.role === 'coach'
+  const isCoach      = profile?.role === 'coach'
   const defaultWidgets = isCoach ? DEFAULT_COACH_WIDGETS : DEFAULT_ATHLETE_WIDGETS
 
-  useEffect(() => {
-    if (profile) loadPrefs()
-  }, [profile])
+  useEffect(() => { if (profile) loadPrefs() }, [profile])
 
   async function loadPrefs() {
     const { data } = await supabase
-      .from('user_preferences')
-      .select('*')
-      .eq('user_id', profile.id)
-      .single()
+      .from('user_preferences').select('*').eq('user_id', profile.id).single()
 
     if (data) {
+      // Merge stored widgets with new defaults (so new widgets appear for existing users)
+      const storedIds = (data.home_widgets || []).map(w => w.id)
+      const mergedWidgets = [
+        ...(data.home_widgets || []),
+        ...defaultWidgets.filter(w => !storedIds.includes(w.id)),
+      ]
       setPrefs({
-        home_widgets: data.home_widgets?.length ? data.home_widgets : defaultWidgets,
+        home_widgets:       mergedWidgets.length ? mergedWidgets : defaultWidgets,
         progression_config: { ...DEFAULT_PROGRESSION_CONFIG, ...(data.progression_config || {}) },
       })
     } else {
-      setPrefs({
-        home_widgets: defaultWidgets,
-        progression_config: DEFAULT_PROGRESSION_CONFIG,
-      })
+      setPrefs({ home_widgets: defaultWidgets, progression_config: DEFAULT_PROGRESSION_CONFIG })
     }
     setLoading(false)
   }
@@ -61,10 +60,10 @@ export function usePreferences() {
     const newPrefs = { ...prefs, ...updates }
     setPrefs(newPrefs)
     await supabase.from('user_preferences').upsert({
-      user_id: profile.id,
-      home_widgets: newPrefs.home_widgets,
+      user_id:            profile.id,
+      home_widgets:       newPrefs.home_widgets,
       progression_config: newPrefs.progression_config,
-      updated_at: new Date().toISOString(),
+      updated_at:         new Date().toISOString(),
     }, { onConflict: 'user_id' })
   }
 
