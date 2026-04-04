@@ -4,7 +4,6 @@ import { useAuth } from './useAuth'
 
 const DEFAULT_ATHLETE_WIDGETS = [
   { id: 'next_seance',    label: 'Prochaine séance',                enabled: true  },
-  { id: 'streak',         label: 'Streak',                          enabled: true  },
   { id: 'macros_jour',    label: 'Macros du jour',                  enabled: true  },
   { id: 'saisie_repas',   label: 'Saisie repas IA',                 enabled: true  },
   { id: 'suivi_bloc',     label: 'Suivi du bloc (7 derniers jours)',enabled: true  },
@@ -14,8 +13,11 @@ const DEFAULT_ATHLETE_WIDGETS = [
 const DEFAULT_COACH_WIDGETS = [
   { id: 'next_seance',   label: 'Ma prochaine séance',              enabled: true  },
   { id: 'suivi_perso',   label: 'Mon suivi (7 derniers jours)',     enabled: true  },
-  { id: 'macros_perso',  label: 'Mes macros du jour',               enabled: true  },
+  { id: 'saisie_repas',   label: 'Saisie repas IA',                 enabled: true  },
+  { id: 'macros_jour',    label: 'Macros du jour',                  enabled: true  },
   { id: 'liste_coachés', label: 'Liste coachés',                    enabled: true  },
+  { id: 'semaine_seances',label: 'Séances de la semaine',           enabled: true  },
+
 ]
 
 const DEPRECATED_COACH_WIDGETS = ['stats_coachés', 'alertes']
