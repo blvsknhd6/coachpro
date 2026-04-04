@@ -396,4 +396,153 @@ export default function CoachHome() {
                       : isInt ? Math.round(val) : parseFloat(val).toFixed(1)
                     return (
                       <div key={key} className="flex flex-col items-center">
-                        <span className={`text-sm font-semibold tabular-nums ${color || 'text-gray-800'
+                        <span className={`text-sm font-semibold tabular-nums ${color || 'text-gray-800'}`}>{displayed}{unit}</span>
+                        <span className="text-xs text-gray-400 mt-0.5 truncate">{label}</span>
+                      </div>
+                    )
+                  })}
+                </div>
+                <p className="text-xs text-gray-300 mt-2 text-right">moyennes sur {mySuivi.nbJours} entrée{mySuivi.nbJours > 1 ? 's' : ''}</p>
+              </div>
+            ) : (
+              <div className="bg-white border border-gray-100 rounded-xl p-4 flex items-center justify-between">
+                <p className="text-sm text-gray-500">Aucune donnée de suivi ces 7 derniers jours</p>
+                <Link to="/coach/tracking" className={`text-xs font-medium ${accentText}`}>Remplir →</Link>
+              </div>
+            )
+          )}
+
+          {/* 4. ── Saisie repas IA ── */}
+          {isWidgetEnabled('saisie_repas') && (
+            <div className="bg-white border border-gray-100 rounded-xl p-4">
+              <div className="flex items-center justify-between mb-2">
+                <p className="text-sm font-medium text-gray-700">Ajouter un repas</p>
+                <button onClick={() => setShowFavoris(v => !v)}
+                  className={`text-xs px-2.5 py-1 rounded-lg border transition-colors ${showFavoris ? 'border-gray-300 text-gray-700 bg-gray-50' : 'border-gray-200 text-gray-500'}`}>
+                  Mes repas
+                </button>
+              </div>
+              {showFavoris && (
+                <div className="mb-3 space-y-1 max-h-40 overflow-y-auto">
+                  {favoris.length === 0
+                    ? <p className="text-xs text-gray-400 text-center py-2">Aucun repas enregistré.</p>
+                    : favoris.map(f => (
+                      <div key={f.id} className="flex items-center justify-between bg-gray-50 rounded-lg px-3 py-1.5">
+                        <div className="flex-1 min-w-0">
+                          <p className="text-xs font-medium text-gray-700 truncate">{f.nom}</p>
+                          <p className="text-xs text-gray-400">{f.kcal} kcal</p>
+                        </div>
+                        <div className="flex gap-1 ml-2">
+                          <button onClick={() => addFavori(f)} className={`text-xs px-2 py-1 rounded-lg ${accentBtn}`}>Ajouter</button>
+                          <button onClick={() => deleteFavori(f.id)} className="text-xs text-gray-300 hover:text-red-400 px-1">×</button>
+                        </div>
+                      </div>
+                    ))}
+                </div>
+              )}
+              <div className="flex gap-2">
+                <input value={repasInput} onChange={e => setRepasInput(e.target.value)}
+                  onKeyDown={e => e.key === 'Enter' && analyzeRepas()}
+                  placeholder="Ex: 2 oeufs, 80g flocons, 200ml lait…"
+                  className="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-gray-300"
+                />
+                <button onClick={analyzeRepas} disabled={analyzeLoading || !repasInput.trim()}
+                  className={`${accentBtn} px-3 py-2 rounded-lg text-sm font-medium disabled:opacity-50 flex-shrink-0`}>
+                  {analyzeLoading ? '…' : 'OK'}
+                </button>
+              </div>
+              {repasJour.length > 0 && (
+                <div className="mt-2 space-y-1">
+                  {repasJour.map(r => (
+                    <div key={r.id} className="flex items-center justify-between bg-gray-50 rounded-lg px-3 py-1.5 gap-2">
+                      <div className="flex-1 min-w-0">
+                        <p className="text-xs text-gray-700 truncate">{r.description}</p>
+                        <p className={`text-xs font-medium mt-0.5 ${accentText}`}>{r.kcal} kcal · P{Math.round(r.proteines)}g L{Math.round(r.lipides)}g G{Math.round(r.glucides)}g</p>
+                      </div>
+                      <div className="flex gap-1 flex-shrink-0">
+                        <button onClick={() => saveAsFavori(r)} className="text-xs text-gray-300 hover:text-amber-400">★</button>
+                        <button onClick={() => deleteRepas(r.id)} className="text-xs text-gray-300 hover:text-red-400">×</button>
+                      </div>
+                    </div>
+                  ))}
+                  <div className={`flex justify-between px-3 py-1.5 rounded-lg text-xs font-medium ${theme?.isFemme ? 'bg-pink-50 text-pink-700' : 'bg-brand-50 text-brand-700'}`}>
+                    <span>Total</span>
+                    <span>{Math.round(totalMacros.kcal)} kcal · P{Math.round(totalMacros.proteines)}g L{Math.round(totalMacros.lipides)}g G{Math.round(totalMacros.glucides)}g</span>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* 5. ── Mes macros du jour ── */}
+          {isWidgetEnabled('macros_jour') && (
+            myMacros ? (
+              <div className="bg-white border border-gray-100 rounded-xl p-4">
+                <div className="flex items-center justify-between mb-3">
+                  <p className="text-sm font-medium text-gray-700">Mes macros du jour</p>
+                  <Link to="/coach/tracking" className={`text-xs font-medium ${accentText}`}>Suivi complet →</Link>
+                </div>
+                <div className="grid grid-cols-4 gap-3">
+                  {[
+                    ['Kcal',  myMacros.kcal,      myObjectifs?.kcal,      '' ],
+                    ['Prot.', myMacros.proteines, myObjectifs?.proteines, 'g'],
+                    ['Lip.',  myMacros.lipides,   myObjectifs?.lipides,   'g'],
+                    ['Gluc.', myMacros.glucides,  myObjectifs?.glucides,  'g'],
+                  ].map(([label, val, target, unit]) => {
+                    const pct = target && val ? Math.min(100, Math.round((val / target) * 100)) : 0
+                    return (
+                      <div key={label}>
+                        <p className="text-xs text-gray-400 mb-1">{label}</p>
+                        <p className="text-sm font-semibold text-gray-900">{Math.round(val || 0)}{unit}</p>
+                        {target && (
+                          <>
+                            <div className="h-1 bg-gray-100 rounded-full mt-1 overflow-hidden">
+                              <div className={`h-full rounded-full ${accentBg}`} style={{ width: `${pct}%` }} />
+                            </div>
+                            <p className="text-xs text-gray-400 mt-0.5">/ {target}{unit}</p>
+                          </>
+                        )}
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+            ) : (
+              <div className="bg-white border border-gray-100 rounded-xl p-4 flex items-center justify-between">
+                <p className="text-sm text-gray-500">Aucun repas renseigné aujourd'hui</p>
+                <Link to="/coach/tracking" className={`text-xs font-medium ${accentText}`}>Remplir →</Link>
+              </div>
+            )
+          )}
+
+          {/* 6. ── Séances de la semaine ── */}
+          {isWidgetEnabled('semaine_seances') && seances.length > 0 && (
+            <div className="bg-white border border-gray-100 rounded-xl p-4">
+              <div className="flex items-center justify-between mb-2">
+                <p className="text-sm font-medium text-gray-700">Semaine {activeSemaine?.numero}</p>
+                <Link to="/coach/mon-programme" className={`text-xs font-medium ${accentText}`}>Voir tout</Link>
+              </div>
+              <div className="space-y-1">
+                {seances.filter(s => s.nom !== 'Bonus').map(sc => {
+                  const total    = sc.exercices?.length || 0
+                  const done     = sc.exercices?.filter(e => (e.series_realisees?.length || 0) > 0).length || 0
+                  const complete = done >= total && total > 0
+                  return (
+                    <Link key={sc.id} to={`/coach/my-training/seance/${sc.id}/semaine/${activeSemaine?.id}`}
+                      className={`flex items-center justify-between py-1.5 px-2 rounded-lg ${complete ? 'bg-green-50' : 'hover:bg-gray-50'}`}>
+                      <span className={`text-sm ${complete ? 'text-green-700' : 'text-gray-700'}`}>{sc.nom}</span>
+                      <span className={`text-xs ${complete ? 'text-green-600 font-medium' : 'text-gray-400'}`}>
+                        {complete ? 'Terminé' : `${done}/${total}`}
+                      </span>
+                    </Link>
+                  )
+                })}
+              </div>
+            </div>
+          )}
+
+        </div>
+      )}
+    </Layout>
+  )
+}
