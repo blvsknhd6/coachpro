@@ -372,7 +372,47 @@ export default function CoachHome() {
             </div>
           )}
 
-          {/* 3. ── Saisie repas IA ── */}
+          {/* 3. ── Mon suivi 7j ── */}
+          {isWidgetEnabled('suivi_perso') && (
+            mySuivi ? (
+              <div className="bg-white border border-gray-100 rounded-xl p-4">
+                <div className="flex items-center justify-between mb-3">
+                  <p className="text-sm font-medium text-gray-700">Mon suivi — 7 derniers jours</p>
+                  <Link to="/coach/tracking" className={`text-xs font-medium ${accentText}`}>Remplir →</Link>
+                </div>
+                <div className="grid grid-cols-4 gap-x-3 gap-y-2 sm:grid-cols-8">
+                  <div className="flex flex-col items-center">
+                    <span className={`text-sm font-semibold ${metricColor(mySuivi.sportJours, 'seances', myObjectifs, bornes) || 'text-gray-800'}`}>
+                      {mySuivi.sportJours}j
+                    </span>
+                    <span className="text-xs text-gray-400 mt-0.5">Sport</span>
+                  </div>
+                  {SUIVI_METRICS.map(({ key, label, unit, isInt }) => {
+                    const val = mySuivi.avgs[key]
+                    if (val == null) return null
+                    const color     = metricColor(val, key, myObjectifs, bornes)
+                    const displayed = key === 'pas'
+                      ? Math.round(val).toLocaleString('fr')
+                      : isInt ? Math.round(val) : parseFloat(val).toFixed(1)
+                    return (
+                      <div key={key} className="flex flex-col items-center">
+                        <span className={`text-sm font-semibold tabular-nums ${color || 'text-gray-800'}`}>{displayed}{unit}</span>
+                        <span className="text-xs text-gray-400 mt-0.5 truncate">{label}</span>
+                      </div>
+                    )
+                  })}
+                </div>
+                <p className="text-xs text-gray-300 mt-2 text-right">moyennes sur {mySuivi.nbJours} entrée{mySuivi.nbJours > 1 ? 's' : ''}</p>
+              </div>
+            ) : (
+              <div className="bg-white border border-gray-100 rounded-xl p-4 flex items-center justify-between">
+                <p className="text-sm text-gray-500">Aucune donnée de suivi ces 7 derniers jours</p>
+                <Link to="/coach/tracking" className={`text-xs font-medium ${accentText}`}>Remplir →</Link>
+              </div>
+            )
+          )}
+
+          {/* 4. ── Saisie repas IA ── */}
           {isWidgetEnabled('saisie_repas') && (
             <div className="bg-white border border-gray-100 rounded-xl p-4">
               <div className="flex items-center justify-between mb-2">
@@ -434,7 +474,7 @@ export default function CoachHome() {
             </div>
           )}
 
-          {/* 4. ── Mes macros du jour ── */}
+          {/* 5. ── Mes macros du jour ── */}
           {isWidgetEnabled('macros_jour') && (
             myMacros ? (
               <div className="bg-white border border-gray-100 rounded-xl p-4">
@@ -470,46 +510,6 @@ export default function CoachHome() {
             ) : (
               <div className="bg-white border border-gray-100 rounded-xl p-4 flex items-center justify-between">
                 <p className="text-sm text-gray-500">Aucun repas renseigné aujourd'hui</p>
-                <Link to="/coach/tracking" className={`text-xs font-medium ${accentText}`}>Remplir →</Link>
-              </div>
-            )
-          )}
-
-          {/* 5. ── Mon suivi 7j ── */}
-          {isWidgetEnabled('suivi_perso') && (
-            mySuivi ? (
-              <div className="bg-white border border-gray-100 rounded-xl p-4">
-                <div className="flex items-center justify-between mb-3">
-                  <p className="text-sm font-medium text-gray-700">Mon suivi — 7 derniers jours</p>
-                  <Link to="/coach/tracking" className={`text-xs font-medium ${accentText}`}>Remplir →</Link>
-                </div>
-                <div className="grid grid-cols-4 gap-x-3 gap-y-2 sm:grid-cols-8">
-                  <div className="flex flex-col items-center">
-                    <span className={`text-sm font-semibold ${metricColor(mySuivi.sportJours, 'seances', myObjectifs, bornes) || 'text-gray-800'}`}>
-                      {mySuivi.sportJours}j
-                    </span>
-                    <span className="text-xs text-gray-400 mt-0.5">Sport</span>
-                  </div>
-                  {SUIVI_METRICS.map(({ key, label, unit, isInt }) => {
-                    const val = mySuivi.avgs[key]
-                    if (val == null) return null
-                    const color     = metricColor(val, key, myObjectifs, bornes)
-                    const displayed = key === 'pas'
-                      ? Math.round(val).toLocaleString('fr')
-                      : isInt ? Math.round(val) : parseFloat(val).toFixed(1)
-                    return (
-                      <div key={key} className="flex flex-col items-center">
-                        <span className={`text-sm font-semibold tabular-nums ${color || 'text-gray-800'}`}>{displayed}{unit}</span>
-                        <span className="text-xs text-gray-400 mt-0.5 truncate">{label}</span>
-                      </div>
-                    )
-                  })}
-                </div>
-                <p className="text-xs text-gray-300 mt-2 text-right">moyennes sur {mySuivi.nbJours} entrée{mySuivi.nbJours > 1 ? 's' : ''}</p>
-              </div>
-            ) : (
-              <div className="bg-white border border-gray-100 rounded-xl p-4 flex items-center justify-between">
-                <p className="text-sm text-gray-500">Aucune donnée de suivi ces 7 derniers jours</p>
                 <Link to="/coach/tracking" className={`text-xs font-medium ${accentText}`}>Remplir →</Link>
               </div>
             )
