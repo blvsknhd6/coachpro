@@ -89,9 +89,8 @@ export default function CoachHome() {
     }
     setAthleteObjectifs(objMap)
 
-    // Données personnelles (self-profile)
-    const self = (aths || []).find(a => a.is_self)
-    if (self) await fetchPersonalData(self.id)
+    // Données personnelles — le coach lui-même (blocs avec athlete_id = profile.id)
+    await fetchPersonalData(profile.id)
 
     setLoading(false)
   }
@@ -199,81 +198,105 @@ export default function CoachHome() {
         <div className="space-y-3">
 
           {/* ── Prochaine séance ── */}
-          {isWidgetEnabled('next_seance') && myNextSeance && (
-            <div className="bg-brand-600 text-white rounded-2xl p-4">
-              <p className="text-xs font-medium opacity-70 mb-0.5">Ma prochaine séance</p>
-              <p className="text-base font-semibold mb-2">{myNextSeance.seance.nom}</p>
-              <button
-                onClick={() => navigate(`/coach/my-training/seance/${myNextSeance.seance.id}/semaine/${myNextSeance.semaineId}`)}
-                className="bg-white text-brand-700 px-3 py-1.5 rounded-xl text-xs font-medium hover:opacity-90">
-                Commencer
-              </button>
-            </div>
+          {isWidgetEnabled('next_seance') && (
+            myNextSeance ? (
+              <div className="bg-brand-600 text-white rounded-2xl p-4">
+                <p className="text-xs font-medium opacity-70 mb-0.5">Ma prochaine séance</p>
+                <p className="text-base font-semibold mb-2">{myNextSeance.seance.nom}</p>
+                <button
+                  onClick={() => navigate(`/coach/my-training/seance/${myNextSeance.seance.id}/semaine/${myNextSeance.semaineId}`)}
+                  className="bg-white text-brand-700 px-3 py-1.5 rounded-xl text-xs font-medium hover:opacity-90">
+                  Commencer
+                </button>
+              </div>
+            ) : (
+              <div className="bg-white border border-gray-100 rounded-xl p-4 flex items-center justify-between">
+                <p className="text-sm text-gray-500">Aucune séance programmée</p>
+                <Link to="/coach/mon-programme" className="text-xs text-brand-600 font-medium">Créer un programme →</Link>
+              </div>
+            )
           )}
 
           {/* ── Mon suivi 7j ── */}
-          {isWidgetEnabled('suivi_perso') && mySuivi && (
-            <div className="bg-white border border-gray-100 rounded-xl p-4">
-              <div className="flex items-center justify-between mb-3">
-                <p className="text-sm font-medium text-gray-700">Mon suivi — 7 derniers jours</p>
-                <Link to="/coach/mon-programme" className="text-xs text-brand-600 font-medium">Voir →</Link>
-              </div>
-              <div className="grid grid-cols-4 gap-x-3 gap-y-2 sm:grid-cols-8">
-                {/* Sport */}
-                <div className="flex flex-col items-center">
-                  <span className={`text-sm font-semibold ${metricColor(mySuivi.sportJours, 'seances', myObjectifs, bornes) || 'text-gray-800'}`}>
-                    {mySuivi.sportJours}j
-                  </span>
-                  <span className="text-xs text-gray-400 mt-0.5">Sport</span>
+          {isWidgetEnabled('suivi_perso') && (
+            mySuivi ? (
+              <div className="bg-white border border-gray-100 rounded-xl p-4">
+                <div className="flex items-center justify-between mb-3">
+                  <p className="text-sm font-medium text-gray-700">Mon suivi — 7 derniers jours</p>
+                  <Link to="/coach/tracking" className="text-xs text-brand-600 font-medium">Remplir →</Link>
                 </div>
-                {SUIVI_METRICS.map(({ key, label, unit, isInt }) => {
-                  const val = mySuivi.avgs[key]
-                  if (val == null) return null
-                  const color     = metricColor(val, key, myObjectifs, bornes)
-                  const displayed = key === 'pas'
-                    ? Math.round(val).toLocaleString('fr')
-                    : isInt ? Math.round(val) : parseFloat(val).toFixed(1)
-                  return (
-                    <div key={key} className="flex flex-col items-center">
-                      <span className={`text-sm font-semibold tabular-nums ${color || 'text-gray-800'}`}>{displayed}{unit}</span>
-                      <span className="text-xs text-gray-400 mt-0.5 truncate">{label}</span>
-                    </div>
-                  )
-                })}
+                <div className="grid grid-cols-4 gap-x-3 gap-y-2 sm:grid-cols-8">
+                  {/* Sport */}
+                  <div className="flex flex-col items-center">
+                    <span className={`text-sm font-semibold ${metricColor(mySuivi.sportJours, 'seances', myObjectifs, bornes) || 'text-gray-800'}`}>
+                      {mySuivi.sportJours}j
+                    </span>
+                    <span className="text-xs text-gray-400 mt-0.5">Sport</span>
+                  </div>
+                  {SUIVI_METRICS.map(({ key, label, unit, isInt }) => {
+                    const val = mySuivi.avgs[key]
+                    if (val == null) return null
+                    const color     = metricColor(val, key, myObjectifs, bornes)
+                    const displayed = key === 'pas'
+                      ? Math.round(val).toLocaleString('fr')
+                      : isInt ? Math.round(val) : parseFloat(val).toFixed(1)
+                    return (
+                      <div key={key} className="flex flex-col items-center">
+                        <span className={`text-sm font-semibold tabular-nums ${color || 'text-gray-800'}`}>{displayed}{unit}</span>
+                        <span className="text-xs text-gray-400 mt-0.5 truncate">{label}</span>
+                      </div>
+                    )
+                  })}
+                </div>
+                <p className="text-xs text-gray-300 mt-2 text-right">moyennes sur {mySuivi.nbJours} entrée{mySuivi.nbJours > 1 ? 's' : ''}</p>
               </div>
-              <p className="text-xs text-gray-300 mt-2 text-right">moyennes sur {mySuivi.nbJours} entrée{mySuivi.nbJours > 1 ? 's' : ''}</p>
-            </div>
+            ) : (
+              <div className="bg-white border border-gray-100 rounded-xl p-4 flex items-center justify-between">
+                <p className="text-sm text-gray-500">Aucune donnée de suivi ces 7 derniers jours</p>
+                <Link to="/coach/tracking" className="text-xs text-brand-600 font-medium">Remplir →</Link>
+              </div>
+            )
           )}
 
           {/* ── Mes macros du jour ── */}
-          {isWidgetEnabled('macros_perso') && myMacros && (
-            <div className="bg-white border border-gray-100 rounded-xl p-4">
-              <p className="text-sm font-medium text-gray-700 mb-3">Mes macros du jour</p>
-              <div className="grid grid-cols-4 gap-3">
-                {[
-                  ['Kcal',  myMacros.kcal,      myObjectifs?.kcal,      '' ],
-                  ['Prot.', myMacros.proteines,  myObjectifs?.proteines, 'g'],
-                  ['Gluc.', myMacros.glucides,   myObjectifs?.glucides,  'g'],
-                  ['Lip.',  myMacros.lipides,    myObjectifs?.lipides,   'g'],
-                ].map(([label, val, target, unit]) => {
-                  const pct = target && val ? Math.min(100, Math.round((val / target) * 100)) : 0
-                  return (
-                    <div key={label}>
-                      <p className="text-xs text-gray-400 mb-1">{label}</p>
-                      <p className="text-sm font-semibold text-gray-900">{Math.round(val || 0)}{unit}</p>
-                      {target && (
-                        <>
-                          <div className="h-1 bg-gray-100 rounded-full mt-1 overflow-hidden">
-                            <div className="h-full bg-brand-500 rounded-full" style={{ width: `${pct}%` }} />
-                          </div>
-                          <p className="text-xs text-gray-400 mt-0.5">/ {target}{unit}</p>
-                        </>
-                      )}
-                    </div>
-                  )
-                })}
+          {isWidgetEnabled('macros_perso') && (
+            myMacros ? (
+              <div className="bg-white border border-gray-100 rounded-xl p-4">
+                <div className="flex items-center justify-between mb-3">
+                  <p className="text-sm font-medium text-gray-700">Mes macros du jour</p>
+                  <Link to="/coach/tracking" className="text-xs text-brand-600 font-medium">Suivi complet →</Link>
+                </div>
+                <div className="grid grid-cols-4 gap-3">
+                  {[
+                    ['Kcal',  myMacros.kcal,      myObjectifs?.kcal,      '' ],
+                    ['Prot.', myMacros.proteines,  myObjectifs?.proteines, 'g'],
+                    ['Gluc.', myMacros.glucides,   myObjectifs?.glucides,  'g'],
+                    ['Lip.',  myMacros.lipides,    myObjectifs?.lipides,   'g'],
+                  ].map(([label, val, target, unit]) => {
+                    const pct = target && val ? Math.min(100, Math.round((val / target) * 100)) : 0
+                    return (
+                      <div key={label}>
+                        <p className="text-xs text-gray-400 mb-1">{label}</p>
+                        <p className="text-sm font-semibold text-gray-900">{Math.round(val || 0)}{unit}</p>
+                        {target && (
+                          <>
+                            <div className="h-1 bg-gray-100 rounded-full mt-1 overflow-hidden">
+                              <div className="h-full bg-brand-500 rounded-full" style={{ width: `${pct}%` }} />
+                            </div>
+                            <p className="text-xs text-gray-400 mt-0.5">/ {target}{unit}</p>
+                          </>
+                        )}
+                      </div>
+                    )
+                  })}
+                </div>
               </div>
-            </div>
+            ) : (
+              <div className="bg-white border border-gray-100 rounded-xl p-4 flex items-center justify-between">
+                <p className="text-sm text-gray-500">Aucun repas renseigné aujourd'hui</p>
+                <Link to="/coach/tracking" className="text-xs text-brand-600 font-medium">Remplir →</Link>
+              </div>
+            )
           )}
 
           {/* ── Liste coachés avec tracking ── */}
