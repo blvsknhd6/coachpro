@@ -164,24 +164,48 @@ export default function CoachBlocEditor() {
         .eq('nom', seanceNom)
         .single()
       if (!scSuivante) continue
+
       const { data: exsExistants } = await supabase
         .from('exercices')
         .select('*')
         .eq('seance_id', scSuivante.id)
         .order('ordre')
-      await supabase.from('exercices').delete().eq('seance_id', scSuivante.id)
-      if (exsCourants?.length) {
-        await supabase.from('exercices').insert(
-          exsCourants.map(ex => {
-            const exExistant = exsExistants?.find(e => e.ordre === ex.ordre)
-            return {
-              seance_id: scSuivante.id, muscle: ex.muscle, nom: ex.nom, sets: ex.sets,
-              rep_range: ex.rep_range, repos: ex.repos, charge_indicative: ex.charge_indicative,
-              rpe_cible: ex.rpe_cible, unilateral: ex.unilateral, ordre: ex.ordre,
-              indications: exExistant?.indications ?? ex.indications
-            }
+
+      const existantsParOrdre = {}
+      ;(exsExistants || []).forEach(e => { existantsParOrdre[e.ordre] = e })
+
+      const ordresCourants = new Set((exsCourants || []).map(e => e.ordre))
+
+      // UPDATE les exercices existants (préserve l'UUID → préserve series_realisees)
+      for (const ex of exsCourants || []) {
+        const cible = existantsParOrdre[ex.ordre]
+        if (cible) {
+          await supabase.from('exercices').update({
+            muscle: ex.muscle, nom: ex.nom, sets: ex.sets,
+            rep_range: ex.rep_range, repos: ex.repos,
+            charge_indicative: ex.charge_indicative,
+            rpe_cible: ex.rpe_cible, unilateral: ex.unilateral,
+            // indications propres à chaque semaine — on ne les écrase pas
+          }).eq('id', cible.id)
+        } else {
+          // Nouvel exercice ajouté dans la semaine courante → INSERT dans les suivantes
+          await supabase.from('exercices').insert({
+            seance_id: scSuivante.id, muscle: ex.muscle, nom: ex.nom, sets: ex.sets,
+            rep_range: ex.rep_range, repos: ex.repos, charge_indicative: ex.charge_indicative,
+            rpe_cible: ex.rpe_cible, unilateral: ex.unilateral, ordre: ex.ordre,
+            indications: ex.indications,
           })
-        )
+        }
+      }
+
+      // DELETE les exercices supprimés dans la semaine courante
+      // On ne supprime QUE ceux dont l'ordre n'existe plus — sans toucher aux series_realisees
+      // des exercices conservés (déjà gérés par UPDATE ci-dessus)
+      const aSupprimer = (exsExistants || []).filter(e => !ordresCourants.has(e.ordre))
+      if (aSupprimer.length) {
+        await supabase.from('exercices')
+          .delete()
+          .in('id', aSupprimer.map(e => e.id))
       }
     }
   }

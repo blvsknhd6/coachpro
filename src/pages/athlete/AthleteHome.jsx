@@ -13,7 +13,7 @@ export default function AthleteHome() {
   const { profile } = useAuth()
   const theme = useTheme()
   const navigate = useNavigate()
-  const { isWidgetEnabled, prefs } = usePreferences()
+  const { isWidgetEnabled } = usePreferences()
   const [showConfig, setShowConfig] = useState(false)
 
   const [nextSeance, setNextSeance]       = useState(null)
@@ -30,7 +30,6 @@ export default function AthleteHome() {
   const [showFavoris, setShowFavoris]     = useState(false)
   const [favoris, setFavoris]             = useState([])
   const [totalMacros, setTotalMacros]     = useState({ kcal: 0, proteines: 0, glucides: 0, lipides: 0 })
-
   const [suiviSemaine, setSuiviSemaine]   = useState(null)
 
   const today      = new Date().toISOString().split('T')[0]
@@ -73,23 +72,32 @@ export default function AthleteHome() {
   }
 
   async function fetchSemaines(blocId) {
-    const { data: semaines } = await supabase.from('semaines').select('id, numero')
-      .eq('bloc_id', blocId).order('numero')
+    const { data: semaines } = await supabase
+      .from('semaines').select('id, numero').eq('bloc_id', blocId).order('numero')
     if (!semaines?.length) { setLoading(false); return }
 
     const activeSem = await findActiveSemaine(semaines, profile.id)
     setActiveSemaine(activeSem)
 
-    const { data: sc } = await supabase.from('seances')
+    const { data: sc } = await supabase
+      .from('seances')
       .select('id, nom, ordre, exercices(id, series_realisees(id))')
       .eq('semaine_id', activeSem.id).order('ordre')
     setSeances(sc || [])
 
-    const incomplete = (sc || []).find(s =>
-      s.nom !== 'Bonus' &&
-      (s.exercices?.filter(e => (e.series_realisees?.length || 0) > 0).length || 0) < (s.exercices?.length || 0)
+    // Prochaine séance : priorité à celle pas encore commencée
+    const seancesNormales = (sc || []).filter(s =>
+      s.nom !== 'Bonus' && (s.exercices?.length || 0) > 0
     )
-    if (incomplete) setNextSeance({ seance: incomplete, semaineId: activeSem.id })
+    const pasCommencee = seancesNormales.find(s =>
+      s.exercices.filter(e => (e.series_realisees?.length || 0) > 0).length === 0
+    )
+    const enCours = seancesNormales.find(s => {
+      const done = s.exercices.filter(e => (e.series_realisees?.length || 0) > 0).length
+      return done > 0 && done < s.exercices.length
+    })
+    const next = pasCommencee || enCours
+    if (next) setNextSeance({ seance: next, semaineId: activeSem.id })
     setLoading(false)
   }
 
@@ -122,7 +130,8 @@ export default function AthleteHome() {
   }
 
   async function fetchFavoris() {
-    const { data } = await supabase.from('repas_favoris').select('*').eq('athlete_id', profile.id).order('nom')
+    const { data } = await supabase.from('repas_favoris').select('*')
+      .eq('athlete_id', profile.id).order('nom')
     setFavoris(data || [])
   }
 
@@ -134,8 +143,7 @@ export default function AthleteHome() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          model: 'claude-sonnet-4-20250514',
-          max_tokens: 300,
+          model: 'claude-sonnet-4-20250514', max_tokens: 300,
           system: `Expert nutrition. Réponds UNIQUEMENT avec du JSON valide, sans markdown:
 {"kcal":number,"proteines":number,"glucides":number,"lipides":number}`,
           messages: [{ role: 'user', content: repasInput }]
@@ -147,7 +155,7 @@ export default function AthleteHome() {
 
       await supabase.from('repas').insert({
         athlete_id: profile.id, date: today, description: repasInput.trim(),
-        kcal:      Math.round(macros.kcal      || 0),
+        kcal: Math.round(macros.kcal || 0),
         proteines: Math.round((macros.proteines || 0) * 10) / 10,
         glucides:  Math.round((macros.glucides  || 0) * 10) / 10,
         lipides:   Math.round((macros.lipides   || 0) * 10) / 10,
@@ -199,16 +207,15 @@ export default function AthleteHome() {
     )
   }
 
-  // Métrique du widget suivi avec couleur
   const SuiviVal = ({ label, value, bilanKey, unit = '', isInt = true }) => {
     if (value == null) return null
-    const displayed = isInt ? Math.round(value) : parseFloat(value).toFixed(1)
+    const displayed = isInt
+      ? (bilanKey === 'pas' ? Math.round(value).toLocaleString('fr') : Math.round(value))
+      : parseFloat(value).toFixed(1)
     const color = metricColor(value, bilanKey, objectifs, bornes)
     return (
       <div className="flex flex-col items-center min-w-0">
-        <span className={`text-sm font-semibold tabular-nums ${color || 'text-gray-800'}`}>
-          {bilanKey === 'pas' ? Math.round(value).toLocaleString('fr') : displayed}{unit}
-        </span>
+        <span className={`text-sm font-semibold tabular-nums ${color || 'text-gray-800'}`}>{displayed}{unit}</span>
         <span className="text-xs text-gray-400 mt-0.5 truncate">{label}</span>
       </div>
     )
@@ -267,7 +274,6 @@ export default function AthleteHome() {
             </div>
           )}
 
-          {/* ── Widget Suivi du bloc ── */}
           {isWidgetEnabled('suivi_bloc') && suiviSemaine && (
             <div className="bg-white border border-gray-100 rounded-xl p-4">
               <div className="flex items-center justify-between mb-3">
@@ -275,20 +281,19 @@ export default function AthleteHome() {
                 <Link to="/athlete/tracking" className={`text-xs ${accentText} font-medium`}>Détail →</Link>
               </div>
               <div className="grid grid-cols-4 gap-x-3 gap-y-2 sm:grid-cols-8">
-                {/* Sport : clé 'seances' dans bornes */}
                 <div className="flex flex-col items-center">
                   <span className={`text-sm font-semibold ${metricColor(suiviSemaine.sportJours, 'seances', objectifs, bornes) || 'text-gray-800'}`}>
                     {suiviSemaine.sportJours}j
                   </span>
                   <span className="text-xs text-gray-400 mt-0.5">Sport</span>
                 </div>
-                <SuiviVal label="Kcal"     value={suiviSemaine.avgs.kcal}      bilanKey="kcal"      />
-                <SuiviVal label="Prot."    value={suiviSemaine.avgs.proteines}  bilanKey="proteines" unit="g" />
-                <SuiviVal label="Gluc."    value={suiviSemaine.avgs.glucides}   bilanKey="glucides"  unit="g" />
-                <SuiviVal label="Lip."     value={suiviSemaine.avgs.lipides}    bilanKey="lipides"   unit="g" />
-                <SuiviVal label="Sommeil"  value={suiviSemaine.avgs.sommeil}    bilanKey="sommeil"   unit="h"   isInt={false} />
-                <SuiviVal label="Pas"      value={suiviSemaine.avgs.pas}        bilanKey="pas"       />
-                <SuiviVal label="Stress"   value={suiviSemaine.avgs.stress}     bilanKey="stress"    unit="/10" isInt={false} />
+                <SuiviVal label="Kcal"    value={suiviSemaine.avgs.kcal}      bilanKey="kcal"      />
+                <SuiviVal label="Prot."   value={suiviSemaine.avgs.proteines}  bilanKey="proteines" unit="g" />
+                <SuiviVal label="Gluc."   value={suiviSemaine.avgs.glucides}   bilanKey="glucides"  unit="g" />
+                <SuiviVal label="Lip."    value={suiviSemaine.avgs.lipides}    bilanKey="lipides"   unit="g" />
+                <SuiviVal label="Sommeil" value={suiviSemaine.avgs.sommeil}    bilanKey="sommeil"   unit="h" isInt={false} />
+                <SuiviVal label="Pas"     value={suiviSemaine.avgs.pas}        bilanKey="pas"       />
+                <SuiviVal label="Stress"  value={suiviSemaine.avgs.stress}     bilanKey="stress"    unit="/10" isInt={false} />
               </div>
               <p className="text-xs text-gray-300 mt-2 text-right">
                 moyennes sur {suiviSemaine.nbJours} entrée{suiviSemaine.nbJours > 1 ? 's' : ''}
@@ -396,6 +401,7 @@ export default function AthleteHome() {
               </div>
             </div>
           )}
+
         </div>
       )}
     </Layout>
