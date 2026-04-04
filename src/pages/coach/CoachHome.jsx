@@ -291,7 +291,27 @@ export default function CoachHome() {
       ) : (
         <div className="space-y-3">
 
-          {/* 1. ── Liste coachés avec tracking ── */}
+          {/* 1. ── Prochaine séance ── */}
+          {isWidgetEnabled('next_seance') && (
+            myNextSeance ? (
+              <div className={`${accentBg} text-white rounded-2xl p-4`}>
+                <p className="text-xs font-medium opacity-70 mb-0.5">Ma prochaine séance</p>
+                <p className="text-base font-semibold mb-2">{myNextSeance.seance.nom}</p>
+                <button
+                  onClick={() => navigate(`/coach/my-training/seance/${myNextSeance.seance.id}/semaine/${myNextSeance.semaineId}`)}
+                  className={`bg-white px-3 py-1.5 rounded-xl text-xs font-medium hover:opacity-90 ${accentText}`}>
+                  Commencer
+                </button>
+              </div>
+            ) : (
+              <div className="bg-white border border-gray-100 rounded-xl p-4 flex items-center justify-between">
+                <p className="text-sm text-gray-500">Aucune séance programmée</p>
+                <Link to="/coach/mon-programme" className={`text-xs font-medium ${accentText}`}>Créer un programme →</Link>
+              </div>
+            )
+          )}
+
+          {/* 2. ── Liste coachés avec tracking ── */}
           {isWidgetEnabled('liste_coachés') && (
             <div className="space-y-2">
               <div className="flex items-center justify-between">
@@ -350,26 +370,6 @@ export default function CoachHome() {
                 )
               })}
             </div>
-          )}
-
-          {/* 2. ── Prochaine séance ── */}
-          {isWidgetEnabled('next_seance') && (
-            myNextSeance ? (
-              <div className={`${accentBg} text-white rounded-2xl p-4`}>
-                <p className="text-xs font-medium opacity-70 mb-0.5">Ma prochaine séance</p>
-                <p className="text-base font-semibold mb-2">{myNextSeance.seance.nom}</p>
-                <button
-                  onClick={() => navigate(`/coach/my-training/seance/${myNextSeance.seance.id}/semaine/${myNextSeance.semaineId}`)}
-                  className={`bg-white px-3 py-1.5 rounded-xl text-xs font-medium hover:opacity-90 ${accentText}`}>
-                  Commencer
-                </button>
-              </div>
-            ) : (
-              <div className="bg-white border border-gray-100 rounded-xl p-4 flex items-center justify-between">
-                <p className="text-sm text-gray-500">Aucune séance programmée</p>
-                <Link to="/coach/mon-programme" className={`text-xs font-medium ${accentText}`}>Créer un programme →</Link>
-              </div>
-            )
           )}
 
           {/* 3. ── Mon suivi 7j ── */}
