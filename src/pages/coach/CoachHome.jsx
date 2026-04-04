@@ -259,7 +259,7 @@ export default function CoachHome() {
           )}
 
           {/* ── Mes macros du jour ── */}
-          {isWidgetEnabled('macros_perso') && (
+          {isWidgetEnabled('macros_jour') && (
             myMacros ? (
               <div className="bg-white border border-gray-100 rounded-xl p-4">
                 <div className="flex items-center justify-between mb-3">
@@ -297,6 +297,33 @@ export default function CoachHome() {
                 <Link to="/coach/tracking" className="text-xs text-brand-600 font-medium">Remplir →</Link>
               </div>
             )
+          )}
+
+          {/* ── Saisie repas IA ── */}
+          {isWidgetEnabled('saisie_repas') && (
+            <div className="bg-white border border-gray-100 rounded-xl p-4">
+              <div className="flex items-center justify-between mb-3">
+                <p className="text-sm font-medium text-gray-700">Saisie repas IA</p>
+              </div>
+              {/* Ajoute ici le composant ou le bouton vers ton interface d'IA */}
+              <div className="text-sm text-gray-500">
+                Interface de saisie à intégrer ici...
+              </div>
+            </div>
+          )}
+
+          {/* ── Séances de la semaine ── */}
+          {isWidgetEnabled('semaine_seances') && (
+            <div className="bg-white border border-gray-100 rounded-xl p-4">
+              <div className="flex items-center justify-between mb-3">
+                <p className="text-sm font-medium text-gray-700">Séances de la semaine</p>
+                <Link to="/coach/mon-programme" className="text-xs text-brand-600 font-medium">Voir tout →</Link>
+              </div>
+              {/* Ajoute ici la logique pour lister les séances (en utilisant myNextSeance ou en requêtant la semaine) */}
+              <div className="text-sm text-gray-500">
+                Liste des séances à intégrer ici...
+              </div>
+            </div>
           )}
 
           {/* ── Liste coachés avec tracking ── */}
