@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { supabase } from '../../lib/supabase'
 import { useAuth } from '../../hooks/useAuth'
+import { useTheme } from '../../hooks/useTheme'
 import { usePreferences } from '../../hooks/usePreferences'
 import Layout from '../../components/shared/Layout'
 import WidgetConfig from '../../components/shared/WidgetConfig'
@@ -10,6 +11,7 @@ import { metricColor, computeAverages } from '../../lib/tracking'
 
 export default function CoachHome() {
   const { profile } = useAuth()
+  const theme = useTheme()
   const navigate = useNavigate()
   const { isWidgetEnabled } = usePreferences()
   const [showConfig, setShowConfig] = useState(false)
@@ -21,12 +23,30 @@ export default function CoachHome() {
   const [athleteObjectifs, setAthleteObjectifs] = useState({})
 
   // Personal (self-profile)
-  const [myNextSeance, setMyNextSeance] = useState(null)
-  const [mySuivi, setMySuivi]           = useState(null)
-  const [myMacros, setMyMacros]         = useState(null)
-  const [myObjectifs, setMyObjectifs]   = useState(null)
+  const [myNextSeance, setMyNextSeance]   = useState(null)
+  const [mySuivi, setMySuivi]             = useState(null)
+  const [myMacros, setMyMacros]           = useState(null)
+  const [myObjectifs, setMyObjectifs]     = useState(null)
+  const [activeBlocId, setActiveBlocId]   = useState(null)
+
+  // Nouveaux états pour "Séances de la semaine"
+  const [activeSemaine, setActiveSemaine] = useState(null)
+  const [seances, setSeances]             = useState([])
+
+  // Nouveaux états pour "Saisie Repas IA"
+  const [repasInput, setRepasInput]         = useState('')
+  const [repasJour, setRepasJour]           = useState([])
+  const [analyzeLoading, setAnalyzeLoading] = useState(false)
+  const [showFavoris, setShowFavoris]       = useState(false)
+  const [favoris, setFavoris]               = useState([])
+  const [totalMacros, setTotalMacros]       = useState({ kcal: 0, proteines: 0, glucides: 0, lipides: 0 })
 
   const today = new Date().toISOString().split('T')[0]
+  
+  // Couleurs du thème
+  const accentBtn  = theme?.isFemme ? 'bg-pink-600 hover:bg-pink-700 text-white' : 'bg-brand-600 hover:bg-brand-700 text-white'
+  const accentText = theme?.isFemme ? 'text-pink-600' : 'text-brand-600'
+  const accentBg   = theme?.isFemme ? 'bg-pink-600' : 'bg-brand-600'
 
   useEffect(() => { if (profile) fetchAll() }, [profile])
 
@@ -48,7 +68,6 @@ export default function CoachHome() {
     sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7)
     const sevenDaysAgoStr = sevenDaysAgo.toISOString().split('T')[0]
 
-    // Batch — tracking + objectifs pour tous les athlètes
     const [trackingRes, blocsRes] = await Promise.all([
       supabase.from('data_tracking')
         .select('athlete_id, date, sport_fait, kcal, proteines, sommeil, pas_journaliers, stress')
@@ -61,7 +80,6 @@ export default function CoachHome() {
         .order('created_at', { ascending: false }),
     ])
 
-    // Tracking par athlète
     const trackingMap = {}
     for (const athId of athIds) {
       const entries = (trackingRes.data || []).filter(t => t.athlete_id === athId)
@@ -76,7 +94,6 @@ export default function CoachHome() {
     }
     setAthleteTracking(trackingMap)
 
-    // Objectifs par athlète (bloc le plus récent)
     const objMap = {}
     const seen   = new Set()
     for (const bloc of (blocsRes.data || [])) {
@@ -89,9 +106,7 @@ export default function CoachHome() {
     }
     setAthleteObjectifs(objMap)
 
-    // Données personnelles — le coach lui-même (blocs avec athlete_id = profile.id)
     await fetchPersonalData(profile.id)
-
     setLoading(false)
   }
 
@@ -103,20 +118,23 @@ export default function CoachHome() {
     if (!blocs?.length) return
 
     const bloc = blocs[0]
+    setActiveBlocId(bloc.id)
     const obj  = Array.isArray(bloc.objectifs_bloc) ? bloc.objectifs_bloc[0] : bloc.objectifs_bloc
     setMyObjectifs(obj)
 
-    // Prochaine séance
     const { data: semaines } = await supabase
       .from('semaines').select('id, numero').eq('bloc_id', bloc.id).order('numero')
     if (semaines?.length) {
       const activeSem = await findActiveSemaine(semaines, athleteId)
+      setActiveSemaine(activeSem)
+      
       const { data: sc } = await supabase
         .from('seances')
         .select('id, nom, ordre, exercices(id, series_realisees(id))')
         .eq('semaine_id', activeSem.id).order('ordre')
+      
+      setSeances(sc || [])
 
-      // Priorité : séance pas commencée → séance en cours → rien
       const seancesNormales = (sc || []).filter(s => s.nom !== 'Bonus' && (s.exercices?.length || 0) > 0)
       const pasCommencee    = seancesNormales.find(s =>
         s.exercices.filter(e => (e.series_realisees?.length || 0) > 0).length === 0
@@ -129,7 +147,6 @@ export default function CoachHome() {
       if (next) setMyNextSeance({ seance: next, semaineId: activeSem.id })
     }
 
-    // Suivi 7j
     const sevenDaysAgo = new Date(); sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7)
     const { data: tracking } = await supabase
       .from('data_tracking').select('*')
@@ -141,19 +158,96 @@ export default function CoachHome() {
       setMySuivi({ avgs, sportJours: tracking.filter(d => d.sport_fait).length, nbJours: tracking.length })
     }
 
-    // Macros du jour
-    const { data: repas } = await supabase
-      .from('repas').select('kcal, proteines, glucides, lipides')
-      .eq('athlete_id', athleteId).eq('date', today)
-    if (repas?.length) {
-      setMyMacros(repas.reduce((acc, r) => ({
-        kcal:      acc.kcal      + (Number(r.kcal)      || 0),
-        proteines: acc.proteines + (Number(r.proteines) || 0),
-        glucides:  acc.glucides  + (Number(r.glucides)  || 0),
-        lipides:   acc.lipides   + (Number(r.lipides)   || 0),
-      }), { kcal: 0, proteines: 0, glucides: 0, lipides: 0 }))
-    }
+    // Charger les repas pour l'IA et les favoris
+    await fetchRepasJour(athleteId)
+    await fetchFavoris(athleteId)
   }
+
+  // --- Fonctions Saisie Repas IA ---
+  async function fetchRepasJour(athleteId = profile.id) {
+    const { data } = await supabase.from('repas').select('*')
+      .eq('athlete_id', athleteId).eq('date', today).order('created_at')
+    const list = data || []
+    setRepasJour(list)
+    recalcTotals(list)
+  }
+
+  function recalcTotals(list) {
+    const totals = list.reduce((acc, r) => ({
+      kcal:      acc.kcal      + (Number(r.kcal)      || 0),
+      proteines: acc.proteines + (Number(r.proteines) || 0),
+      glucides:  acc.glucides  + (Number(r.glucides)  || 0),
+      lipides:   acc.lipides   + (Number(r.lipides)   || 0),
+    }), { kcal: 0, proteines: 0, glucides: 0, lipides: 0 })
+    setTotalMacros(totals)
+    setMyMacros(totals) // Met à jour le widget classique en même temps
+    return totals
+  }
+
+  async function fetchFavoris(athleteId = profile.id) {
+    const { data } = await supabase.from('repas_favoris').select('*')
+      .eq('athlete_id', athleteId).order('nom')
+    setFavoris(data || [])
+  }
+
+  async function analyzeRepas() {
+    if (!repasInput.trim()) return
+    setAnalyzeLoading(true)
+    try {
+      const response = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: 'claude-sonnet-4-20250514', max_tokens: 300,
+          system: `Expert nutrition. Réponds UNIQUEMENT avec du JSON valide, sans markdown:\n{"kcal":number,"proteines":number,"glucides":number,"lipides":number}`,
+          messages: [{ role: 'user', content: repasInput }]
+        })
+      })
+      const data = await response.json()
+      const text = data.content?.[0]?.text || '{}'
+      const macros = JSON.parse(text.replace(/```[a-z]*|```/g, '').trim())
+
+      await supabase.from('repas').insert({
+        athlete_id: profile.id, date: today, description: repasInput.trim(),
+        kcal: Math.round(macros.kcal || 0),
+        proteines: Math.round((macros.proteines || 0) * 10) / 10,
+        glucides:  Math.round((macros.glucides  || 0) * 10) / 10,
+        lipides:   Math.round((macros.lipides   || 0) * 10) / 10,
+      })
+      setRepasInput('')
+      
+      const { data: allRepas } = await supabase.from('repas').select('*')
+        .eq('athlete_id', profile.id).eq('date', today).order('created_at')
+      const list = allRepas || []
+      setRepasJour(list)
+      const newTotals = recalcTotals(list)
+      
+      if (activeBlocId) {
+        await supabase.from('data_tracking').upsert({
+          athlete_id: profile.id, date: today, bloc_id: activeBlocId,
+          kcal:      Math.round(newTotals.kcal),
+          proteines: Math.round(newTotals.proteines * 10) / 10,
+          glucides:  Math.round(newTotals.glucides  * 10) / 10,
+          lipides:   Math.round(newTotals.lipides   * 10) / 10,
+        }, { onConflict: 'athlete_id,date' })
+      }
+    } catch (e) { console.error('analyzeRepas:', e) }
+    setAnalyzeLoading(false)
+  }
+
+  async function addFavori(f) {
+    await supabase.from('repas').insert({ athlete_id: profile.id, date: today, description: f.description, kcal: f.kcal, proteines: f.proteines, glucides: f.glucides, lipides: f.lipides })
+    await fetchRepasJour(); setShowFavoris(false)
+  }
+  async function saveAsFavori(repas) {
+    const nom = window.prompt('Nom ?', repas.description.slice(0, 40))
+    if (!nom) return
+    await supabase.from('repas_favoris').insert({ athlete_id: profile.id, nom, description: repas.description, kcal: repas.kcal, proteines: repas.proteines, glucides: repas.glucides, lipides: repas.lipides })
+    await fetchFavoris()
+  }
+  async function deleteRepas(id) { await supabase.from('repas').delete().eq('id', id); await fetchRepasJour() }
+  async function deleteFavori(id) { await supabase.from('repas_favoris').delete().eq('id', id); await fetchFavoris() }
+  // ------------------------------------
 
   function relativeDate(dateStr) {
     if (!dateStr) return 'jamais'
@@ -200,19 +294,19 @@ export default function CoachHome() {
           {/* ── Prochaine séance ── */}
           {isWidgetEnabled('next_seance') && (
             myNextSeance ? (
-              <div className="bg-brand-600 text-white rounded-2xl p-4">
+              <div className={`${accentBg} text-white rounded-2xl p-4`}>
                 <p className="text-xs font-medium opacity-70 mb-0.5">Ma prochaine séance</p>
                 <p className="text-base font-semibold mb-2">{myNextSeance.seance.nom}</p>
                 <button
                   onClick={() => navigate(`/coach/my-training/seance/${myNextSeance.seance.id}/semaine/${myNextSeance.semaineId}`)}
-                  className="bg-white text-brand-700 px-3 py-1.5 rounded-xl text-xs font-medium hover:opacity-90">
+                  className={`bg-white px-3 py-1.5 rounded-xl text-xs font-medium hover:opacity-90 ${accentText}`}>
                   Commencer
                 </button>
               </div>
             ) : (
               <div className="bg-white border border-gray-100 rounded-xl p-4 flex items-center justify-between">
                 <p className="text-sm text-gray-500">Aucune séance programmée</p>
-                <Link to="/coach/mon-programme" className="text-xs text-brand-600 font-medium">Créer un programme →</Link>
+                <Link to="/coach/mon-programme" className={`text-xs font-medium ${accentText}`}>Créer un programme →</Link>
               </div>
             )
           )}
@@ -223,10 +317,9 @@ export default function CoachHome() {
               <div className="bg-white border border-gray-100 rounded-xl p-4">
                 <div className="flex items-center justify-between mb-3">
                   <p className="text-sm font-medium text-gray-700">Mon suivi — 7 derniers jours</p>
-                  <Link to="/coach/tracking" className="text-xs text-brand-600 font-medium">Remplir →</Link>
+                  <Link to="/coach/tracking" className={`text-xs font-medium ${accentText}`}>Remplir →</Link>
                 </div>
                 <div className="grid grid-cols-4 gap-x-3 gap-y-2 sm:grid-cols-8">
-                  {/* Sport */}
                   <div className="flex flex-col items-center">
                     <span className={`text-sm font-semibold ${metricColor(mySuivi.sportJours, 'seances', myObjectifs, bornes) || 'text-gray-800'}`}>
                       {mySuivi.sportJours}j
@@ -253,7 +346,7 @@ export default function CoachHome() {
             ) : (
               <div className="bg-white border border-gray-100 rounded-xl p-4 flex items-center justify-between">
                 <p className="text-sm text-gray-500">Aucune donnée de suivi ces 7 derniers jours</p>
-                <Link to="/coach/tracking" className="text-xs text-brand-600 font-medium">Remplir →</Link>
+                <Link to="/coach/tracking" className={`text-xs font-medium ${accentText}`}>Remplir →</Link>
               </div>
             )
           )}
@@ -264,7 +357,7 @@ export default function CoachHome() {
               <div className="bg-white border border-gray-100 rounded-xl p-4">
                 <div className="flex items-center justify-between mb-3">
                   <p className="text-sm font-medium text-gray-700">Mes macros du jour</p>
-                  <Link to="/coach/tracking" className="text-xs text-brand-600 font-medium">Suivi complet →</Link>
+                  <Link to="/coach/tracking" className={`text-xs font-medium ${accentText}`}>Suivi complet →</Link>
                 </div>
                 <div className="grid grid-cols-4 gap-3">
                   {[
@@ -281,7 +374,7 @@ export default function CoachHome() {
                         {target && (
                           <>
                             <div className="h-1 bg-gray-100 rounded-full mt-1 overflow-hidden">
-                              <div className="h-full bg-brand-500 rounded-full" style={{ width: `${pct}%` }} />
+                              <div className={`h-full rounded-full ${accentBg}`} style={{ width: `${pct}%` }} />
                             </div>
                             <p className="text-xs text-gray-400 mt-0.5">/ {target}{unit}</p>
                           </>
@@ -294,7 +387,7 @@ export default function CoachHome() {
             ) : (
               <div className="bg-white border border-gray-100 rounded-xl p-4 flex items-center justify-between">
                 <p className="text-sm text-gray-500">Aucun repas renseigné aujourd'hui</p>
-                <Link to="/coach/tracking" className="text-xs text-brand-600 font-medium">Remplir →</Link>
+                <Link to="/coach/tracking" className={`text-xs font-medium ${accentText}`}>Remplir →</Link>
               </div>
             )
           )}
@@ -352,7 +445,7 @@ export default function CoachHome() {
                       </div>
                     </div>
                   ))}
-                  <div className={`flex justify-between px-3 py-1.5 rounded-lg text-xs font-medium ${theme.isFemme ? 'bg-pink-50 text-pink-700' : 'bg-brand-50 text-brand-700'}`}>
+                  <div className={`flex justify-between px-3 py-1.5 rounded-lg text-xs font-medium ${theme?.isFemme ? 'bg-pink-50 text-pink-700' : 'bg-brand-50 text-brand-700'}`}>
                     <span>Total</span>
                     <span>{Math.round(totalMacros.kcal)} kcal · P{Math.round(totalMacros.proteines)}g G{Math.round(totalMacros.glucides)}g L{Math.round(totalMacros.lipides)}g</span>
                   </div>
@@ -361,13 +454,12 @@ export default function CoachHome() {
             </div>
           )}
 
-
           {/* ── Séances de la semaine ── */}
           {isWidgetEnabled('semaine_seances') && seances.length > 0 && (
             <div className="bg-white border border-gray-100 rounded-xl p-4">
               <div className="flex items-center justify-between mb-2">
                 <p className="text-sm font-medium text-gray-700">Semaine {activeSemaine?.numero}</p>
-                <Link to="/athlete/entrainement" className={`text-xs ${accentText} font-medium`}>Voir tout</Link>
+                <Link to="/coach/mon-programme" className={`text-xs font-medium ${accentText}`}>Voir tout</Link>
               </div>
               <div className="space-y-1">
                 {seances.filter(s => s.nom !== 'Bonus').map(sc => {
@@ -375,7 +467,7 @@ export default function CoachHome() {
                   const done     = sc.exercices?.filter(e => (e.series_realisees?.length || 0) > 0).length || 0
                   const complete = done >= total && total > 0
                   return (
-                    <Link key={sc.id} to={`/athlete/seance/${sc.id}/semaine/${activeSemaine?.id}`}
+                    <Link key={sc.id} to={`/coach/my-training/seance/${sc.id}/semaine/${activeSemaine?.id}`}
                       className={`flex items-center justify-between py-1.5 px-2 rounded-lg ${complete ? 'bg-green-50' : 'hover:bg-gray-50'}`}>
                       <span className={`text-sm ${complete ? 'text-green-700' : 'text-gray-700'}`}>{sc.nom}</span>
                       <span className={`text-xs ${complete ? 'text-green-600 font-medium' : 'text-gray-400'}`}>
@@ -393,7 +485,7 @@ export default function CoachHome() {
             <div className="space-y-2">
               <div className="flex items-center justify-between">
                 <p className="text-xs font-medium text-gray-400 uppercase tracking-wide">Mes coachés</p>
-                <Link to="/coach/athletes" className="text-xs text-brand-600 font-medium">Voir tout →</Link>
+                <Link to="/coach/athletes" className={`text-xs font-medium ${accentText}`}>Voir tout →</Link>
               </div>
               {athletes.filter(a => !a.is_self).length === 0 ? (
                 <p className="text-sm text-gray-400 text-center py-8">Aucun coaché pour l'instant.</p>
