@@ -139,20 +139,14 @@ export default function AthleteHome() {
     if (!repasInput.trim()) return
     setAnalyzeLoading(true)
     try {
-      const response = await fetch('https://api.anthropic.com/v1/messages', {
+      const response = await fetch('/api/analyze-repas', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          model: 'claude-sonnet-4-20250514', max_tokens: 300,
-          system: `Expert nutrition. Réponds UNIQUEMENT avec du JSON valide, sans markdown:
-{"kcal":number,"proteines":number,"glucides":number,"lipides":number}`,
-          messages: [{ role: 'user', content: repasInput }]
-        })
+        body: JSON.stringify({ meal: repasInput })
       })
-      const data = await response.json()
-      const text = data.content?.[0]?.text || '{}'
-      const macros = JSON.parse(text.replace(/```[a-z]*|```/g, '').trim())
-
+      if (!response.ok) throw new Error('Erreur serveur')
+      const macros = await response.json()
+      
       await supabase.from('repas').insert({
         athlete_id: profile.id, date: today, description: repasInput.trim(),
         kcal: Math.round(macros.kcal || 0),
