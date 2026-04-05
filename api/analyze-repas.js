@@ -1,6 +1,3 @@
-// api/analyze-repas.js
-// Fonction serverless Vercel — proxy sécurisé vers l'API Google Gemini (100% gratuit)
-
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*')
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS')
@@ -13,10 +10,7 @@ export default async function handler(req, res) {
   if (!meal?.trim()) return res.status(400).json({ error: 'Le champ "meal" est requis' })
 
   const apiKey = process.env.GEMINI_API_KEY
-  if (!apiKey) {
-    console.error('GEMINI_API_KEY manquante dans les variables d\'environnement')
-    return res.status(500).json({ error: 'Configuration serveur manquante' })
-  }
+  if (!apiKey) return res.status(500).json({ error: 'GEMINI_API_KEY manquante' })
 
   try {
     const response = await fetch(
@@ -25,28 +19,23 @@ export default async function handler(req, res) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          contents: [{
-            parts: [{
-              text: `Tu es un expert en nutrition. Analyse ce repas : "${meal.trim()}".
-Retourne UNIQUEMENT un objet JSON valide contenant exactement ces 4 clés :
-"kcal", "proteines", "glucides", "lipides".
-Les valeurs sont des nombres. N'ajoute aucun texte avant ou après le JSON.`
-            }]
-          }],
-          generationConfig: {
-            response_mime_type: 'application/json'
-          }
+          contents: [{ parts: [{ text: `Tu es un expert en nutrition. Analyse ce repas : "${meal.trim()}". Retourne UNIQUEMENT un objet JSON valide avec ces 4 clés : "kcal", "proteines", "glucides", "lipides". Valeurs numériques uniquement.` }] }],
+          generationConfig: { response_mime_type: 'application/json' }
         })
       }
     )
 
+    const data = await response.json()
+
     if (!response.ok) {
-      const errBody = await response.text()
-      console.error('Erreur Gemini API:', response.status, errBody)
-      return res.status(502).json({ error: 'Erreur lors de l\'appel à l\'IA' })
+      // Renvoie l'erreur Gemini exacte pour debug
+      return res.status(502).json({ 
+        error: 'Erreur Gemini', 
+        status: response.status,
+        detail: data 
+      })
     }
 
-    const data = await response.json()
     const text = data.candidates?.[0]?.content?.parts?.[0]?.text || '{}'
     const macros = JSON.parse(text)
 
@@ -57,7 +46,6 @@ Les valeurs sont des nombres. N'ajoute aucun texte avant ou après le JSON.`
       lipides:   Math.round((Number(macros.lipides)   || 0) * 10) / 10,
     })
   } catch (error) {
-    console.error('Erreur analyze-repas:', error)
-    return res.status(500).json({ error: 'Erreur interne lors de l\'analyse' })
+    return res.status(500).json({ error: error.message })
   }
 }
