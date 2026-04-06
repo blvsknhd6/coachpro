@@ -7,7 +7,7 @@ import { usePreferences } from '../../hooks/usePreferences'
 import Layout from '../../components/shared/Layout'
 import { LineChart, Line, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts'
 
-export default function AthleteProgression() {
+export default function CoachProgression() {
   const { profile } = useAuth()
   const theme = useTheme()
   const { prefs, updateProgression } = usePreferences()
