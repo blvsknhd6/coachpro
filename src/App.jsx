@@ -31,12 +31,11 @@ export default function App() {
       <Route path="/coach" element={<PrivateRoute role="coach"><CoachHome /></PrivateRoute>} />
       <Route path="/coach/athletes" element={<PrivateRoute role="coach"><CoachAthletes /></PrivateRoute>} />
       <Route path="/coach/mon-programme" element={<PrivateRoute role="coach"><CoachMyTraining /></PrivateRoute>} />
+      <Route path="/coach/progression" element={<PrivateRoute role="coach"><AthleteProgression /></PrivateRoute>} />
       <Route path="/coach/athlete/:athleteId" element={<PrivateRoute role="coach"><CoachAthlete /></PrivateRoute>} />
       <Route path="/coach/athlete/:athleteId/view" element={<PrivateRoute role="coach"><CoachAthleteView /></PrivateRoute>} />
       <Route path="/coach/bloc/:blocId/edit" element={<PrivateRoute role="coach"><CoachBlocEditor /></PrivateRoute>} />
-      {/* Route séance pour l'entraînement personnel du coach */}
       <Route path="/coach/my-training/seance/:seanceId/semaine/:semaineId" element={<PrivateRoute role="coach"><AthleteSeance /></PrivateRoute>} />
-      {/* Suivi quotidien personnel du coach */}
       <Route path="/coach/tracking" element={<PrivateRoute role="coach"><AthleteDataTracking /></PrivateRoute>} />
       <Route path="/athlete" element={<PrivateRoute role="athlete"><AthleteHome /></PrivateRoute>} />
       <Route path="/athlete/entrainement" element={<PrivateRoute role="athlete"><AthleteEntrainement /></PrivateRoute>} />

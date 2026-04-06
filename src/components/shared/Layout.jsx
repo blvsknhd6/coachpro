@@ -12,28 +12,28 @@ export default function Layout({ children }) {
     navigate('/login')
   }
 
-  const isCoach  = profile?.role === 'coach'
-  const isFemme  = profile?.genre === 'femme'
+  const isCoach   = profile?.role === 'coach'
+  const isFemme   = profile?.genre === 'femme'
   const homeRoute = isCoach ? '/coach' : '/athlete'
 
   const coachTabs = [
-    { to: '/coach',             label: 'Accueil',          exact: true },
-    { to: '/coach/athletes',    label: 'Mes coachés' },
+    { to: '/coach',               label: 'Accueil',          exact: true },
+    { to: '/coach/athletes',      label: 'Mes coachés' },
     { to: '/coach/mon-programme', label: 'Mon entraînement' },
-    { to: '/coach/tracking',    label: 'Mon suivi' },
-    { to: '/coach/progression', label: 'Ma Progression' },
+    { to: '/coach/progression',   label: 'Ma progression' },
+    { to: '/coach/tracking',      label: 'Mon suivi' },
   ]
 
   const athleteTabs = [
-    { to: '/athlete',             label: 'Accueil',          exact: true },
-    { to: '/athlete/entrainement',label: 'Mon entraînement' },
-    { to: '/athlete/tracking',    label: 'Mon suivi' },
-    { to: '/athlete/progression', label: 'Ma Progression' },
+    { to: '/athlete',              label: 'Accueil',          exact: true },
+    { to: '/athlete/entrainement', label: 'Mon entraînement' },
+    { to: '/athlete/tracking',     label: 'Mon suivi' },
+    { to: '/athlete/progression',  label: 'Progression' },
   ]
 
-  const tabs         = isCoach ? coachTabs : athleteTabs
-  const accentColor  = isFemme ? 'text-pink-600 border-pink-600' : 'text-brand-600 border-brand-600'
-  const logoColor    = isFemme ? 'text-pink-600' : 'text-brand-700'
+  const tabs        = isCoach ? coachTabs : athleteTabs
+  const accentColor = isFemme ? 'text-pink-600 border-pink-600' : 'text-brand-600 border-brand-600'
+  const logoColor   = isFemme ? 'text-pink-600' : 'text-brand-700'
 
   function isActive(tab) {
     if (tab.exact) return location.pathname === tab.to

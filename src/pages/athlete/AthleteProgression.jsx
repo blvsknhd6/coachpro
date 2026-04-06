@@ -1,11 +1,32 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Link } from 'react-router-dom'
 import { supabase } from '../../lib/supabase'
 import { useAuth } from '../../hooks/useAuth'
 import { useTheme } from '../../hooks/useTheme'
 import { usePreferences } from '../../hooks/usePreferences'
 import Layout from '../../components/shared/Layout'
-import { LineChart, Line, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts'
+import {
+  LineChart, Line, BarChart, Bar, XAxis, YAxis, Tooltip,
+  ResponsiveContainer, CartesianGrid, Legend
+} from 'recharts'
+
+// Epley 1RM
+function epley1RM(weight, reps, rpe = null) {
+  if (!weight || !reps || Number(reps) <= 0) return null
+  const rir = rpe != null ? Math.max(0, 10 - Number(rpe)) : 0
+  const adjReps = Number(reps) + rir
+  return Math.round(Number(weight) * (1 + adjReps / 30) * 10) / 10
+}
+
+const LIFT_COLORS = {
+  squat:     '#f59e0b',
+  bench:     '#6366f1',
+  deadlift:  '#10b981',
+  total:     '#ef4444',
+}
+const LIFT_LABELS = { squat: '🏋️ Squat', bench: '💪 Bench', deadlift: '⚡ Deadlift', total: '∑ Total' }
+
+// Top muscles colors for weekly volume
+const MUSCLE_COLORS = ['#6366f1','#ec4899','#10b981','#f59e0b','#ef4444','#8b5cf6','#06b6d4','#f97316']
 
 export default function AthleteProgression() {
   const { profile } = useAuth()
@@ -13,19 +34,22 @@ export default function AthleteProgression() {
   const { prefs, updateProgression } = usePreferences()
   const color = theme.isFemme ? '#ec4899' : '#6366f1'
 
-  const [allExercices, setAllExercices] = useState([])
-  const [allMuscles, setAllMuscles] = useState([])
-  const [chargeData, setChargeData] = useState([])
-  const [tonnageData, setTonnageData] = useState([])
-  const [volumeData, setVolumeData] = useState([])
-  const [loading, setLoading] = useState(true)
-  const [loadingChart, setLoadingChart] = useState(false)
-  const [showConfig, setShowConfig] = useState(false)
+  const [allExercices, setAllExercices]       = useState([])
+  const [allMuscles, setAllMuscles]           = useState([])
+  const [chargeData, setChargeData]           = useState([])
+  const [tonnageData, setTonnageData]         = useState([])
+  const [volumeParSemaineData, setVolumeParSemaineData] = useState([])  // per-week per-muscle
+  const [volumeMuscles, setVolumeMuscles]     = useState([])  // muscle keys present
+  const [oneRMData, setOneRMData]             = useState([])  // 1RM per lift per semaine
+  const [hasMainLifts, setHasMainLifts]       = useState(false)
+  const [loading, setLoading]                 = useState(true)
+  const [loadingChart, setLoadingChart]       = useState(false)
+  const [showConfig, setShowConfig]           = useState(false)
 
-  const config = prefs?.progression_config || {}
-  const mode = config.mode || 'graphe'
-  const metric = config.metric || 'tonnage'
-  const favExos = config.fav_exercices || []
+  const config      = prefs?.progression_config || {}
+  const mode        = config.mode || 'graphe'
+  const metric      = config.metric || 'tonnage'
+  const favExos     = config.fav_exercices || []
   const musclesExclus = config.muscles_exclus || []
   const selectedExo = config.selected_exo || ''
 
@@ -38,7 +62,7 @@ export default function AthleteProgression() {
     if (!sr?.length) { setLoading(false); return }
 
     const ids = [...new Set(sr.map(s => s.exercice_id))]
-    const { data: exs } = await supabase.from('exercices').select('id, nom, muscle').in('id', ids)
+    const { data: exs } = await supabase.from('exercices').select('id, nom, muscle, main_lift').in('id', ids)
     const unique = [], seen = new Set(), muscles = new Set()
     ;(exs || []).forEach(e => {
       if (!seen.has(e.nom)) { seen.add(e.nom); unique.push(e) }
@@ -47,11 +71,12 @@ export default function AthleteProgression() {
     setAllExercices(unique.sort((a, b) => a.nom.localeCompare(b.nom)))
     setAllMuscles([...muscles].sort())
 
-    if (!selectedExo && unique.length) {
-      updateProgression({ selected_exo: unique[0].nom })
-    }
+    const hasLifts = (exs || []).some(e => e.main_lift)
+    setHasMainLifts(hasLifts)
 
-    await loadTonnageData()
+    if (!selectedExo && unique.length) updateProgression({ selected_exo: unique[0].nom })
+
+    await Promise.all([loadTonnageData(), loadVolumeParSemaine(), hasLifts && load1RMData()])
     setLoading(false)
   }
 
@@ -67,48 +92,156 @@ export default function AthleteProgression() {
     for (const sem of semaines || []) {
       const exsInSem = exs.filter(e => seances?.find(s => s.id === e.seance_id && s.semaine_id === sem.id))
       if (!exsInSem.length) continue
-      const { data: sr } = await supabase.from('series_realisees').select('charge, reps, exercice_id')
+      const { data: srData } = await supabase.from('series_realisees').select('charge, reps, exercice_id')
         .eq('athlete_id', profile.id).in('exercice_id', exsInSem.map(e => e.id)).not('charge', 'is', null)
-      if (!sr?.length) continue
-      const maxCharge = Math.max(...sr.map(s => Number(s.charge)))
-      const totalSeries = sr.length
-      const tonnage = sr.reduce((acc, s) => acc + Number(s.charge) * (Number(s.reps) || 0), 0)
-      data.push({ semaine: `S${sem.numero}`, charge: maxCharge, series: totalSeries, tonnage: Math.round(tonnage) })
+      if (!srData?.length) continue
+      const maxCharge = Math.max(...srData.map(s => Number(s.charge)))
+      const tonnage = srData.reduce((acc, s) => acc + Number(s.charge) * (Number(s.reps) || 0), 0)
+      data.push({ semaine: `S${sem.numero}`, charge: maxCharge, series: srData.length, tonnage: Math.round(tonnage) })
     }
-    setChargeData(data)
-    setLoadingChart(false)
+    setChargeData(data); setLoadingChart(false)
   }
 
   async function loadTonnageData() {
     const { data: blocs } = await supabase.from('blocs').select('id').eq('athlete_id', profile.id)
     if (!blocs?.length) return
     const { data: semaines } = await supabase.from('semaines').select('id, numero').in('bloc_id', blocs.map(b => b.id)).order('numero').limit(16)
-
-    const tonnageByWeek = [], volumeByMuscle = {}
+    const tonnageByWeek = []
     for (const sem of semaines || []) {
       const { data: scIds } = await supabase.from('seances').select('id').eq('semaine_id', sem.id)
       if (!scIds?.length) continue
-      const { data: exIds } = await supabase.from('exercices').select('id, muscle').in('seance_id', scIds.map(s => s.id))
+      const { data: exIds } = await supabase.from('exercices').select('id').in('seance_id', scIds.map(s => s.id))
       if (!exIds?.length) continue
-      const { data: sr } = await supabase.from('series_realisees').select('charge, reps, exercice_id')
+      const { data: srData } = await supabase.from('series_realisees').select('charge, reps')
         .eq('athlete_id', profile.id).in('exercice_id', exIds.map(e => e.id)).not('charge', 'is', null).not('reps', 'is', null)
-      if (!sr?.length) continue
-      let tonnage = 0, totalSeries = sr.length
-      sr.forEach(s => {
-        const t = Number(s.charge) * Number(s.reps)
-        tonnage += t
-        const muscle = exIds.find(e => e.id === s.exercice_id)?.muscle || 'autre'
-        if (!musclesExclus.includes(muscle)) volumeByMuscle[muscle] = (volumeByMuscle[muscle] || 0) + t
-      })
-      if (tonnage > 0 || totalSeries > 0) tonnageByWeek.push({ semaine: `S${sem.numero}`, tonnage: Math.round(tonnage), series: totalSeries })
+      if (!srData?.length) continue
+      const tonnage = srData.reduce((acc, s) => acc + Number(s.charge) * Number(s.reps), 0)
+      tonnageByWeek.push({ semaine: `S${sem.numero}`, tonnage: Math.round(tonnage), series: srData.length })
     }
     setTonnageData(tonnageByWeek)
-    setVolumeData(Object.entries(volumeByMuscle).map(([m, v]) => ({ muscle: m, volume: Math.round(v) })).sort((a, b) => b.volume - a.volume).slice(0, 8))
   }
 
-  function getMetricKey() { return metric === 'tonnage' ? 'tonnage' : metric === 'series' ? 'series' : null }
-  function getMetricLabel() { return metric === 'tonnage' ? 'Tonnage (kg)' : metric === 'series' ? 'Nb séries' : '' }
+  // ── Volume par muscle par semaine ─────────────────────────────────────
+  async function loadVolumeParSemaine() {
+    const { data: blocs } = await supabase.from('blocs').select('id').eq('athlete_id', profile.id)
+    if (!blocs?.length) return
+    const { data: semaines } = await supabase.from('semaines').select('id, numero').in('bloc_id', blocs.map(b => b.id)).order('numero').limit(16)
+    if (!semaines?.length) return
 
+    // Fetch all at once
+    const semIds = semaines.map(s => s.id)
+    const { data: scAll } = await supabase.from('seances').select('id, semaine_id').in('semaine_id', semIds)
+    const { data: exAll } = await supabase.from('exercices').select('id, muscle, seance_id').in('seance_id', (scAll || []).map(s => s.id))
+    const { data: srAll } = await supabase.from('series_realisees').select('charge, reps, exercice_id, semaine_id')
+      .eq('athlete_id', profile.id).in('semaine_id', semIds).not('charge', 'is', null).not('reps', 'is', null)
+
+    const scBySemaine = {}
+    ;(scAll || []).forEach(sc => { if (!scBySemaine[sc.semaine_id]) scBySemaine[sc.semaine_id] = []; scBySemaine[sc.semaine_id].push(sc.id) })
+
+    const exBySeance = {}
+    ;(exAll || []).forEach(ex => { if (!exBySeance[ex.seance_id]) exBySeance[ex.seance_id] = []; exBySeance[ex.seance_id].push(ex) })
+
+    const exById = {}
+    ;(exAll || []).forEach(ex => { exById[ex.id] = ex })
+
+    // Accumulate total volume per muscle across ALL semaines to find top muscles
+    const muscleTotal = {}
+    ;(srAll || []).forEach(s => {
+      const ex = exById[s.exercice_id]; if (!ex) return
+      const muscle = ex.muscle || 'autre'
+      if (musclesExclus.includes(muscle)) return
+      muscleTotal[muscle] = (muscleTotal[muscle] || 0) + Number(s.charge) * Number(s.reps)
+    })
+
+    // Top 6 muscles by total volume
+    const topMuscles = Object.entries(muscleTotal)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 6)
+      .map(([m]) => m)
+
+    setVolumeMuscles(topMuscles)
+
+    // Per semaine
+    const rows = []
+    for (const sem of semaines) {
+      const scIds = scBySemaine[sem.id] || []
+      const exsInSem = scIds.flatMap(scId => exBySeance[scId] || [])
+      const exIdsInSem = new Set(exsInSem.map(e => e.id))
+      const srInSem = (srAll || []).filter(s => s.semaine_id === sem.id && exIdsInSem.has(s.exercice_id))
+      if (!srInSem.length) continue
+
+      const row = { semaine: `S${sem.numero}` }
+      let hasData = false
+      for (const muscle of topMuscles) {
+        const vol = srInSem
+          .filter(s => (exById[s.exercice_id]?.muscle || 'autre') === muscle && !musclesExclus.includes(muscle))
+          .reduce((acc, s) => acc + Number(s.charge) * Number(s.reps), 0)
+        row[muscle] = vol > 0 ? Math.round(vol) : 0
+        if (vol > 0) hasData = true
+      }
+      if (hasData) rows.push(row)
+    }
+    setVolumeParSemaineData(rows)
+  }
+
+  // ── 1RM progression per lift per semaine ─────────────────────────────
+  async function load1RMData() {
+    const { data: blocs } = await supabase.from('blocs').select('id').eq('athlete_id', profile.id)
+    if (!blocs?.length) return
+    const { data: semaines } = await supabase.from('semaines').select('id, numero').in('bloc_id', blocs.map(b => b.id)).order('numero').limit(16)
+    if (!semaines?.length) return
+
+    const semIds = semaines.map(s => s.id)
+
+    // Fetch exercices with main_lift
+    const { data: scAll } = await supabase.from('seances').select('id, semaine_id').in('semaine_id', semIds)
+    const { data: exAll } = await supabase.from('exercices').select('id, main_lift, seance_id').in('seance_id', (scAll || []).map(s => s.id)).not('main_lift', 'is', null)
+    if (!exAll?.length) return
+
+    const { data: srAll } = await supabase.from('series_realisees').select('charge, reps, rpe, exercice_id, semaine_id')
+      .eq('athlete_id', profile.id).in('semaine_id', semIds)
+      .not('charge', 'is', null).not('reps', 'is', null)
+
+    const exById = {}
+    ;(exAll || []).forEach(ex => { exById[ex.id] = ex })
+
+    const scBySemaine = {}
+    ;(scAll || []).forEach(sc => { if (!scBySemaine[sc.semaine_id]) scBySemaine[sc.semaine_id] = []; scBySemaine[sc.semaine_id].push(sc.id) })
+
+    const exIdsWithLift = new Set(exAll.map(e => e.id))
+
+    const rows = []
+    for (const sem of semaines) {
+      const scIds = new Set(scBySemaine[sem.id] || [])
+      const srInSem = (srAll || []).filter(s => s.semaine_id === sem.id && exIdsWithLift.has(s.exercice_id))
+      if (!srInSem.length) continue
+
+      // Best 1RM per lift
+      const bestByLift = { squat: null, bench: null, deadlift: null }
+      for (const s of srInSem) {
+        const ex = exById[s.exercice_id]; if (!ex?.main_lift) continue
+        const est = epley1RM(s.charge, s.reps, s.rpe)
+        if (est && (bestByLift[ex.main_lift] === null || est > bestByLift[ex.main_lift])) {
+          bestByLift[ex.main_lift] = est
+        }
+      }
+
+      const total = (bestByLift.squat || 0) + (bestByLift.bench || 0) + (bestByLift.deadlift || 0)
+      const hasAny = Object.values(bestByLift).some(v => v !== null)
+      if (!hasAny) continue
+
+      rows.push({
+        semaine: `S${sem.numero}`,
+        squat:    bestByLift.squat,
+        bench:    bestByLift.bench,
+        deadlift: bestByLift.deadlift,
+        total:    total > 0 ? total : null,
+      })
+    }
+    setOneRMData(rows)
+  }
+
+  // ─────────────────────────────────────────────────────────────────────
   const DataChart = ({ data, dataKey, name, color: c }) => (
     <ResponsiveContainer width="100%" height={160}>
       <LineChart data={data}>
@@ -116,7 +249,7 @@ export default function AthleteProgression() {
         <XAxis dataKey="semaine" tick={{ fontSize: 10 }} />
         <YAxis tick={{ fontSize: 10 }} width={40} />
         <Tooltip contentStyle={{ fontSize: 11 }} />
-        <Line type="monotone" dataKey={dataKey} stroke={c} strokeWidth={2} dot={{ r: 3 }} name={name} />
+        <Line type="monotone" dataKey={dataKey} stroke={c} strokeWidth={2} dot={{ r: 3 }} name={name} connectNulls />
       </LineChart>
     </ResponsiveContainer>
   )
@@ -146,7 +279,7 @@ export default function AthleteProgression() {
           {data.map((row, i) => (
             <tr key={i} className="border-b border-gray-50 hover:bg-gray-50">
               <td className="py-1.5 text-gray-700 font-medium">{row.semaine}</td>
-              {dataKeys.map(k => <td key={k.key} className="py-1.5 text-right text-gray-600">{row[k.key] ? row[k.key].toLocaleString('fr') : '—'}</td>)}
+              {dataKeys.map(k => <td key={k.key} className="py-1.5 text-right text-gray-600">{row[k.key] != null ? row[k.key].toLocaleString('fr') : '—'}</td>)}
             </tr>
           ))}
         </tbody>
@@ -154,15 +287,12 @@ export default function AthleteProgression() {
     </div>
   )
 
-  const metricKeys = metric === 'les_deux'
-    ? [{ key: 'tonnage', label: 'Tonnage' }, { key: 'series', label: 'Séries' }]
-    : [{ key: getMetricKey(), label: getMetricLabel() }]
-
   return (
     <Layout>
       <div className="flex items-center justify-between mb-5">
         <h1 className="text-xl font-semibold">Ma progression</h1>
-        <button onClick={() => setShowConfig(v => !v)} className="text-xs text-gray-400 hover:text-gray-600 border border-gray-200 rounded-lg px-2 py-1.5">
+        <button onClick={() => setShowConfig(v => !v)}
+          className="text-xs text-gray-400 hover:text-gray-600 border border-gray-200 rounded-lg px-2 py-1.5">
           {showConfig ? 'Fermer config' : 'Configurer'}
         </button>
       </div>
@@ -175,20 +305,16 @@ export default function AthleteProgression() {
             <div className="flex gap-2">
               {[['graphe','Graphe'],['tableau','Tableau'],['les_deux','Les deux']].map(([v,l]) => (
                 <button key={v} onClick={() => updateProgression({ mode: v })}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${mode === v ? 'bg-brand-600 text-white border-brand-600' : 'border-gray-200 text-gray-600'}`}>
-                  {l}
-                </button>
+                  className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${mode === v ? 'bg-brand-600 text-white border-brand-600' : 'border-gray-200 text-gray-600'}`}>{l}</button>
               ))}
             </div>
           </div>
           <div>
-            <p className="text-xs font-medium text-gray-500 mb-2">Métrique</p>
+            <p className="text-xs font-medium text-gray-500 mb-2">Métrique volume</p>
             <div className="flex gap-2">
               {[['tonnage','Tonnage'],['series','Nb séries'],['les_deux','Les deux']].map(([v,l]) => (
                 <button key={v} onClick={() => updateProgression({ metric: v })}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${metric === v ? 'bg-brand-600 text-white border-brand-600' : 'border-gray-200 text-gray-600'}`}>
-                  {l}
-                </button>
+                  className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${metric === v ? 'bg-brand-600 text-white border-brand-600' : 'border-gray-200 text-gray-600'}`}>{l}</button>
               ))}
             </div>
           </div>
@@ -214,8 +340,7 @@ export default function AthleteProgression() {
               {allMuscles.map(m => {
                 const exclu = musclesExclus.includes(m)
                 return (
-                  <button key={m}
-                    onClick={() => updateProgression({ muscles_exclus: exclu ? musclesExclus.filter(x => x !== m) : [...musclesExclus, m] })}
+                  <button key={m} onClick={() => updateProgression({ muscles_exclus: exclu ? musclesExclus.filter(x => x !== m) : [...musclesExclus, m] })}
                     className={`px-2 py-1 rounded-md text-xs border transition-colors ${exclu ? 'bg-red-100 text-red-600 border-red-200' : 'border-gray-200 text-gray-600 hover:border-gray-300'}`}>
                     {exclu ? '- ' : ''}{m}
                   </button>
@@ -232,7 +357,41 @@ export default function AthleteProgression() {
         <p className="text-sm text-gray-400 text-center py-16">Commence à remplir tes séances pour voir ta progression.</p>
       ) : (
         <div className="space-y-4">
-          {/* Exercice sélectionné — charge max */}
+
+          {/* ── 1RM Progression (powerlifting) ────────────────────────── */}
+          {hasMainLifts && oneRMData.length > 0 && (
+            <div className="bg-white border border-gray-100 rounded-xl p-4">
+              <p className="text-sm font-medium text-gray-700 mb-1">1RM estimés par semaine</p>
+              <p className="text-xs text-gray-400 mb-3">Formule Epley · ajusté par RPE si renseigné</p>
+              {(mode === 'graphe' || mode === 'les_deux') && (
+                <ResponsiveContainer width="100%" height={200}>
+                  <LineChart data={oneRMData} margin={{ top: 4, right: 8, bottom: 0, left: -10 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#f3f4f6" />
+                    <XAxis dataKey="semaine" tick={{ fontSize: 10 }} />
+                    <YAxis tick={{ fontSize: 10 }} width={42} />
+                    <Tooltip contentStyle={{ fontSize: 11 }} formatter={(v, name) => [`${v}kg`, LIFT_LABELS[name] || name]} />
+                    <Legend formatter={name => LIFT_LABELS[name] || name} iconType="circle" wrapperStyle={{ fontSize: 11 }} />
+                    {oneRMData.some(d => d.squat)    && <Line type="monotone" dataKey="squat"    stroke={LIFT_COLORS.squat}    strokeWidth={2} dot={{ r: 3 }} connectNulls name="squat" />}
+                    {oneRMData.some(d => d.bench)    && <Line type="monotone" dataKey="bench"    stroke={LIFT_COLORS.bench}    strokeWidth={2} dot={{ r: 3 }} connectNulls name="bench" />}
+                    {oneRMData.some(d => d.deadlift) && <Line type="monotone" dataKey="deadlift" stroke={LIFT_COLORS.deadlift} strokeWidth={2} dot={{ r: 3 }} connectNulls name="deadlift" />}
+                    {oneRMData.some(d => d.total > 0) && <Line type="monotone" dataKey="total"  stroke={LIFT_COLORS.total}    strokeWidth={2} strokeDasharray="4 2" dot={{ r: 3 }} connectNulls name="total" />}
+                  </LineChart>
+                </ResponsiveContainer>
+              )}
+              {(mode === 'tableau' || mode === 'les_deux') && (
+                <div className={mode === 'les_deux' ? 'mt-3' : ''}>
+                  <DataTable data={oneRMData} dataKeys={[
+                    { key: 'squat',    label: '🏋️ Squat (kg)' },
+                    { key: 'bench',    label: '💪 Bench (kg)' },
+                    { key: 'deadlift', label: '⚡ Deadlift (kg)' },
+                    { key: 'total',    label: '∑ Total' },
+                  ]} />
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ── Charge max exercice sélectionné ───────────────────────── */}
           <div className="bg-white border border-gray-100 rounded-xl p-4">
             <div className="flex items-center justify-between mb-3">
               <p className="text-sm font-medium text-gray-700">Charge max par semaine</p>
@@ -245,26 +404,20 @@ export default function AthleteProgression() {
               chargeData.length > 0 ? (
                 <>
                   {(mode === 'graphe' || mode === 'les_deux') && <DataChart data={chargeData} dataKey="charge" name="Charge max (kg)" color={color} />}
-                  {(mode === 'tableau' || mode === 'les_deux') && (
-                    <div className={mode === 'les_deux' ? 'mt-3' : ''}>
-                      <DataTable data={chargeData} dataKeys={[{ key: 'charge', label: 'Charge max (kg)' }]} />
-                    </div>
-                  )}
+                  {(mode === 'tableau' || mode === 'les_deux') && <div className={mode === 'les_deux' ? 'mt-3' : ''}><DataTable data={chargeData} dataKeys={[{ key: 'charge', label: 'Charge max (kg)' }]} /></div>}
                 </>
               ) : <p className="text-xs text-gray-400 text-center py-8">Pas encore de données</p>
             }
           </div>
 
-          {/* Exercices favoris */}
+          {/* ── Exercices favoris ─────────────────────────────────────── */}
           {favExos.length > 0 && (
             <div className="space-y-3">
-              {favExos.map(exoNom => (
-                <FavExoCard key={exoNom} exoNom={exoNom} athleteId={profile.id} metric={metric} mode={mode} color={color} />
-              ))}
+              {favExos.map(exoNom => <FavExoCard key={exoNom} exoNom={exoNom} athleteId={profile.id} metric={metric} mode={mode} color={color} />)}
             </div>
           )}
 
-          {/* Volume total par semaine */}
+          {/* ── Volume total par semaine ──────────────────────────────── */}
           {tonnageData.length > 0 && (
             <div className="bg-white border border-gray-100 rounded-xl p-4">
               <p className="text-sm font-medium text-gray-700 mb-3">Volume total par semaine</p>
@@ -280,41 +433,69 @@ export default function AthleteProgression() {
                   {(mode === 'tableau' || mode === 'les_deux') && <div className="mt-3"><DataTable data={tonnageData} dataKeys={[{ key: 'series', label: 'Nb séries' }]} /></div>}
                 </>
               )}
-              {metric === 'les_deux' && (mode === 'tableau' || mode === 'les_deux') && (
-                <div className="mt-3"><DataTable data={tonnageData} dataKeys={[{ key: 'tonnage', label: 'Tonnage' }, { key: 'series', label: 'Séries' }]} /></div>
-              )}
             </div>
           )}
 
-          {/* Par groupe musculaire */}
-          {volumeData.length > 0 && (
+          {/* ── Volume par muscle PAR SEMAINE ─────────────────────────── */}
+          {volumeParSemaineData.length > 0 && volumeMuscles.length > 0 && (
             <div className="bg-white border border-gray-100 rounded-xl p-4">
-              <p className="text-sm font-medium text-gray-700 mb-3">Volume par groupe musculaire</p>
+              <p className="text-sm font-medium text-gray-700 mb-1">Volume par groupe musculaire / semaine</p>
+              <p className="text-xs text-gray-400 mb-3">Top 6 muscles · tonnage (kg)</p>
               {(mode === 'graphe' || mode === 'les_deux') && (
-                <ResponsiveContainer width="100%" height={200}>
-                  <BarChart data={volumeData} layout="vertical">
-                    <XAxis type="number" tick={{ fontSize: 10 }} />
-                    <YAxis dataKey="muscle" type="category" tick={{ fontSize: 10 }} width={65} />
-                    <Tooltip contentStyle={{ fontSize: 11 }} />
-                    <Bar dataKey="volume" fill={color} radius={[0, 3, 3, 0]} name="Volume" />
-                  </BarChart>
+                <ResponsiveContainer width="100%" height={220}>
+                  <LineChart data={volumeParSemaineData} margin={{ top: 4, right: 8, bottom: 0, left: -10 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#f3f4f6" />
+                    <XAxis dataKey="semaine" tick={{ fontSize: 10 }} />
+                    <YAxis tick={{ fontSize: 10 }} width={42} />
+                    <Tooltip contentStyle={{ fontSize: 11 }} formatter={v => [`${v.toLocaleString('fr')} kg`]} />
+                    <Legend iconType="circle" wrapperStyle={{ fontSize: 11 }} />
+                    {volumeMuscles.map((muscle, i) => (
+                      <Line key={muscle} type="monotone" dataKey={muscle} stroke={MUSCLE_COLORS[i % MUSCLE_COLORS.length]}
+                        strokeWidth={2} dot={{ r: 3 }} connectNulls name={muscle} />
+                    ))}
+                  </LineChart>
                 </ResponsiveContainer>
               )}
               {(mode === 'tableau' || mode === 'les_deux') && (
-                <div className="mt-3">
-                  <DataTable data={volumeData.map(v => ({ semaine: v.muscle, tonnage: v.volume }))} dataKeys={[{ key: 'tonnage', label: 'Volume total' }]} />
+                <div className={mode === 'les_deux' ? 'mt-3' : ''}>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-xs">
+                      <thead>
+                        <tr className="border-b border-gray-100">
+                          <th className="text-left py-2 text-gray-400 font-medium w-12">Sem.</th>
+                          {volumeMuscles.map(m => (
+                            <th key={m} className="text-right py-2 text-gray-400 font-medium px-1">{m}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {volumeParSemaineData.map((row, i) => (
+                          <tr key={i} className="border-b border-gray-50 hover:bg-gray-50">
+                            <td className="py-1.5 text-gray-700 font-medium">{row.semaine}</td>
+                            {volumeMuscles.map(m => (
+                              <td key={m} className="py-1.5 text-right text-gray-600 px-1">
+                                {row[m] ? row[m].toLocaleString('fr') : '—'}
+                              </td>
+                            ))}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
                 </div>
               )}
             </div>
           )}
+
         </div>
       )}
     </Layout>
   )
 }
 
+// ── FavExoCard ─────────────────────────────────────────────────────────────
 function FavExoCard({ exoNom, athleteId, metric, mode, color }) {
-  const [data, setData] = useState([])
+  const [data, setData]     = useState([])
   const [loading, setLoading] = useState(true)
 
   useEffect(() => { loadData() }, [exoNom])
@@ -326,7 +507,6 @@ function FavExoCard({ exoNom, athleteId, metric, mode, color }) {
     const { data: seances } = await supabase.from('seances').select('id, semaine_id').in('id', exs.map(e => e.seance_id))
     const semaineIds = [...new Set((seances || []).map(s => s.semaine_id))]
     const { data: semaines } = await supabase.from('semaines').select('id, numero').in('id', semaineIds).order('numero')
-
     const rows = []
     for (const sem of semaines || []) {
       const exsInSem = exs.filter(e => seances?.find(s => s.id === e.seance_id && s.semaine_id === sem.id))
@@ -335,12 +515,10 @@ function FavExoCard({ exoNom, athleteId, metric, mode, color }) {
         .eq('athlete_id', athleteId).in('exercice_id', exsInSem.map(e => e.id)).not('charge', 'is', null)
       if (!sr?.length) continue
       const maxCharge = Math.max(...sr.map(s => Number(s.charge)))
-      const totalSeries = sr.length
       const tonnage = Math.round(sr.reduce((acc, s) => acc + Number(s.charge) * (Number(s.reps) || 0), 0))
-      rows.push({ semaine: `S${sem.numero}`, charge: maxCharge, series: totalSeries, tonnage })
+      rows.push({ semaine: `S${sem.numero}`, charge: maxCharge, series: sr.length, tonnage })
     }
-    setData(rows)
-    setLoading(false)
+    setData(rows); setLoading(false)
   }
 
   return (
@@ -357,8 +535,8 @@ function FavExoCard({ exoNom, athleteId, metric, mode, color }) {
                 <XAxis dataKey="semaine" tick={{ fontSize: 10 }} />
                 <YAxis tick={{ fontSize: 10 }} width={35} />
                 <Tooltip contentStyle={{ fontSize: 11 }} />
-                {metric !== 'series' && <Line type="monotone" dataKey="tonnage" stroke={color} strokeWidth={2} dot={{ r: 3 }} name="Tonnage" />}
-                {metric !== 'tonnage' && <Line type="monotone" dataKey="series" stroke="#10b981" strokeWidth={2} dot={{ r: 3 }} name="Séries" />}
+                {metric !== 'series'  && <Line type="monotone" dataKey="tonnage" stroke={color}   strokeWidth={2} dot={{ r: 3 }} name="Tonnage" connectNulls />}
+                {metric !== 'tonnage' && <Line type="monotone" dataKey="series"  stroke="#10b981" strokeWidth={2} dot={{ r: 3 }} name="Séries"  connectNulls />}
               </LineChart>
             </ResponsiveContainer>
           )}
@@ -368,14 +546,14 @@ function FavExoCard({ exoNom, athleteId, metric, mode, color }) {
                 <thead><tr className="border-b border-gray-100">
                   <th className="text-left py-1.5 text-gray-400">Sem.</th>
                   <th className="text-right py-1.5 text-gray-400">Charge max</th>
-                  {metric !== 'series' && <th className="text-right py-1.5 text-gray-400">Tonnage</th>}
+                  {metric !== 'series'  && <th className="text-right py-1.5 text-gray-400">Tonnage</th>}
                   {metric !== 'tonnage' && <th className="text-right py-1.5 text-gray-400">Séries</th>}
                 </tr></thead>
                 <tbody>{data.map((r, i) => (
                   <tr key={i} className="border-b border-gray-50">
                     <td className="py-1.5 text-gray-700">{r.semaine}</td>
                     <td className="py-1.5 text-right text-gray-600">{r.charge}kg</td>
-                    {metric !== 'series' && <td className="py-1.5 text-right text-gray-600">{r.tonnage.toLocaleString('fr')}</td>}
+                    {metric !== 'series'  && <td className="py-1.5 text-right text-gray-600">{r.tonnage.toLocaleString('fr')}</td>}
                     {metric !== 'tonnage' && <td className="py-1.5 text-right text-gray-600">{r.series}</td>}
                   </tr>
                 ))}</tbody>
