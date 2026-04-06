@@ -11,13 +11,12 @@ const DEFAULT_ATHLETE_WIDGETS = [
 ]
 
 const DEFAULT_COACH_WIDGETS = [
-  { id: 'next_seance',   label: 'Ma prochaine séance',              enabled: true  },
-  { id: 'suivi_perso',   label: 'Mon suivi (7 derniers jours)',     enabled: true  },
+  { id: 'next_seance',    label: 'Ma prochaine séance',             enabled: true  },
+  { id: 'suivi_perso',    label: 'Mon suivi (7 derniers jours)',    enabled: true  },
   { id: 'saisie_repas',   label: 'Saisie repas IA',                 enabled: true  },
   { id: 'macros_jour',    label: 'Macros du jour',                  enabled: true  },
-  { id: 'liste_coachés', label: 'Liste coachés',                    enabled: true  },
+  { id: 'liste_coachés',  label: 'Liste coachés',                   enabled: true  },
   { id: 'semaine_seances',label: 'Séances de la semaine',           enabled: true  },
-
 ]
 
 const DEPRECATED_COACH_WIDGETS = ['stats_coachés', 'alertes']
@@ -85,11 +84,18 @@ export function usePreferences() {
   function removeWidget(id) {
     savePrefs({ home_widgets: prefs.home_widgets.filter(w => w.id !== id) })
   }
+  function reorderWidgets(newOrder) {
+    savePrefs({ home_widgets: newOrder })
+  }
   function updateProgression(updates) {
     savePrefs({ progression_config: { ...prefs.progression_config, ...updates } })
   }
 
-  return { prefs, loading, isWidgetEnabled, toggleWidget, addCustomWidget, removeWidget, updateProgression, defaultWidgets }
+  return {
+    prefs, loading,
+    isWidgetEnabled, toggleWidget, addCustomWidget, removeWidget,
+    reorderWidgets, updateProgression, defaultWidgets,
+  }
 }
 
 export { DEFAULT_ATHLETE_WIDGETS, DEFAULT_COACH_WIDGETS, DEFAULT_PROGRESSION_CONFIG }
