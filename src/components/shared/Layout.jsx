@@ -21,13 +21,14 @@ export default function Layout({ children }) {
     { to: '/coach/athletes',    label: 'Mes coachés' },
     { to: '/coach/mon-programme', label: 'Mon entraînement' },
     { to: '/coach/tracking',    label: 'Mon suivi' },
+    { to: '/coach/progression', label: 'Ma Progression' },
   ]
 
   const athleteTabs = [
     { to: '/athlete',             label: 'Accueil',          exact: true },
     { to: '/athlete/entrainement',label: 'Mon entraînement' },
     { to: '/athlete/tracking',    label: 'Mon suivi' },
-    { to: '/athlete/progression', label: 'Progression' },
+    { to: '/athlete/progression', label: 'Ma Progression' },
   ]
 
   const tabs         = isCoach ? coachTabs : athleteTabs
