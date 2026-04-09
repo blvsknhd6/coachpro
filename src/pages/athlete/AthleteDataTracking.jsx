@@ -224,7 +224,7 @@ export default function AthleteDataTracking() {
               <div>
                 <label className="block text-xs font-medium text-gray-500 mb-1">Stress /10</label>
                 <div className="flex gap-1.5 flex-wrap">
-                  {[1,2,3,4,5,6,7,8,9,10].map(n => {
+                  {[0,1,2,3,4,5,6,7,8,9,10].map(n => {
                     const isSelected = form.stress === n
                     const colorClass = isSelected
                       ? n <= 3 ? 'bg-green-500 text-white'
