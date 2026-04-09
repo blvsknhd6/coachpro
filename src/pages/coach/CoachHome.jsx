@@ -9,6 +9,185 @@ import WidgetConfig from '../../components/shared/WidgetConfig'
 import { findActiveSemaine } from '../../lib/semaine'
 import { metricColor, computeAverages } from '../../lib/tracking'
 
+// ── ObjectifsBloc (coach perso) ──────────────────────────────────────────
+const METRICS = [
+  { key: 'seances_par_semaine', borneKey: 'seances', label: 'Séances / sem.',  unit: '',     type: 'number' },
+  { key: 'kcal',                borneKey: 'kcal',    label: 'Kcal / jour',     unit: 'kcal', type: 'number' },
+  { key: 'proteines',           borneKey: 'proteines',label: 'Protéines',      unit: 'g',    type: 'number' },
+  { key: 'glucides',            borneKey: 'glucides', label: 'Glucides',       unit: 'g',    type: 'number' },
+  { key: 'lipides',             borneKey: 'lipides',  label: 'Lipides',        unit: 'g',    type: 'number' },
+  { key: 'sommeil',             borneKey: 'sommeil',  label: 'Sommeil',        unit: 'h',    type: 'number', step: '0.5' },
+  { key: 'pas_journaliers',     borneKey: 'pas',      label: 'Pas / jour',     unit: '',     type: 'number' },
+  { key: 'stress_cible',        borneKey: 'stress',   label: 'Stress cible',   unit: '/10',  type: 'number' },
+]
+
+function ObjectifsBloc({ bloc, onSave }) {
+  const [obj, setObj]         = useState(null)
+  const [editing, setEditing] = useState(false)
+  const [form, setForm]       = useState({})
+  const [bornesForm, setBornesForm] = useState({})
+  const [showBornes, setShowBornes] = useState(false)
+  const [saving, setSaving]   = useState(false)
+
+  useEffect(() => { if (bloc?.id) fetchObj() }, [bloc?.id])
+
+  async function fetchObj() {
+    const { data } = await supabase.from('objectifs_bloc').select('*').eq('bloc_id', bloc.id).single()
+    setObj(data)
+    if (data) { setForm(data); setBornesForm(data.bornes || {}) }
+    else { setForm({}); setBornesForm({}) }
+  }
+
+  async function saveObj() {
+    setSaving(true)
+    const payload = { ...form, bloc_id: bloc.id, bornes: bornesForm }
+    if (obj) await supabase.from('objectifs_bloc').update(payload).eq('id', obj.id)
+    else      await supabase.from('objectifs_bloc').insert(payload)
+    await fetchObj()
+    if (onSave) onSave()
+    setEditing(false)
+    setSaving(false)
+  }
+
+  function setBorne(borneKey, side, value) {
+    setBornesForm(b => ({
+      ...b,
+      [borneKey]: { ...(b[borneKey] || {}), [side]: value === '' ? undefined : Number(value) }
+    }))
+  }
+
+  if (!bloc) return null
+
+  return (
+    <div className="bg-white border border-gray-100 rounded-xl p-5">
+      <div className="flex items-center justify-between mb-4">
+        <h3 className="text-sm font-medium text-gray-700">Objectifs du bloc — {bloc.name}</h3>
+        {editing ? (
+          <div className="flex gap-2">
+            <button onClick={saveObj} disabled={saving} className="text-sm text-brand-600 font-medium hover:text-brand-800">
+              {saving ? 'Enregistrement…' : 'Enregistrer'}
+            </button>
+            <button onClick={() => { setEditing(false); setForm(obj || {}); setBornesForm(obj?.bornes || {}) }}
+              className="text-sm text-gray-400">Annuler</button>
+          </div>
+        ) : (
+          <button onClick={() => setEditing(true)} className="text-sm text-brand-600 hover:text-brand-800">Modifier</button>
+        )}
+      </div>
+
+      {editing ? (
+        <div className="space-y-5">
+          {/* Plan nutritionnel */}
+          <div>
+            <label className="text-xs text-gray-500 block mb-1">Plan nutritionnel</label>
+            <div className="flex gap-2 flex-wrap">
+              {[['prise_de_masse','💪 Prise de masse'],['maintien','⚖️ Maintien'],['seche','🔥 Sèche']].map(([val, label]) => (
+                <button key={val} type="button"
+                  onClick={() => setForm(f => ({ ...f, plan_nutritionnel: val }))}
+                  className={`px-3 py-2 rounded-lg text-xs font-medium border transition-colors ${form.plan_nutritionnel === val ? 'bg-brand-600 text-white border-brand-600' : 'border-gray-200 text-gray-600'}`}>
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Cibles */}
+          <div>
+            <label className="text-xs text-gray-500 block mb-2">Cibles</label>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+              {METRICS.map(({ key, label, unit, type, step }) => (
+                <div key={key}>
+                  <label className="text-xs text-gray-500">{label}</label>
+                  <div className="flex items-center gap-1 mt-0.5">
+                    <input type={type} step={step} value={form[key] || ''}
+                      onChange={e => setForm(f => ({ ...f, [key]: e.target.value }))}
+                      className="w-24 border border-gray-200 rounded px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-brand-400"
+                    />
+                    {unit && <span className="text-xs text-gray-400">{unit}</span>}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Bornes */}
+          <div>
+            <button type="button" onClick={() => setShowBornes(v => !v)}
+              className="text-xs text-brand-600 hover:text-brand-800 font-medium flex items-center gap-1">
+              {showBornes ? '▾' : '▸'} Bornes de couleur personnalisées
+            </button>
+            <p className="text-xs text-gray-400 mt-0.5">Définit les plages vertes/oranges/rouges sur les graphiques.</p>
+            {showBornes && (
+              <div className="mt-3 border border-gray-100 rounded-xl overflow-hidden">
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="bg-gray-50 border-b border-gray-100">
+                      <th className="text-left px-4 py-2 font-medium text-gray-500">Métrique</th>
+                      <th className="px-3 py-2 font-medium text-gray-500 text-center">Min</th>
+                      <th className="px-3 py-2 font-medium text-gray-500 text-center">Max</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {METRICS.map(({ label, borneKey, unit }) => (
+                      <tr key={borneKey} className="border-b border-gray-50">
+                        <td className="px-4 py-2 text-gray-700">{label}</td>
+                        <td className="px-3 py-2">
+                          <div className="flex items-center gap-1 justify-center">
+                            <input type="number" value={bornesForm[borneKey]?.min ?? ''}
+                              onChange={e => setBorne(borneKey, 'min', e.target.value)} placeholder="—"
+                              className="w-20 border border-gray-200 rounded px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-brand-400 text-center" />
+                            {unit && <span className="text-gray-400">{unit}</span>}
+                          </div>
+                        </td>
+                        <td className="px-3 py-2">
+                          <div className="flex items-center gap-1 justify-center">
+                            <input type="number" value={bornesForm[borneKey]?.max ?? ''}
+                              onChange={e => setBorne(borneKey, 'max', e.target.value)} placeholder="—"
+                              className="w-20 border border-gray-200 rounded px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-brand-400 text-center" />
+                            {unit && <span className="text-gray-400">{unit}</span>}
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                <div className="px-4 py-2 bg-gray-50 text-xs text-gray-400">
+                  ✓ Vert = dans la plage · ○ Orange = légèrement hors plage (±15%) · ✗ Rouge = hors plage
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      ) : obj ? (
+        <div className="space-y-3">
+          {obj.plan_nutritionnel && (
+            <div className="text-sm font-medium text-gray-800">
+              {{'prise_de_masse':'💪 Prise de masse','maintien':'⚖️ Maintien','seche':'🔥 Sèche'}[obj.plan_nutritionnel]}
+            </div>
+          )}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+            {METRICS.map(({ key, label, unit }) => (
+              <div key={key}>
+                <p className="text-xs text-gray-400">{label}</p>
+                <p className="text-sm font-medium text-gray-900">
+                  {obj[key] != null ? `${obj[key]}${unit ? ' ' + unit : ''}` : '—'}
+                </p>
+              </div>
+            ))}
+          </div>
+          {obj.bornes && Object.keys(obj.bornes).length > 0 && (
+            <p className="text-xs text-gray-400 mt-2">
+              Bornes : {Object.keys(obj.bornes).join(', ')}
+            </p>
+          )}
+        </div>
+      ) : (
+        <p className="text-sm text-gray-400">Aucun objectif défini. <button onClick={() => setEditing(true)} className="text-brand-600 hover:underline">Ajouter →</button></p>
+      )}
+    </div>
+  )
+}
+
 export default function CoachHome() {
   const { profile } = useAuth()
   const theme = useTheme()
@@ -28,12 +207,13 @@ export default function CoachHome() {
   const [myMacros, setMyMacros]           = useState(null)
   const [myObjectifs, setMyObjectifs]     = useState(null)
   const [activeBlocId, setActiveBlocId]   = useState(null)
+  const [activeBloc, setActiveBloc]       = useState(null)
 
-  // Nouveaux états pour "Séances de la semaine"
+  // Séances de la semaine
   const [activeSemaine, setActiveSemaine] = useState(null)
   const [seances, setSeances]             = useState([])
 
-  // Nouveaux états pour "Saisie Repas IA"
+  // Saisie Repas IA
   const [repasInput, setRepasInput]         = useState('')
   const [repasJour, setRepasJour]           = useState([])
   const [analyzeLoading, setAnalyzeLoading] = useState(false)
@@ -42,8 +222,7 @@ export default function CoachHome() {
   const [totalMacros, setTotalMacros]       = useState({ kcal: 0, proteines: 0, glucides: 0, lipides: 0 })
 
   const today = new Date().toISOString().split('T')[0]
-  
-  // Couleurs du thème
+
   const accentBtn  = theme?.isFemme ? 'bg-pink-600 hover:bg-pink-700 text-white' : 'bg-brand-600 hover:bg-brand-700 text-white'
   const accentText = theme?.isFemme ? 'text-pink-600' : 'text-brand-600'
   const accentBg   = theme?.isFemme ? 'bg-pink-600' : 'bg-brand-600'
@@ -112,13 +291,14 @@ export default function CoachHome() {
 
   async function fetchPersonalData(athleteId) {
     const { data: blocs } = await supabase
-      .from('blocs').select('id, objectifs_bloc(*)')
+      .from('blocs').select('id, name, objectifs_bloc(*)')
       .eq('athlete_id', athleteId)
       .order('created_at', { ascending: false }).limit(1)
     if (!blocs?.length) return
 
     const bloc = blocs[0]
     setActiveBlocId(bloc.id)
+    setActiveBloc(bloc)
     const obj  = Array.isArray(bloc.objectifs_bloc) ? bloc.objectifs_bloc[0] : bloc.objectifs_bloc
     setMyObjectifs(obj)
 
@@ -127,12 +307,12 @@ export default function CoachHome() {
     if (semaines?.length) {
       const activeSem = await findActiveSemaine(semaines, athleteId)
       setActiveSemaine(activeSem)
-      
+
       const { data: sc } = await supabase
         .from('seances')
         .select('id, nom, ordre, exercices(id, series_realisees(id))')
         .eq('semaine_id', activeSem.id).order('ordre')
-      
+
       setSeances(sc || [])
 
       const seancesNormales = (sc || []).filter(s => s.nom !== 'Bonus' && (s.exercices?.length || 0) > 0)
@@ -158,7 +338,6 @@ export default function CoachHome() {
       setMySuivi({ avgs, sportJours: tracking.filter(d => d.sport_fait).length, nbJours: tracking.length })
     }
 
-    // Charger les repas pour l'IA et les favoris
     await fetchRepasJour(athleteId)
     await fetchFavoris(athleteId)
   }
@@ -190,22 +369,18 @@ export default function CoachHome() {
     setFavoris(data || [])
   }
 
+  // ✅ FIX : passe par /api/analyze-repas comme AthleteHome
   async function analyzeRepas() {
     if (!repasInput.trim()) return
     setAnalyzeLoading(true)
     try {
-      const response = await fetch('https://api.anthropic.com/v1/messages', {
+      const response = await fetch('/api/analyze-repas', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          model: 'claude-sonnet-4-20250514', max_tokens: 300,
-          system: `Expert nutrition. Réponds UNIQUEMENT avec du JSON valide, sans markdown:\n{"kcal":number,"proteines":number,"glucides":number,"lipides":number}`,
-          messages: [{ role: 'user', content: repasInput }]
-        })
+        body: JSON.stringify({ meal: repasInput })
       })
-      const data = await response.json()
-      const text = data.content?.[0]?.text || '{}'
-      const macros = JSON.parse(text.replace(/```[a-z]*|```/g, '').trim())
+      if (!response.ok) throw new Error('Erreur serveur')
+      const macros = await response.json()
 
       await supabase.from('repas').insert({
         athlete_id: profile.id, date: today, description: repasInput.trim(),
@@ -215,13 +390,13 @@ export default function CoachHome() {
         lipides:   Math.round((macros.lipides   || 0) * 10) / 10,
       })
       setRepasInput('')
-      
+
       const { data: allRepas } = await supabase.from('repas').select('*')
         .eq('athlete_id', profile.id).eq('date', today).order('created_at')
       const list = allRepas || []
       setRepasJour(list)
       const newTotals = recalcTotals(list)
-      
+
       if (activeBlocId) {
         await supabase.from('data_tracking').upsert({
           athlete_id: profile.id, date: today, bloc_id: activeBlocId,
@@ -247,7 +422,6 @@ export default function CoachHome() {
   }
   async function deleteRepas(id) { await supabase.from('repas').delete().eq('id', id); await fetchRepasJour() }
   async function deleteFavori(id) { await supabase.from('repas_favoris').delete().eq('id', id); await fetchFavoris() }
-  // ------------------------------------
 
   function relativeDate(dateStr) {
     if (!dateStr) return 'jamais'
@@ -372,7 +546,12 @@ export default function CoachHome() {
             </div>
           )}
 
-          {/* 3. ── Mon suivi 7j ── */}
+          {/* 3. ── Objectifs perso ── */}
+          {isWidgetEnabled('suivi_perso') && activeBloc && (
+            <ObjectifsBloc bloc={activeBloc} onSave={() => fetchPersonalData(profile.id)} />
+          )}
+
+          {/* 4. ── Mon suivi 7j ── */}
           {isWidgetEnabled('suivi_perso') && (
             mySuivi ? (
               <div className="bg-white border border-gray-100 rounded-xl p-4">
@@ -412,7 +591,7 @@ export default function CoachHome() {
             )
           )}
 
-          {/* 4. ── Saisie repas IA ── */}
+          {/* 5. ── Saisie repas IA ── */}
           {isWidgetEnabled('saisie_repas') && (
             <div className="bg-white border border-gray-100 rounded-xl p-4">
               <div className="flex items-center justify-between mb-2">
@@ -474,7 +653,7 @@ export default function CoachHome() {
             </div>
           )}
 
-          {/* 5. ── Mes macros du jour ── */}
+          {/* 6. ── Mes macros du jour ── */}
           {isWidgetEnabled('macros_jour') && (
             myMacros ? (
               <div className="bg-white border border-gray-100 rounded-xl p-4">
@@ -515,7 +694,7 @@ export default function CoachHome() {
             )
           )}
 
-          {/* 6. ── Séances de la semaine ── */}
+          {/* 7. ── Séances de la semaine ── */}
           {isWidgetEnabled('semaine_seances') && seances.length > 0 && (
             <div className="bg-white border border-gray-100 rounded-xl p-4">
               <div className="flex items-center justify-between mb-2">
