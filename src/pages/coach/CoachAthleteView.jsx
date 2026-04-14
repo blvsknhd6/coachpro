@@ -50,7 +50,6 @@ export default function CoachAthleteView() {
 
   async function fetchSeances(semaineId) {
     setLoading(true)
-    // On sélectionne semaine_id dans activites_realisees pour pouvoir filtrer ensuite
     const { data } = await supabase
       .from('seances')
       .select('*, exercices(*, series_realisees(*)), activites_bonus(*, activites_realisees(id, athlete_id, semaine_id, realisee))')
@@ -84,7 +83,6 @@ export default function CoachAthleteView() {
       )
       if (done.length) text += `## Bonus réalisés\n${done.map(a => `  ✓ ${a.nom}`).join('\n')}\n\n`
     }
-    // Tracking — filtré par les 7 derniers jours du bloc courant
     const { data: tracking } = await supabase
       .from('data_tracking')
       .select('*')
@@ -211,6 +209,10 @@ function SeanceCard({ seance, semaineId, athleteId, isFemme, navigate }) {
       .then(({ data }) => { if (data) setNote(data.contenu || '') })
   }, [seance.id, semaineId])
 
+  // FIX : les exercices sont déjà uniques par id — on les affiche tels quels,
+  // triés par ordre. Pas de groupement par nom.
+  const exercicesTries = (seance.exercices || []).sort((a, b) => a.ordre - b.ordre)
+
   return (
     <div className="bg-white border border-gray-100 rounded-xl overflow-hidden">
       <div className="px-5 py-4 flex items-center justify-between">
@@ -232,7 +234,8 @@ function SeanceCard({ seance, semaineId, athleteId, isFemme, navigate }) {
           {note && (
             <div className="bg-gray-50 rounded-lg px-3 py-2 text-xs text-gray-600 italic">💬 {note}</div>
           )}
-          {(seance.exercices || []).sort((a, b) => a.ordre - b.ordre).map(ex => {
+          {exercicesTries.map(ex => {
+            // FIX : séries indexées par exercice id — pas de collision possible
             const seriesDone = (ex.series_realisees || []).sort((a, b) => a.numero_set - b.numero_set)
             return (
               <div key={ex.id}>
@@ -250,7 +253,7 @@ function SeanceCard({ seance, semaineId, athleteId, isFemme, navigate }) {
                   <div className="flex flex-wrap gap-1">
                     {seriesDone.map(s => (
                       <span key={s.id} className={`text-xs px-2 py-0.5 rounded-md border ${isFemme ? 'bg-pink-50 border-pink-100 text-pink-700' : 'bg-brand-50 border-brand-100 text-brand-700'}`}>
-                        S{s.numero_set} : {s.charge ? `${s.charge}kg` : '—'} × {s.reps || '—'}{s.notes ? ` · ${s.notes}` : ''}
+                        S{s.numero_set} : {s.charge ? `${s.charge}kg` : '—'} × {s.reps || '—'}{s.rpe ? ` @${s.rpe}` : ''}{s.notes ? ` · ${s.notes}` : ''}
                       </span>
                     ))}
                   </div>
@@ -268,7 +271,6 @@ function SeanceCard({ seance, semaineId, athleteId, isFemme, navigate }) {
 
 function BonusCard({ seance, semaineId, isFemme, navigate }) {
   const activites = seance.activites_bonus || []
-  // Fix: filtre par semaine_id (maintenant présent dans la query parente)
   const done = activites.filter(a =>
     (a.activites_realisees || []).some(r => r.realisee && r.semaine_id === semaineId)
   )

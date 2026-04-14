@@ -8,7 +8,6 @@ import Layout from '../../components/shared/Layout'
 const RPE_VALUES = [6, 6.5, 7, 7.5, 8, 8.5, 9, 9.5, 10]
 const LIFT_LABELS = { squat: '🏋️ Squat', bench: '💪 Bench', deadlift: '⚡ Deadlift' }
 
-// ── 1RM calculation (Epley + RPE adjustment) ──────────────────────────────
 function epley1RM(weight, reps, rpe = null) {
   if (!weight || !reps || reps <= 0) return null
   const rir = rpe != null ? Math.max(0, 10 - Number(rpe)) : 0
@@ -16,7 +15,6 @@ function epley1RM(weight, reps, rpe = null) {
   return Math.round(Number(weight) * (1 + adjReps / 30) * 10) / 10
 }
 
-// ── Beep on rest timer end ────────────────────────────────────────────────
 function playBeep() {
   try {
     const ctx = new (window.AudioContext || window.webkitAudioContext)()
@@ -33,7 +31,6 @@ function playBeep() {
   } catch (e) {}
 }
 
-// ── Main component ─────────────────────────────────────────────────────────
 export default function AthleteSeance() {
   const { seanceId, semaineId } = useParams()
   const { profile } = useAuth()
@@ -44,6 +41,7 @@ export default function AthleteSeance() {
   const [exercices, setExercices]               = useState([])
   const [activites, setActivites]               = useState([])
   const [series, setSeries]                     = useState({})
+  // FIX: seriesPrev indexé par ex.id (pas ex.nom) pour gérer les doublons
   const [seriesPrev, setSeriesPrev]             = useState({})
   const [notePrev, setNotePrev]                 = useState('')
   const [activitesRealisees, setActivitesRealisees] = useState({})
@@ -58,10 +56,9 @@ export default function AthleteSeance() {
   const [showChargeIndicative, setShowChargeIndicative] = useState(false)
   const [showRpe, setShowRpe]                   = useState(false)
 
-  // Powerlifting
   const [isPowerlifting, setIsPowerlifting] = useState(false)
-  const [powerMaxes, setPowerMaxes]         = useState({})   // { squat: 150, bench: 100, deadlift: 180 }
-  const [showCalc, setShowCalc]             = useState(null) // { lift, defaultCharge, defaultReps }
+  const [powerMaxes, setPowerMaxes]         = useState({})
+  const [showCalc, setShowCalc]             = useState(null)
 
   useEffect(() => { fetchAll() }, [seanceId, semaineId, profile])
 
@@ -82,7 +79,6 @@ export default function AthleteSeance() {
     setShowRpe(bloc?.show_rpe || false)
     setIsPowerlifting(bloc?.powerlifting || false)
 
-    // Fetch powerlifting maxes if needed
     if (bloc?.powerlifting && semaine?.bloc_id) {
       const { data: maxData } = await supabase.from('powerlifting_maxes').select('lift, max_kg')
         .eq('bloc_id', semaine.bloc_id).eq('athlete_id', athId)
@@ -124,21 +120,41 @@ export default function AthleteSeance() {
   async function fetchSeriesPrev(exs, currentSemaineId, athId, seanceNom) {
     const { data: semaineCourante } = await supabase.from('semaines').select('numero, bloc_id').eq('id', currentSemaineId).single()
     if (!semaineCourante || semaineCourante.numero <= 1) return
-    const { data: semPrev } = await supabase.from('semaines').select('id').eq('bloc_id', semaineCourante.bloc_id).eq('numero', semaineCourante.numero - 1).single()
+    const { data: semPrev } = await supabase.from('semaines').select('id')
+      .eq('bloc_id', semaineCourante.bloc_id).eq('numero', semaineCourante.numero - 1).single()
     if (!semPrev) return
-    const { data: seancePrev } = await supabase.from('seances').select('id').eq('semaine_id', semPrev.id).eq('nom', seanceNom || '').single()
+    const { data: seancePrev } = await supabase.from('seances').select('id')
+      .eq('semaine_id', semPrev.id).eq('nom', seanceNom || '').single()
     if (!seancePrev) return
-    const { data: notePrevData } = await supabase.from('notes_seances').select('contenu').eq('athlete_id', athId).eq('seance_id', seancePrev.id).eq('semaine_id', semPrev.id).single()
+
+    const { data: notePrevData } = await supabase.from('notes_seances').select('contenu')
+      .eq('athlete_id', athId).eq('seance_id', seancePrev.id).eq('semaine_id', semPrev.id).single()
     setNotePrev(notePrevData?.contenu || '')
-    const { data: exsPrev } = await supabase.from('exercices').select('*').eq('seance_id', seancePrev.id).order('ordre')
-    const { data: srPrev } = await supabase.from('series_realisees').select('*').eq('semaine_id', semPrev.id).eq('athlete_id', athId).in('exercice_id', (exsPrev || []).map(e => e.id)).order('numero_set')
-    const mapByNom = {}
-    ;(exsPrev || []).forEach(ex => { mapByNom[ex.nom] = [] })
+
+    // FIX : on charge les exos précédents triés par ordre
+    const { data: exsPrev } = await supabase.from('exercices').select('*')
+      .eq('seance_id', seancePrev.id).order('ordre')
+    const { data: srPrev } = await supabase.from('series_realisees').select('*')
+      .eq('semaine_id', semPrev.id).eq('athlete_id', athId)
+      .in('exercice_id', (exsPrev || []).map(e => e.id)).order('numero_set')
+
+    // FIX : on construit un map par ORDRE de l'exercice (pas par nom)
+    // Chaque exercice courant est associé à l'exercice précédent du même ordre
+    // (même position dans la séance = même "slot" topset/backoff)
+    const mapByOrdre = {}
+    ;(exsPrev || []).forEach(ex => { mapByOrdre[ex.ordre] = [] })
     ;(srPrev || []).forEach(s => {
-      const ex = (exsPrev || []).find(e => e.id === s.exercice_id)
-      if (ex && mapByNom[ex.nom]) mapByNom[ex.nom].push(s)
+      const exPrev = (exsPrev || []).find(e => e.id === s.exercice_id)
+      if (exPrev) mapByOrdre[exPrev.ordre].push(s)
     })
-    setSeriesPrev(mapByNom)
+
+    // On associe chaque exercice courant à son équivalent par ordre
+    const mapByCurrentId = {}
+    ;(exs || []).forEach(ex => {
+      mapByCurrentId[ex.id] = mapByOrdre[ex.ordre] || []
+    })
+
+    setSeriesPrev(mapByCurrentId)
   }
 
   async function saveNoteSeance(contenu) {
@@ -283,7 +299,7 @@ export default function AthleteSeance() {
         {exercices.map(ex => (
           <ExerciceCard key={ex.id} exercice={ex}
             series={series[ex.id] || []}
-            prevSeries={seriesPrev[ex.nom] || []}
+            prevSeries={seriesPrev[ex.id] || []}
             showChargeIndicative={showChargeIndicative}
             showRpe={showRpe}
             theme={theme}
@@ -327,9 +343,10 @@ export default function AthleteSeance() {
 }
 
 // ── Récap semaine précédente ──────────────────────────────────────────────
+// FIX : prend seriesPrev indexé par ex.id
 function RecapSemainePrev({ exercices, seriesPrev, notePrev, theme }) {
   const [open, setOpen] = useState(true)
-  const exsAvecPerfs = exercices.filter(ex => (seriesPrev[ex.nom] || []).some(s => s.charge || s.reps))
+  const exsAvecPerfs = exercices.filter(ex => (seriesPrev[ex.id] || []).some(s => s.charge || s.reps))
   return (
     <div className="bg-gray-50 border border-gray-100 rounded-xl mb-4 overflow-hidden">
       <button onClick={() => setOpen(o => !o)} className="w-full flex items-center justify-between px-4 py-3">
@@ -343,7 +360,7 @@ function RecapSemainePrev({ exercices, seriesPrev, notePrev, theme }) {
             <div key={ex.id}>
               <p className="text-xs font-medium text-gray-600 mb-1">{ex.nom}</p>
               <div className="flex flex-wrap gap-1">
-                {(seriesPrev[ex.nom] || []).map((s, i) => (
+                {(seriesPrev[ex.id] || []).map((s, i) => (
                   <span key={i} className={`text-xs border px-2 py-0.5 rounded-md ${theme.isFemme ? 'bg-pink-50 border-pink-100 text-pink-600' : 'bg-brand-50 border-brand-100 text-brand-600'}`}>
                     S{i+1} : {s.charge ? `${s.charge}kg` : '—'} × {s.reps || '—'}{s.rpe ? ` @${s.rpe}` : ''}{s.notes ? ` · ${s.notes}` : ''}
                   </span>
@@ -362,7 +379,6 @@ function ExerciceCard({ exercice, series, prevSeries, showChargeIndicative, show
   const nextSet   = series.length + 1
   const canAddSet = series.length < exercice.sets
 
-  // Best estimated 1RM from completed series
   const best1RM = isPowerlifting && exercice.main_lift
     ? series.reduce((best, s) => {
         const est = epley1RM(s.charge, s.reps, s.rpe)
@@ -399,7 +415,6 @@ function ExerciceCard({ exercice, series, prevSeries, showChargeIndicative, show
           {exercice.indications && (
             <p className="text-xs text-amber-600 mt-0.5 font-medium">{exercice.indications}</p>
           )}
-          {/* Powerlifting: max reference + best 1RM this session */}
           {isPowerlifting && exercice.main_lift && (
             <div className="flex items-center gap-3 mt-1 flex-wrap">
               {maxForLift && (
@@ -468,23 +483,18 @@ function SerieRow({ serie, index, prevSerie, repRange, repos, showRpe, onUpdate,
   const ringClass = theme.isFemme ? 'focus:ring-2 focus:ring-pink-300' : 'focus:ring-2 focus:ring-brand-400'
   const inputBase = `border border-gray-100 rounded-lg px-3 py-2.5 text-sm focus:outline-none bg-gray-50 focus:bg-white transition-colors ${ringClass}`
 
-  // % of max for powerlifting
   const pctOfMax = isPowerlifting && maxForLift && charge
     ? Math.round((Number(charge) / maxForLift) * 100)
     : null
 
-  // Estimated 1RM (live) when both charge and reps are filled
   const liveEst1RM = isPowerlifting && charge && reps
     ? epley1RM(charge, reps, rpe || null)
     : null
 
   return (
     <div className="space-y-1 pb-2 border-b border-gray-50 last:border-0 last:pb-0">
-      {/* Row 1: index | charge | reps | delete */}
       <div className="flex items-center gap-2">
         <span className="w-5 text-xs font-medium text-gray-400 text-center flex-shrink-0">{index}</span>
-
-        {/* Charge */}
         <div className="flex-1 relative">
           <input ref={chargeRef} type="number" inputMode="decimal" value={charge}
             placeholder={prevSerie?.charge ? String(prevSerie.charge) : 'kg'}
@@ -500,46 +510,37 @@ function SerieRow({ serie, index, prevSerie, repRange, repos, showRpe, onUpdate,
             </span>
           )}
         </div>
-
-        {/* Reps */}
         <input type="number" inputMode="numeric" value={reps}
           placeholder={prevSerie?.reps ? String(prevSerie.reps) : (repRange || 'reps')}
           onChange={e => setReps(e.target.value)}
           onBlur={() => { onUpdate('reps', reps); if (reps) onStartChrono() }}
           className={inputBase + ' flex-1'}
         />
-
         <button onClick={onDelete} className="text-gray-200 hover:text-red-400 text-xl flex-shrink-0">×</button>
       </div>
 
-      {/* Row 2: notes | RPE (now visible on mobile too) */}
       <div className="flex gap-2 items-center pl-7">
         <input type="text" value={notes} placeholder="Note (facile, douleur…)"
           onChange={e => setNotes(e.target.value)}
           onBlur={() => onUpdate('notes', notes)}
           className={inputBase + ' flex-1 text-xs py-2'}
         />
-        {/* RPE — moved here for mobile visibility */}
         {showRpe && (
-          <select
-            value={rpe}
+          <select value={rpe}
             onChange={e => { setRpe(e.target.value); onUpdate('rpe', e.target.value || null) }}
-            className={inputBase + ' flex-shrink-0 text-xs py-2 w-[72px] pr-1'}
-          >
+            className={inputBase + ' flex-shrink-0 text-xs py-2 w-[72px] pr-1'}>
             <option value="">RPE</option>
             {RPE_VALUES.map(v => <option key={v} value={v}>@{v}</option>)}
           </select>
         )}
       </div>
 
-      {/* Row 3: estimated 1RM (powerlifting) */}
       {liveEst1RM && (
         <div className="pl-7">
           <p className="text-xs text-amber-600 font-medium">~1RM estimé : {liveEst1RM}kg</p>
         </div>
       )}
 
-      {/* Row 4: previous series reference */}
       {prevSerie && (prevSerie.charge || prevSerie.reps) && (
         <div className="pl-7">
           <p className="text-xs text-gray-300">
@@ -586,16 +587,14 @@ function Calculator1RM({ lift, defaultCharge, defaultReps, currentMax, onSaveMax
               <input type="number" inputMode="decimal" value={charge}
                 onChange={e => setCharge(e.target.value)}
                 className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-amber-400"
-                placeholder="100"
-              />
+                placeholder="100" />
             </div>
             <div>
               <label className="text-xs font-medium text-gray-500 block mb-1">Répétitions</label>
               <input type="number" inputMode="numeric" value={reps}
                 onChange={e => setReps(e.target.value)}
                 className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-amber-400"
-                placeholder="5"
-              />
+                placeholder="5" />
             </div>
             <div>
               <label className="text-xs font-medium text-gray-500 block mb-1">RPE (opt.)</label>
@@ -606,8 +605,6 @@ function Calculator1RM({ lift, defaultCharge, defaultReps, currentMax, onSaveMax
               </select>
             </div>
           </div>
-
-          {/* Result */}
           {est ? (
             <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 text-center">
               <p className="text-xs text-amber-600 mb-1">1RM estimé</p>
@@ -624,8 +621,6 @@ function Calculator1RM({ lift, defaultCharge, defaultReps, currentMax, onSaveMax
               Entre charge + répétitions pour calculer
             </div>
           )}
-
-          {/* Save as new max */}
           {onSaveMax && est && (
             <button onClick={handleSave} disabled={saved}
               className={`w-full py-2.5 rounded-xl text-sm font-medium transition-all ${saved ? 'bg-green-500 text-white' : 'bg-amber-500 hover:bg-amber-600 text-white'}`}>
