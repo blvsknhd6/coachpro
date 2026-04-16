@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { supabase } from '../lib/supabase'
 import { useAuth } from './useAuth'
 
@@ -32,12 +32,31 @@ export function usePreferences() {
   const { profile } = useAuth()
   const [prefs, setPrefs]     = useState(null)
   const [loading, setLoading] = useState(true)
+  const saveTimer             = useRef(null)
+  const latestPrefs           = useRef(null)
 
   const isCoach        = profile?.role === 'coach'
   const defaultWidgets = isCoach ? DEFAULT_COACH_WIDGETS : DEFAULT_ATHLETE_WIDGETS
   const deprecated     = isCoach ? DEPRECATED_COACH_WIDGETS : []
 
   useEffect(() => { if (profile) loadPrefs() }, [profile])
+
+  // Flush debounced save on unmount
+  useEffect(() => {
+    return () => {
+      if (saveTimer.current) {
+        clearTimeout(saveTimer.current)
+        if (latestPrefs.current && profile) {
+          supabase.from('user_preferences').upsert({
+            user_id:            profile.id,
+            home_widgets:       latestPrefs.current.home_widgets,
+            progression_config: latestPrefs.current.progression_config,
+            updated_at:         new Date().toISOString(),
+          }, { onConflict: 'user_id' })
+        }
+      }
+    }
+  }, [profile])
 
   async function loadPrefs() {
     const { data } = await supabase
@@ -57,15 +76,20 @@ export function usePreferences() {
     setLoading(false)
   }
 
-  async function savePrefs(updates) {
+  function savePrefs(updates) {
     const newPrefs = { ...prefs, ...updates }
     setPrefs(newPrefs)
-    await supabase.from('user_preferences').upsert({
-      user_id:            profile.id,
-      home_widgets:       newPrefs.home_widgets,
-      progression_config: newPrefs.progression_config,
-      updated_at:         new Date().toISOString(),
-    }, { onConflict: 'user_id' })
+    latestPrefs.current = newPrefs
+
+    clearTimeout(saveTimer.current)
+    saveTimer.current = setTimeout(async () => {
+      await supabase.from('user_preferences').upsert({
+        user_id:            profile.id,
+        home_widgets:       newPrefs.home_widgets,
+        progression_config: newPrefs.progression_config,
+        updated_at:         new Date().toISOString(),
+      }, { onConflict: 'user_id' })
+    }, 600)
   }
 
   function isWidgetEnabled(id) {

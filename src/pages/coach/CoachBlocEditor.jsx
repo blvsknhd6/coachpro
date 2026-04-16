@@ -115,48 +115,142 @@ export default function CoachBlocEditor() {
   async function addSemaine() {
     const num = (semaines[semaines.length - 1]?.numero || 0) + 1
     const { data: newSem } = await supabase.from('semaines').insert({ bloc_id: blocId, numero: num }).select().single()
+
     if (semaines.length > 0) {
-      const { data: ref } = await supabase.from('seances').select('*, exercices(*), activites_bonus(*)').eq('semaine_id', semaines[0].id).order('ordre')
-      for (const sc of ref || []) {
-        const { data: newSc } = await supabase.from('seances').insert({ semaine_id: newSem.id, nom: sc.nom, ordre: sc.ordre }).select().single()
-        if (sc.exercices?.length) await supabase.from('exercices').insert(sc.exercices.map(ex => ({ seance_id: newSc.id, muscle: ex.muscle, nom: ex.nom, sets: ex.sets, rep_range: ex.rep_range, repos: ex.repos, indications: ex.indications, charge_indicative: ex.charge_indicative, rpe_cible: ex.rpe_cible, unilateral: ex.unilateral, main_lift: ex.main_lift, ordre: ex.ordre })))
-        if (sc.activites_bonus?.length) await supabase.from('activites_bonus').insert(sc.activites_bonus.map(act => ({ seance_id: newSc.id, nom: act.nom, description: act.description, ordre: act.ordre })))
+      // Charger la semaine de référence (S1) avec tout son contenu en une requête
+      const { data: ref } = await supabase
+        .from('seances')
+        .select('*, exercices(*), activites_bonus(*)')
+        .eq('semaine_id', semaines[0].id)
+        .order('ordre')
+
+      if (ref?.length) {
+        // Batch insert toutes les séances
+        const { data: newSeances } = await supabase.from('seances')
+          .insert(ref.map(sc => ({ semaine_id: newSem.id, nom: sc.nom, ordre: sc.ordre })))
+          .select()
+
+        const oldToNewSc = {}
+        ref.forEach((sc, i) => { oldToNewSc[sc.id] = newSeances[i].id })
+
+        // Batch insert exercices et bonus en parallèle
+        const allExercices = ref.flatMap(sc =>
+          (sc.exercices || []).map(ex => ({
+            seance_id: oldToNewSc[sc.id],
+            muscle: ex.muscle, nom: ex.nom, sets: ex.sets,
+            rep_range: ex.rep_range, repos: ex.repos,
+            indications: ex.indications, ordre: ex.ordre,
+            charge_indicative: ex.charge_indicative,
+            rpe_cible: ex.rpe_cible,
+            unilateral: ex.unilateral,
+            main_lift: ex.main_lift,
+          }))
+        )
+        const allBonus = ref.flatMap(sc =>
+          (sc.activites_bonus || []).map(act => ({
+            seance_id: oldToNewSc[sc.id],
+            nom: act.nom,
+            description: act.description,
+            ordre: act.ordre,
+          }))
+        )
+
+        await Promise.all([
+          allExercices.length ? supabase.from('exercices').insert(allExercices) : null,
+          allBonus.length ? supabase.from('activites_bonus').insert(allBonus) : null,
+        ].filter(Boolean))
       }
     }
+
     setSemaines(s => [...s, newSem]); setActiveSemaine(newSem)
   }
 
   async function deleteSemaine(semaineId) {
     await supabase.from('semaines').delete().eq('id', semaineId)
     const remaining = semaines.filter(s => s.id !== semaineId)
-    for (let i = 0; i < remaining.length; i++) { await supabase.from('semaines').update({ numero: i + 1 }).eq('id', remaining[i].id); remaining[i] = { ...remaining[i], numero: i + 1 } }
+    for (let i = 0; i < remaining.length; i++) {
+      await supabase.from('semaines').update({ numero: i + 1 }).eq('id', remaining[i].id)
+      remaining[i] = { ...remaining[i], numero: i + 1 }
+    }
     setSemaines(remaining); setActiveSemaine(remaining[remaining.length - 1] || null); setConfirmDeleteSemaine(null)
   }
 
+  /**
+   * Propage les exercices de la séance courante vers toutes les semaines suivantes.
+   * Version batch : 2 requêtes de lecture groupées + écritures en parallèle.
+   */
   async function propagate(seanceNom, currentNum) {
-    const suiv = semaines.filter(s => s.numero > currentNum); if (!suiv.length) return
-    const sc = seances.find(s => s.nom === seanceNom); if (!sc) return
-    const { data: exsCour } = await supabase.from('exercices').select('*').eq('seance_id', sc.id).order('ordre')
-    for (const sem of suiv) {
-      const { data: scSuiv } = await supabase.from('seances').select('id').eq('semaine_id', sem.id).eq('nom', seanceNom).single()
-      if (!scSuiv) continue
-      const { data: exsEx } = await supabase.from('exercices').select('*').eq('seance_id', scSuiv.id).order('ordre')
-      const byOrdre = {}; (exsEx || []).forEach(e => { byOrdre[e.ordre] = e })
-      const ordres = new Set((exsCour || []).map(e => e.ordre))
-      for (const ex of exsCour || []) {
+    const suiv = semaines.filter(s => s.numero > currentNum)
+    if (!suiv.length) return
+
+    const sc = seances.find(s => s.nom === seanceNom)
+    if (!sc) return
+
+    const { data: exsCour } = await supabase
+      .from('exercices').select('*').eq('seance_id', sc.id).order('ordre')
+    if (!exsCour?.length) return
+
+    // Batch : toutes les séances cibles en une requête
+    const { data: scSuivAll } = await supabase
+      .from('seances')
+      .select('id, semaine_id')
+      .in('semaine_id', suiv.map(s => s.id))
+      .eq('nom', seanceNom)
+    if (!scSuivAll?.length) return
+
+    // Batch : tous les exercices existants dans ces séances
+    const { data: exsExAll } = await supabase
+      .from('exercices')
+      .select('*')
+      .in('seance_id', scSuivAll.map(s => s.id))
+      .order('ordre')
+
+    const ordres = new Set(exsCour.map(e => e.ordre))
+    const updates = []
+    const inserts = []
+    const deleteIds = []
+
+    for (const scSuiv of scSuivAll) {
+      const exsEx = (exsExAll || []).filter(e => e.seance_id === scSuiv.id)
+      const byOrdre = {}
+      exsEx.forEach(e => { byOrdre[e.ordre] = e })
+
+      for (const ex of exsCour) {
+        const payload = {
+          muscle: ex.muscle, nom: ex.nom, sets: ex.sets,
+          rep_range: ex.rep_range, repos: ex.repos,
+          charge_indicative: ex.charge_indicative,
+          rpe_cible: ex.rpe_cible,
+          unilateral: ex.unilateral,
+          main_lift: ex.main_lift,
+        }
         const cible = byOrdre[ex.ordre]
-        if (cible) await supabase.from('exercices').update({ muscle: ex.muscle, nom: ex.nom, sets: ex.sets, rep_range: ex.rep_range, repos: ex.repos, charge_indicative: ex.charge_indicative, rpe_cible: ex.rpe_cible, unilateral: ex.unilateral, main_lift: ex.main_lift }).eq('id', cible.id)
-        else await supabase.from('exercices').insert({ seance_id: scSuiv.id, muscle: ex.muscle, nom: ex.nom, sets: ex.sets, rep_range: ex.rep_range, repos: ex.repos, charge_indicative: ex.charge_indicative, rpe_cible: ex.rpe_cible, unilateral: ex.unilateral, main_lift: ex.main_lift, ordre: ex.ordre, indications: ex.indications })
+        if (cible) {
+          updates.push({ id: cible.id, ...payload })
+        } else {
+          inserts.push({ seance_id: scSuiv.id, ordre: ex.ordre, indications: ex.indications, ...payload })
+        }
       }
-      const aSup = (exsEx || []).filter(e => !ordres.has(e.ordre))
-      if (aSup.length) await supabase.from('exercices').delete().in('id', aSup.map(e => e.id))
+
+      const aSup = exsEx.filter(e => !ordres.has(e.ordre))
+      deleteIds.push(...aSup.map(e => e.id))
     }
+
+    // Toutes les écritures en parallèle
+    await Promise.all([
+      ...updates.map(({ id, ...payload }) =>
+        supabase.from('exercices').update(payload).eq('id', id)
+      ),
+      inserts.length ? supabase.from('exercices').insert(inserts) : null,
+      deleteIds.length ? supabase.from('exercices').delete().in('id', deleteIds) : null,
+    ].filter(Boolean))
   }
 
   async function addExercice(seanceId, seanceNom) {
     const s = seances.find(sc => sc.id === seanceId)
     await supabase.from('exercices').insert({ seance_id: seanceId, nom: '', sets: 3, rep_range: '8-10', repos: "2'", ordre: s?.exercices?.length || 0 })
-    await fetchSeances(activeSemaine.id); await propagate(seanceNom, activeSemaine.numero)
+    await fetchSeances(activeSemaine.id)
+    await propagate(seanceNom, activeSemaine.numero)
   }
 
   async function updateExercice(id, field, value, seanceNom) {
@@ -168,7 +262,9 @@ export default function CoachBlocEditor() {
   }
 
   async function deleteExercice(id, seanceNom) {
-    await supabase.from('exercices').delete().eq('id', id); await fetchSeances(activeSemaine.id); await propagate(seanceNom, activeSemaine.numero)
+    await supabase.from('exercices').delete().eq('id', id)
+    await fetchSeances(activeSemaine.id)
+    await propagate(seanceNom, activeSemaine.numero)
   }
 
   async function reorderExercices(seanceId, fromIdx, toIdx) {
@@ -185,21 +281,33 @@ export default function CoachBlocEditor() {
   async function updateSeanceNom(seanceId, ancien, nouveau) {
     await supabase.from('seances').update({ nom: nouveau }).eq('id', seanceId)
     setSeances(prev => prev.map(s => s.id === seanceId ? { ...s, nom: nouveau } : s))
-    for (const sem of semaines.filter(s => s.numero > activeSemaine.numero)) await supabase.from('seances').update({ nom: nouveau }).eq('semaine_id', sem.id).eq('nom', ancien)
+    for (const sem of semaines.filter(s => s.numero > activeSemaine.numero)) {
+      await supabase.from('seances').update({ nom: nouveau }).eq('semaine_id', sem.id).eq('nom', ancien)
+    }
   }
 
   async function addCustomExo(muscle, nom) {
     if (!nom.trim()) return
     const { data: { user } } = await supabase.auth.getUser()
-    await supabase.from('exercices_custom').upsert({ coach_id: user.id, muscle, nom: nom.trim() }); fetchCustomExos()
+    await supabase.from('exercices_custom').upsert({ coach_id: user.id, muscle, nom: nom.trim() })
+    fetchCustomExos()
   }
 
   async function toggleBlocOption(field, value) {
-    await supabase.from('blocs').update({ [field]: value }).eq('id', blocId); setBloc(b => ({ ...b, [field]: value }))
+    await supabase.from('blocs').update({ [field]: value }).eq('id', blocId)
+    setBloc(b => ({ ...b, [field]: value }))
   }
 
   if (showCreateBloc || semaines.length === 0) {
-    return (<Layout><div className="flex items-center gap-3 mb-6"><Link to={`/coach/athlete/${bloc?.athlete_id}`} className="text-sm text-gray-400 hover:text-gray-700">← Retour</Link><h1 className="text-xl font-semibold">{bloc?.name} — Créer le programme</h1></div><CreateBlocForm onSubmit={createBlocStructure} /></Layout>)
+    return (
+      <Layout>
+        <div className="flex items-center gap-3 mb-6">
+          <Link to={`/coach/athlete/${bloc?.athlete_id}`} className="text-sm text-gray-400 hover:text-gray-700">← Retour</Link>
+          <h1 className="text-xl font-semibold">{bloc?.name} — Créer le programme</h1>
+        </div>
+        <CreateBlocForm onSubmit={createBlocStructure} />
+      </Layout>
+    )
   }
 
   const hasSuiv = semaines.some(s => s.numero > (activeSemaine?.numero || 1))
@@ -301,8 +409,6 @@ function SeanceEditor({ seance, showChargeIndicative, showRpe, isPowerlifting, g
 
   const sortedExos = (seance.exercices || []).sort((a, b) => a.ordre - b.ordre)
 
-  // cols: muscle(2) exo(2) sets(1) reps(1) repos(1) [charge(2)] [rpe(1)] [lift(2)] indic(2) = 9 base + optionals
-  // We keep indic inside the row flex, so grid = 9 + opts
   const gridCols = 9
     + (showChargeIndicative ? 2 : 0)
     + (showRpe ? 1 : 0)
@@ -324,7 +430,6 @@ function SeanceEditor({ seance, showChargeIndicative, showRpe, isPowerlifting, g
       </div>
 
       <div className="p-4 space-y-2">
-        {/* Header row */}
         <div className="flex gap-1 text-xs text-gray-400 font-medium pl-6">
           <div className="grid flex-1 gap-1" style={{ gridTemplateColumns: `repeat(${gridCols}, minmax(0, 1fr))` }}>
             <div className="col-span-2">Muscle</div>
@@ -364,18 +469,18 @@ function SeanceEditor({ seance, showChargeIndicative, showRpe, isPowerlifting, g
 }
 
 function ExerciceRow({ exercice, showChargeIndicative, showRpe, isPowerlifting, gridCols, getExosPourMuscle, onUpdate, onDelete, onAddCustomExo }) {
-  const [muscle, setMuscle]             = useState(exercice.muscle || '')
-  const [nom, setNom]                   = useState(exercice.nom || '')
-  const [sets, setSets]                 = useState(exercice.sets || 3)
-  const [repRange, setRepRange]         = useState(exercice.rep_range || '8-10')
-  const [repos, setRepos]               = useState(exercice.repos || "2'")
-  const [charge, setCharge]             = useState(exercice.charge_indicative || '')
-  const [rpe, setRpe]                   = useState(exercice.rpe_cible || '')
-  const [indication, setIndication]     = useState(exercice.indications || '')
-  const [unilateral, setUnilateral]     = useState(exercice.unilateral || false)
-  const [mainLift, setMainLift]         = useState(exercice.main_lift || '')
-  const [addingExo, setAddingExo]       = useState(false)
-  const [newExoName, setNewExoName]     = useState('')
+  const [muscle, setMuscle]         = useState(exercice.muscle || '')
+  const [nom, setNom]               = useState(exercice.nom || '')
+  const [sets, setSets]             = useState(exercice.sets || 3)
+  const [repRange, setRepRange]     = useState(exercice.rep_range || '8-10')
+  const [repos, setRepos]           = useState(exercice.repos || "2'")
+  const [charge, setCharge]         = useState(exercice.charge_indicative || '')
+  const [rpe, setRpe]               = useState(exercice.rpe_cible || '')
+  const [indication, setIndication] = useState(exercice.indications || '')
+  const [unilateral, setUnilateral] = useState(exercice.unilateral || false)
+  const [mainLift, setMainLift]     = useState(exercice.main_lift || '')
+  const [addingExo, setAddingExo]   = useState(false)
+  const [newExoName, setNewExoName] = useState('')
 
   const exosDispo = muscle ? getExosPourMuscle(muscle) : []
   function handleMuscleChange(v) { setMuscle(v); setNom(''); onUpdate('muscle', v); onUpdate('nom', '') }
@@ -389,13 +494,11 @@ function ExerciceRow({ exercice, showChargeIndicative, showRpe, isPowerlifting, 
     <div className="py-1">
       <div className="flex gap-1 items-start">
         <div className="grid flex-1 gap-1 items-start" style={{ gridTemplateColumns: `repeat(${gridCols}, minmax(0, 1fr))` }}>
-          {/* Muscle col-span-2 */}
           <div className="col-span-2">
             <select value={muscle} onChange={e => handleMuscleChange(e.target.value)} className={sel}>
               <option value="">—</option>{MUSCLES.map(m => <option key={m} value={m}>{m}</option>)}
             </select>
           </div>
-          {/* Exercice col-span-2 */}
           <div className="col-span-2">
             {addingExo ? (
               <div className="flex gap-1"><input autoFocus value={newExoName} onChange={e => setNewExoName(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleAddCustom()} placeholder="Nom…" className="flex-1 border border-brand-300 rounded px-2 py-1.5 text-sm focus:outline-none bg-white min-w-0" /><button onClick={handleAddCustom} className="text-brand-600 text-sm px-1">✓</button><button onClick={() => setAddingExo(false)} className="text-gray-400 text-sm px-1">✕</button></div>
@@ -405,22 +508,16 @@ function ExerciceRow({ exercice, showChargeIndicative, showRpe, isPowerlifting, 
               </select>
             )}
           </div>
-          {/* Sets */}
           <div><input type="number" value={sets} min={1} max={10} onChange={e => setSets(e.target.value)} onBlur={() => onUpdate('sets', sets)} className={sel + " text-center"} /></div>
-          {/* Reps */}
           <div><input value={repRange} onChange={e => setRepRange(e.target.value)} onBlur={() => onUpdate('rep_range', repRange)} placeholder="8-10" className={sel} /></div>
-          {/* Repos */}
           <div><select value={repos} onChange={e => { setRepos(e.target.value); onUpdate('repos', e.target.value) }} className={sel}>{TEMPS_REPOS.map(t => <option key={t} value={t}>{t}</option>)}</select></div>
-          {/* Charge indicative — col-span-2 */}
           {showChargeIndicative && (
             <div className="col-span-2 flex items-center gap-1">
               <input type="number" value={charge} onChange={e => setCharge(e.target.value)} onBlur={() => onUpdate('charge_indicative', charge)} placeholder="kg" className={sel + " flex-1"} />
               <button onClick={toggleUnilateral} className={`text-xs px-1.5 py-1.5 rounded border flex-shrink-0 transition-colors ${unilateral ? 'bg-brand-600 text-white border-brand-600' : 'bg-gray-50 text-gray-400 border-gray-100'}`}>×2</button>
             </div>
           )}
-          {/* RPE */}
           {showRpe && <div><input value={rpe} onChange={e => setRpe(e.target.value)} onBlur={() => onUpdate('rpe_cible', rpe)} placeholder="@8" className={sel} /></div>}
-          {/* Lift — col-span-2 */}
           {isPowerlifting && (
             <div className="col-span-2">
               <select value={mainLift} onChange={e => { setMainLift(e.target.value); onUpdate('main_lift', e.target.value || null) }} className={sel}>
@@ -431,7 +528,6 @@ function ExerciceRow({ exercice, showChargeIndicative, showRpe, isPowerlifting, 
               </select>
             </div>
           )}
-          {/* Indication col-span-2 */}
           <div className="col-span-2">
             <textarea value={indication} onChange={e => setIndication(e.target.value)} onBlur={() => onUpdate('indications', indication)}
               placeholder="Note coach…" rows={1}
@@ -440,7 +536,6 @@ function ExerciceRow({ exercice, showChargeIndicative, showRpe, isPowerlifting, 
             />
           </div>
         </div>
-        {/* Delete */}
         <button onClick={onDelete} className="text-gray-300 hover:text-red-400 text-lg leading-none mt-2 flex-shrink-0 w-5">×</button>
       </div>
       {!showChargeIndicative && (

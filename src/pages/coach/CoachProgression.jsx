@@ -1,5 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
-import { Link } from 'react-router-dom'
+import { useState, useEffect } from 'react'
 import { supabase } from '../../lib/supabase'
 import { useAuth } from '../../hooks/useAuth'
 import { useTheme } from '../../hooks/useTheme'
@@ -14,20 +13,20 @@ export default function CoachProgression() {
   const color = theme.isFemme ? '#ec4899' : '#6366f1'
 
   const [allExercices, setAllExercices] = useState([])
-  const [allMuscles, setAllMuscles] = useState([])
-  const [chargeData, setChargeData] = useState([])
-  const [tonnageData, setTonnageData] = useState([])
-  const [volumeData, setVolumeData] = useState([])
-  const [loading, setLoading] = useState(true)
+  const [allMuscles, setAllMuscles]     = useState([])
+  const [chargeData, setChargeData]     = useState([])
+  const [tonnageData, setTonnageData]   = useState([])
+  const [volumeData, setVolumeData]     = useState([])
+  const [loading, setLoading]           = useState(true)
   const [loadingChart, setLoadingChart] = useState(false)
-  const [showConfig, setShowConfig] = useState(false)
+  const [showConfig, setShowConfig]     = useState(false)
 
-  const config = prefs?.progression_config || {}
-  const mode = config.mode || 'graphe'
-  const metric = config.metric || 'tonnage'
-  const favExos = config.fav_exercices || []
+  const config        = prefs?.progression_config || {}
+  const mode          = config.mode || 'graphe'
+  const metric        = config.metric || 'tonnage'
+  const favExos       = config.fav_exercices || []
   const musclesExclus = config.muscles_exclus || []
-  const selectedExo = config.selected_exo || ''
+  const selectedExo   = config.selected_exo || ''
 
   useEffect(() => { if (profile) loadInitialData() }, [profile])
   useEffect(() => { if (selectedExo && allExercices.length) loadChargeData(selectedExo) }, [selectedExo, allExercices])
@@ -47,63 +46,126 @@ export default function CoachProgression() {
     setAllExercices(unique.sort((a, b) => a.nom.localeCompare(b.nom)))
     setAllMuscles([...muscles].sort())
 
-    if (!selectedExo && unique.length) {
-      updateProgression({ selected_exo: unique[0].nom })
-    }
+    if (!selectedExo && unique.length) updateProgression({ selected_exo: unique[0].nom })
 
-    await loadTonnageData()
+    await loadTonnageAndVolume()
     setLoading(false)
   }
 
+  /**
+   * loadChargeData — batch : 1 requête series_realisees pour toutes les semaines,
+   * agrégation côté JS. Élimine la boucle for/await séquentielle.
+   */
   async function loadChargeData(exoNom) {
     setLoadingChart(true)
     const { data: exs } = await supabase.from('exercices').select('id, seance_id').eq('nom', exoNom)
     if (!exs?.length) { setChargeData([]); setLoadingChart(false); return }
-    const { data: seances } = await supabase.from('seances').select('id, semaine_id').in('id', exs.map(e => e.seance_id))
-    const semaineIds = [...new Set((seances || []).map(s => s.semaine_id))]
-    const { data: semaines } = await supabase.from('semaines').select('id, numero').in('id', semaineIds).order('numero')
 
-    const data = []
-    for (const sem of semaines || []) {
-      const exsInSem = exs.filter(e => seances?.find(s => s.id === e.seance_id && s.semaine_id === sem.id))
-      if (!exsInSem.length) continue
-      const { data: sr } = await supabase.from('series_realisees').select('charge, reps, exercice_id')
-        .eq('athlete_id', profile.id).in('exercice_id', exsInSem.map(e => e.id)).not('charge', 'is', null)
-      if (!sr?.length) continue
+    const { data: seances } = await supabase.from('seances')
+      .select('id, semaine_id').in('id', exs.map(e => e.seance_id))
+    const semaineIds = [...new Set((seances || []).map(s => s.semaine_id))]
+
+    const [{ data: semaines }, { data: srAll }] = await Promise.all([
+      supabase.from('semaines').select('id, numero').in('id', semaineIds).order('numero'),
+      supabase.from('series_realisees')
+        .select('charge, reps, exercice_id, semaine_id')
+        .eq('athlete_id', profile.id)
+        .in('semaine_id', semaineIds)
+        .not('charge', 'is', null),
+    ])
+
+    const seanceToSemaine = {}
+    ;(seances || []).forEach(sc => { seanceToSemaine[sc.id] = sc.semaine_id })
+
+    const exToSemaine = {}
+    ;(exs || []).forEach(ex => {
+      const semaineId = seanceToSemaine[ex.seance_id]
+      if (semaineId) exToSemaine[ex.id] = semaineId
+    })
+
+    const data = (semaines || []).map(sem => {
+      const sr = (srAll || []).filter(s => exToSemaine[s.exercice_id] === sem.id)
+      if (!sr.length) return null
       const maxCharge = Math.max(...sr.map(s => Number(s.charge)))
-      const totalSeries = sr.length
       const tonnage = sr.reduce((acc, s) => acc + Number(s.charge) * (Number(s.reps) || 0), 0)
-      data.push({ semaine: `S${sem.numero}`, charge: maxCharge, series: totalSeries, tonnage: Math.round(tonnage) })
-    }
+      return { semaine: `S${sem.numero}`, charge: maxCharge, series: sr.length, tonnage: Math.round(tonnage) }
+    }).filter(Boolean)
+
     setChargeData(data)
     setLoadingChart(false)
   }
 
-  async function loadTonnageData() {
+  /**
+   * loadTonnageAndVolume — fusionne les deux anciennes passes séquentielles
+   * (loadTonnageData + volume par muscle) en une seule passe batch.
+   */
+  async function loadTonnageAndVolume() {
     const { data: blocs } = await supabase.from('blocs').select('id').eq('athlete_id', profile.id)
     if (!blocs?.length) return
-    const { data: semaines } = await supabase.from('semaines').select('id, numero').in('bloc_id', blocs.map(b => b.id)).order('numero').limit(16)
 
-    const tonnageByWeek = [], volumeByMuscle = {}
-    for (const sem of semaines || []) {
-      const { data: scIds } = await supabase.from('seances').select('id').eq('semaine_id', sem.id)
-      if (!scIds?.length) continue
-      const { data: exIds } = await supabase.from('exercices').select('id, muscle').in('seance_id', scIds.map(s => s.id))
-      if (!exIds?.length) continue
-      const { data: sr } = await supabase.from('series_realisees').select('charge, reps, exercice_id')
-        .eq('athlete_id', profile.id).in('exercice_id', exIds.map(e => e.id)).not('charge', 'is', null).not('reps', 'is', null)
-      if (!sr?.length) continue
-      let tonnage = 0, totalSeries = sr.length
-      sr.forEach(s => {
-        const t = Number(s.charge) * Number(s.reps)
-        tonnage += t
-        const muscle = exIds.find(e => e.id === s.exercice_id)?.muscle || 'autre'
-        if (!musclesExclus.includes(muscle)) volumeByMuscle[muscle] = (volumeByMuscle[muscle] || 0) + t
-      })
-      if (tonnage > 0 || totalSeries > 0) tonnageByWeek.push({ semaine: `S${sem.numero}`, tonnage: Math.round(tonnage), series: totalSeries })
-    }
-    setTonnageData(tonnageByWeek)
-    setVolumeData(Object.entries(volumeByMuscle).map(([m, v]) => ({ muscle: m, volume: Math.round(v) })).sort((a, b) => b.volume - a.volume).slice(0, 8))
+    const { data: semaines } = await supabase.from('semaines')
+      .select('id, numero').in('bloc_id', blocs.map(b => b.id)).order('numero').limit(16)
+    if (!semaines?.length) return
+
+    const semIds = semaines.map(s => s.id)
+
+    const { data: scAll } = await supabase.from('seances').select('id, semaine_id').in('semaine_id', semIds)
+    const scIds = (scAll || []).map(s => s.id)
+    if (!scIds.length) return
+
+    const [{ data: exAll }, { data: srAll }] = await Promise.all([
+      supabase.from('exercices').select('id, muscle, seance_id').in('seance_id', scIds),
+      supabase.from('series_realisees')
+        .select('charge, reps, exercice_id, semaine_id')
+        .eq('athlete_id', profile.id)
+        .in('semaine_id', semIds)
+        .not('charge', 'is', null)
+        .not('reps', 'is', null),
+    ])
+
+    const scToSemaine = {}
+    ;(scAll || []).forEach(sc => { scToSemaine[sc.id] = sc.semaine_id })
+
+    const exById = {}
+    ;(exAll || []).forEach(ex => {
+      exById[ex.id] = { muscle: ex.muscle || 'autre', semaine_id: scToSemaine[ex.seance_id] }
+    })
+
+    const tonnageMap = {}     // semaine_id → { tonnage, series }
+    const muscleVolMap = {}   // muscle → total volume
+
+    ;(srAll || []).forEach(s => {
+      const ex = exById[s.exercice_id]
+      if (!ex) return
+      const muscle = ex.muscle
+      if (musclesExclus.includes(muscle)) return
+
+      const vol = Number(s.charge) * Number(s.reps)
+      const semId = s.semaine_id
+
+      if (!tonnageMap[semId]) tonnageMap[semId] = { tonnage: 0, series: 0 }
+      tonnageMap[semId].tonnage += vol
+      tonnageMap[semId].series++
+
+      muscleVolMap[muscle] = (muscleVolMap[muscle] || 0) + vol
+    })
+
+    setTonnageData(
+      semaines
+        .filter(s => tonnageMap[s.id])
+        .map(s => ({
+          semaine: `S${s.numero}`,
+          tonnage: Math.round(tonnageMap[s.id].tonnage),
+          series: tonnageMap[s.id].series,
+        }))
+    )
+
+    setVolumeData(
+      Object.entries(muscleVolMap)
+        .map(([m, v]) => ({ muscle: m, volume: Math.round(v) }))
+        .sort((a, b) => b.volume - a.volume)
+        .slice(0, 8)
+    )
   }
 
   function getMetricKey() { return metric === 'tonnage' ? 'tonnage' : metric === 'series' ? 'series' : null }
@@ -154,10 +216,6 @@ export default function CoachProgression() {
     </div>
   )
 
-  const metricKeys = metric === 'les_deux'
-    ? [{ key: 'tonnage', label: 'Tonnage' }, { key: 'series', label: 'Séries' }]
-    : [{ key: getMetricKey(), label: getMetricLabel() }]
-
   return (
     <Layout>
       <div className="flex items-center justify-between mb-5">
@@ -167,7 +225,6 @@ export default function CoachProgression() {
         </button>
       </div>
 
-      {/* Configuration */}
       {showConfig && (
         <div className="bg-white border border-gray-100 rounded-xl p-4 mb-4 space-y-4">
           <div>
@@ -175,9 +232,7 @@ export default function CoachProgression() {
             <div className="flex gap-2">
               {[['graphe','Graphe'],['tableau','Tableau'],['les_deux','Les deux']].map(([v,l]) => (
                 <button key={v} onClick={() => updateProgression({ mode: v })}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${mode === v ? 'bg-brand-600 text-white border-brand-600' : 'border-gray-200 text-gray-600'}`}>
-                  {l}
-                </button>
+                  className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${mode === v ? 'bg-brand-600 text-white border-brand-600' : 'border-gray-200 text-gray-600'}`}>{l}</button>
               ))}
             </div>
           </div>
@@ -186,9 +241,7 @@ export default function CoachProgression() {
             <div className="flex gap-2">
               {[['tonnage','Tonnage'],['series','Nb séries'],['les_deux','Les deux']].map(([v,l]) => (
                 <button key={v} onClick={() => updateProgression({ metric: v })}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${metric === v ? 'bg-brand-600 text-white border-brand-600' : 'border-gray-200 text-gray-600'}`}>
-                  {l}
-                </button>
+                  className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${metric === v ? 'bg-brand-600 text-white border-brand-600' : 'border-gray-200 text-gray-600'}`}>{l}</button>
               ))}
             </div>
           </div>
@@ -313,8 +366,9 @@ export default function CoachProgression() {
   )
 }
 
+// ── FavExoCard — version batch ────────────────────────────────────────────
 function FavExoCard({ exoNom, athleteId, metric, mode, color }) {
-  const [data, setData] = useState([])
+  const [data, setData]       = useState([])
   const [loading, setLoading] = useState(true)
 
   useEffect(() => { loadData() }, [exoNom])
@@ -323,22 +377,37 @@ function FavExoCard({ exoNom, athleteId, metric, mode, color }) {
     setLoading(true)
     const { data: exs } = await supabase.from('exercices').select('id, seance_id').eq('nom', exoNom)
     if (!exs?.length) { setLoading(false); return }
-    const { data: seances } = await supabase.from('seances').select('id, semaine_id').in('id', exs.map(e => e.seance_id))
-    const semaineIds = [...new Set((seances || []).map(s => s.semaine_id))]
-    const { data: semaines } = await supabase.from('semaines').select('id, numero').in('id', semaineIds).order('numero')
 
-    const rows = []
-    for (const sem of semaines || []) {
-      const exsInSem = exs.filter(e => seances?.find(s => s.id === e.seance_id && s.semaine_id === sem.id))
-      if (!exsInSem.length) continue
-      const { data: sr } = await supabase.from('series_realisees').select('charge, reps')
-        .eq('athlete_id', athleteId).in('exercice_id', exsInSem.map(e => e.id)).not('charge', 'is', null)
-      if (!sr?.length) continue
+    const { data: seances } = await supabase.from('seances')
+      .select('id, semaine_id').in('id', exs.map(e => e.seance_id))
+    const semaineIds = [...new Set((seances || []).map(s => s.semaine_id))]
+
+    const [{ data: semaines }, { data: srAll }] = await Promise.all([
+      supabase.from('semaines').select('id, numero').in('id', semaineIds).order('numero'),
+      supabase.from('series_realisees')
+        .select('charge, reps, exercice_id, semaine_id')
+        .eq('athlete_id', athleteId)
+        .in('semaine_id', semaineIds)
+        .not('charge', 'is', null),
+    ])
+
+    const seanceToSemaine = {}
+    ;(seances || []).forEach(sc => { seanceToSemaine[sc.id] = sc.semaine_id })
+
+    const exToSemaine = {}
+    ;(exs || []).forEach(ex => {
+      const semaineId = seanceToSemaine[ex.seance_id]
+      if (semaineId) exToSemaine[ex.id] = semaineId
+    })
+
+    const rows = (semaines || []).map(sem => {
+      const sr = (srAll || []).filter(s => exToSemaine[s.exercice_id] === sem.id)
+      if (!sr.length) return null
       const maxCharge = Math.max(...sr.map(s => Number(s.charge)))
-      const totalSeries = sr.length
       const tonnage = Math.round(sr.reduce((acc, s) => acc + Number(s.charge) * (Number(s.reps) || 0), 0))
-      rows.push({ semaine: `S${sem.numero}`, charge: maxCharge, series: totalSeries, tonnage })
-    }
+      return { semaine: `S${sem.numero}`, charge: maxCharge, series: sr.length, tonnage }
+    }).filter(Boolean)
+
     setData(rows)
     setLoading(false)
   }

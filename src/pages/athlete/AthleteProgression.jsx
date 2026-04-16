@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect } from 'react'
 import { supabase } from '../../lib/supabase'
 import { useAuth } from '../../hooks/useAuth'
 import { useTheme } from '../../hooks/useTheme'
@@ -24,8 +24,6 @@ const LIFT_COLORS = {
   total:     '#ef4444',
 }
 const LIFT_LABELS = { squat: '🏋️ Squat', bench: '💪 Bench', deadlift: '⚡ Deadlift', total: '∑ Total' }
-
-// Top muscles colors for weekly volume
 const MUSCLE_COLORS = ['#6366f1','#ec4899','#10b981','#f59e0b','#ef4444','#8b5cf6','#06b6d4','#f97316']
 
 export default function AthleteProgression() {
@@ -38,20 +36,20 @@ export default function AthleteProgression() {
   const [allMuscles, setAllMuscles]           = useState([])
   const [chargeData, setChargeData]           = useState([])
   const [tonnageData, setTonnageData]         = useState([])
-  const [volumeParSemaineData, setVolumeParSemaineData] = useState([])  // per-week per-muscle
-  const [volumeMuscles, setVolumeMuscles]     = useState([])  // muscle keys present
-  const [oneRMData, setOneRMData]             = useState([])  // 1RM per lift per semaine
+  const [volumeParSemaineData, setVolumeParSemaineData] = useState([])
+  const [volumeMuscles, setVolumeMuscles]     = useState([])
+  const [oneRMData, setOneRMData]             = useState([])
   const [hasMainLifts, setHasMainLifts]       = useState(false)
   const [loading, setLoading]                 = useState(true)
   const [loadingChart, setLoadingChart]       = useState(false)
   const [showConfig, setShowConfig]           = useState(false)
 
-  const config      = prefs?.progression_config || {}
-  const mode        = config.mode || 'graphe'
-  const metric      = config.metric || 'tonnage'
-  const favExos     = config.fav_exercices || []
+  const config        = prefs?.progression_config || {}
+  const mode          = config.mode || 'graphe'
+  const metric        = config.metric || 'tonnage'
+  const favExos       = config.fav_exercices || []
   const musclesExclus = config.muscles_exclus || []
-  const selectedExo = config.selected_exo || ''
+  const selectedExo   = config.selected_exo || ''
 
   useEffect(() => { if (profile) loadInitialData() }, [profile])
   useEffect(() => { if (selectedExo && allExercices.length) loadChargeData(selectedExo) }, [selectedExo, allExercices])
@@ -76,150 +74,197 @@ export default function AthleteProgression() {
 
     if (!selectedExo && unique.length) updateProgression({ selected_exo: unique[0].nom })
 
-    await Promise.all([loadTonnageData(), loadVolumeParSemaine(), hasLifts && load1RMData()])
+    await Promise.all([
+      loadTonnageAndVolume(),
+      hasLifts ? load1RMData() : Promise.resolve(),
+    ])
     setLoading(false)
   }
 
+  /**
+   * loadChargeData — batch : 1 requête series_realisees pour toutes les semaines,
+   * agrégation côté JS. Élimine la boucle for/await séquentielle.
+   */
   async function loadChargeData(exoNom) {
     setLoadingChart(true)
     const { data: exs } = await supabase.from('exercices').select('id, seance_id').eq('nom', exoNom)
     if (!exs?.length) { setChargeData([]); setLoadingChart(false); return }
-    const { data: seances } = await supabase.from('seances').select('id, semaine_id').in('id', exs.map(e => e.seance_id))
+
+    const { data: seances } = await supabase.from('seances')
+      .select('id, semaine_id').in('id', exs.map(e => e.seance_id))
     const semaineIds = [...new Set((seances || []).map(s => s.semaine_id))]
-    const { data: semaines } = await supabase.from('semaines').select('id, numero').in('id', semaineIds).order('numero')
 
-    const data = []
-    for (const sem of semaines || []) {
-      const exsInSem = exs.filter(e => seances?.find(s => s.id === e.seance_id && s.semaine_id === sem.id))
-      if (!exsInSem.length) continue
-      const { data: srData } = await supabase.from('series_realisees').select('charge, reps, exercice_id')
-        .eq('athlete_id', profile.id).in('exercice_id', exsInSem.map(e => e.id)).not('charge', 'is', null)
-      if (!srData?.length) continue
-      const maxCharge = Math.max(...srData.map(s => Number(s.charge)))
-      const tonnage = srData.reduce((acc, s) => acc + Number(s.charge) * (Number(s.reps) || 0), 0)
-      data.push({ semaine: `S${sem.numero}`, charge: maxCharge, series: srData.length, tonnage: Math.round(tonnage) })
-    }
-    setChargeData(data); setLoadingChart(false)
-  }
+    const [{ data: semaines }, { data: srAll }] = await Promise.all([
+      supabase.from('semaines').select('id, numero').in('id', semaineIds).order('numero'),
+      supabase.from('series_realisees')
+        .select('charge, reps, exercice_id, semaine_id')
+        .eq('athlete_id', profile.id)
+        .in('semaine_id', semaineIds)
+        .not('charge', 'is', null),
+    ])
 
-  async function loadTonnageData() {
-    const { data: blocs } = await supabase.from('blocs').select('id').eq('athlete_id', profile.id)
-    if (!blocs?.length) return
-    const { data: semaines } = await supabase.from('semaines').select('id, numero').in('bloc_id', blocs.map(b => b.id)).order('numero').limit(16)
-    const tonnageByWeek = []
-    for (const sem of semaines || []) {
-      const { data: scIds } = await supabase.from('seances').select('id').eq('semaine_id', sem.id)
-      if (!scIds?.length) continue
-      const { data: exIds } = await supabase.from('exercices').select('id').in('seance_id', scIds.map(s => s.id))
-      if (!exIds?.length) continue
-      const { data: srData } = await supabase.from('series_realisees').select('charge, reps')
-        .eq('athlete_id', profile.id).in('exercice_id', exIds.map(e => e.id)).not('charge', 'is', null).not('reps', 'is', null)
-      if (!srData?.length) continue
-      const tonnage = srData.reduce((acc, s) => acc + Number(s.charge) * Number(s.reps), 0)
-      tonnageByWeek.push({ semaine: `S${sem.numero}`, tonnage: Math.round(tonnage), series: srData.length })
-    }
-    setTonnageData(tonnageByWeek)
-  }
-
-  // ── Volume par muscle par semaine ─────────────────────────────────────
-  async function loadVolumeParSemaine() {
-    const { data: blocs } = await supabase.from('blocs').select('id').eq('athlete_id', profile.id)
-    if (!blocs?.length) return
-    const { data: semaines } = await supabase.from('semaines').select('id, numero').in('bloc_id', blocs.map(b => b.id)).order('numero').limit(16)
-    if (!semaines?.length) return
-
-    // Fetch all at once
-    const semIds = semaines.map(s => s.id)
-    const { data: scAll } = await supabase.from('seances').select('id, semaine_id').in('semaine_id', semIds)
-    const { data: exAll } = await supabase.from('exercices').select('id, muscle, seance_id').in('seance_id', (scAll || []).map(s => s.id))
-    const { data: srAll } = await supabase.from('series_realisees').select('charge, reps, exercice_id, semaine_id')
-      .eq('athlete_id', profile.id).in('semaine_id', semIds).not('charge', 'is', null).not('reps', 'is', null)
-
-    const scBySemaine = {}
-    ;(scAll || []).forEach(sc => { if (!scBySemaine[sc.semaine_id]) scBySemaine[sc.semaine_id] = []; scBySemaine[sc.semaine_id].push(sc.id) })
-
-    const exBySeance = {}
-    ;(exAll || []).forEach(ex => { if (!exBySeance[ex.seance_id]) exBySeance[ex.seance_id] = []; exBySeance[ex.seance_id].push(ex) })
-
-    const exById = {}
-    ;(exAll || []).forEach(ex => { exById[ex.id] = ex })
-
-    // Accumulate total volume per muscle across ALL semaines to find top muscles
-    const muscleTotal = {}
-    ;(srAll || []).forEach(s => {
-      const ex = exById[s.exercice_id]; if (!ex) return
-      const muscle = ex.muscle || 'autre'
-      if (musclesExclus.includes(muscle)) return
-      muscleTotal[muscle] = (muscleTotal[muscle] || 0) + Number(s.charge) * Number(s.reps)
+    // Map exercice_id → semaine_id via la chaîne exs → seances
+    const exToSemaine = {}
+    const seanceToSemaine = {}
+    ;(seances || []).forEach(sc => { seanceToSemaine[sc.id] = sc.semaine_id })
+    ;(exs || []).forEach(ex => {
+      const semaineId = seanceToSemaine[ex.seance_id]
+      if (semaineId) exToSemaine[ex.id] = semaineId
     })
 
-    // Top 6 muscles by total volume
-    const topMuscles = Object.entries(muscleTotal)
+    const data = (semaines || []).map(sem => {
+      const sr = (srAll || []).filter(s => exToSemaine[s.exercice_id] === sem.id)
+      if (!sr.length) return null
+      const maxCharge = Math.max(...sr.map(s => Number(s.charge)))
+      const tonnage = sr.reduce((acc, s) => acc + Number(s.charge) * (Number(s.reps) || 0), 0)
+      return { semaine: `S${sem.numero}`, charge: maxCharge, series: sr.length, tonnage: Math.round(tonnage) }
+    }).filter(Boolean)
+
+    setChargeData(data)
+    setLoadingChart(false)
+  }
+
+  /**
+   * Charge tonnage global + volume par muscle par semaine en une passe batch.
+   * Élimine les deux fonctions séquentielles précédentes.
+   */
+  async function loadTonnageAndVolume() {
+    const { data: blocs } = await supabase.from('blocs').select('id').eq('athlete_id', profile.id)
+    if (!blocs?.length) return
+
+    const { data: semaines } = await supabase.from('semaines')
+      .select('id, numero').in('bloc_id', blocs.map(b => b.id)).order('numero').limit(16)
+    if (!semaines?.length) return
+
+    const semIds = semaines.map(s => s.id)
+
+    // Charger séances puis exercices séquentiellement (dépendance)
+    const { data: scAll } = await supabase.from('seances').select('id, semaine_id').in('semaine_id', semIds)
+    const scIds = (scAll || []).map(s => s.id)
+    if (!scIds.length) return
+
+    const [{ data: exAll }, { data: srAll }] = await Promise.all([
+      supabase.from('exercices').select('id, muscle, seance_id, unilateral').in('seance_id', scIds),
+      supabase.from('series_realisees')
+        .select('charge, reps, exercice_id, semaine_id')
+        .eq('athlete_id', profile.id)
+        .in('semaine_id', semIds)
+        .not('charge', 'is', null)
+        .not('reps', 'is', null),
+    ])
+
+    // Index : seance_id → semaine_id
+    const scToSemaine = {}
+    ;(scAll || []).forEach(sc => { scToSemaine[sc.id] = sc.semaine_id })
+
+    // Index : exercice_id → { muscle, semaine_id }
+    const exById = {}
+    ;(exAll || []).forEach(ex => {
+      exById[ex.id] = { muscle: ex.muscle || 'autre', semaine_id: scToSemaine[ex.seance_id], unilateral: ex.unilateral }
+    })
+
+    // Agrégation tonnage par semaine + volume par muscle par semaine
+    const tonnageMap = {}    // semaine_id → { tonnage, series }
+    const muscleVolTotal = {}  // muscle → total volume (pour trouver top 6)
+    const muscleVolBySem = {}  // semaine_id → { muscle: volume }
+
+    ;(srAll || []).forEach(s => {
+      const ex = exById[s.exercice_id]
+      if (!ex) return
+      const muscle = ex.muscle
+      if (musclesExclus.includes(muscle)) return
+
+      const mult = ex.unilateral ? 2 : 1
+      const vol = Number(s.charge) * Number(s.reps) * mult
+      const semId = s.semaine_id
+
+      // Tonnage global
+      if (!tonnageMap[semId]) tonnageMap[semId] = { tonnage: 0, series: 0 }
+      tonnageMap[semId].tonnage += vol
+      tonnageMap[semId].series++
+
+      // Volume par muscle
+      muscleVolTotal[muscle] = (muscleVolTotal[muscle] || 0) + vol
+      if (!muscleVolBySem[semId]) muscleVolBySem[semId] = {}
+      muscleVolBySem[semId][muscle] = (muscleVolBySem[semId][muscle] || 0) + vol
+    })
+
+    // Tonnage par semaine
+    const tonnageByWeek = semaines
+      .filter(s => tonnageMap[s.id])
+      .map(s => ({
+        semaine: `S${s.numero}`,
+        tonnage: Math.round(tonnageMap[s.id].tonnage),
+        series: tonnageMap[s.id].series,
+      }))
+    setTonnageData(tonnageByWeek)
+
+    // Top 6 muscles
+    const topMuscles = Object.entries(muscleVolTotal)
       .sort((a, b) => b[1] - a[1])
       .slice(0, 6)
       .map(([m]) => m)
-
     setVolumeMuscles(topMuscles)
 
-    // Per semaine
-    const rows = []
-    for (const sem of semaines) {
-      const scIds = scBySemaine[sem.id] || []
-      const exsInSem = scIds.flatMap(scId => exBySeance[scId] || [])
-      const exIdsInSem = new Set(exsInSem.map(e => e.id))
-      const srInSem = (srAll || []).filter(s => s.semaine_id === sem.id && exIdsInSem.has(s.exercice_id))
-      if (!srInSem.length) continue
-
-      const row = { semaine: `S${sem.numero}` }
-      let hasData = false
-      for (const muscle of topMuscles) {
-        const vol = srInSem
-          .filter(s => (exById[s.exercice_id]?.muscle || 'autre') === muscle && !musclesExclus.includes(muscle))
-          .reduce((acc, s) => acc + Number(s.charge) * Number(s.reps), 0)
-        row[muscle] = vol > 0 ? Math.round(vol) : 0
-        if (vol > 0) hasData = true
-      }
-      if (hasData) rows.push(row)
-    }
-    setVolumeParSemaineData(rows)
+    // Volume par muscle par semaine
+    const volRows = semaines
+      .filter(s => muscleVolBySem[s.id])
+      .map(s => {
+        const row = { semaine: `S${s.numero}` }
+        let hasData = false
+        topMuscles.forEach(m => {
+          row[m] = Math.round(muscleVolBySem[s.id]?.[m] || 0)
+          if (row[m] > 0) hasData = true
+        })
+        return hasData ? row : null
+      })
+      .filter(Boolean)
+    setVolumeParSemaineData(volRows)
   }
 
-  // ── 1RM progression per lift per semaine ─────────────────────────────
+  /**
+   * 1RM progression — batch : une requête series_realisees pour toutes les semaines.
+   */
   async function load1RMData() {
     const { data: blocs } = await supabase.from('blocs').select('id').eq('athlete_id', profile.id)
     if (!blocs?.length) return
-    const { data: semaines } = await supabase.from('semaines').select('id, numero').in('bloc_id', blocs.map(b => b.id)).order('numero').limit(16)
+
+    const { data: semaines } = await supabase.from('semaines')
+      .select('id, numero').in('bloc_id', blocs.map(b => b.id)).order('numero').limit(16)
     if (!semaines?.length) return
 
     const semIds = semaines.map(s => s.id)
 
-    // Fetch exercices with main_lift
     const { data: scAll } = await supabase.from('seances').select('id, semaine_id').in('semaine_id', semIds)
-    const { data: exAll } = await supabase.from('exercices').select('id, main_lift, seance_id').in('seance_id', (scAll || []).map(s => s.id)).not('main_lift', 'is', null)
+    const scIds = (scAll || []).map(s => s.id)
+    if (!scIds.length) return
+
+    const { data: exAll } = await supabase.from('exercices')
+      .select('id, main_lift, seance_id')
+      .in('seance_id', scIds)
+      .not('main_lift', 'is', null)
     if (!exAll?.length) return
 
-    const { data: srAll } = await supabase.from('series_realisees').select('charge, reps, rpe, exercice_id, semaine_id')
-      .eq('athlete_id', profile.id).in('semaine_id', semIds)
-      .not('charge', 'is', null).not('reps', 'is', null)
+    const exIds = exAll.map(e => e.id)
+    const { data: srAll } = await supabase.from('series_realisees')
+      .select('charge, reps, rpe, exercice_id, semaine_id')
+      .eq('athlete_id', profile.id)
+      .in('semaine_id', semIds)
+      .in('exercice_id', exIds)
+      .not('charge', 'is', null)
+      .not('reps', 'is', null)
 
     const exById = {}
     ;(exAll || []).forEach(ex => { exById[ex.id] = ex })
 
-    const scBySemaine = {}
-    ;(scAll || []).forEach(sc => { if (!scBySemaine[sc.semaine_id]) scBySemaine[sc.semaine_id] = []; scBySemaine[sc.semaine_id].push(sc.id) })
+    const rows = semaines.map(sem => {
+      const srInSem = (srAll || []).filter(s => s.semaine_id === sem.id)
+      if (!srInSem.length) return null
 
-    const exIdsWithLift = new Set(exAll.map(e => e.id))
-
-    const rows = []
-    for (const sem of semaines) {
-      const scIds = new Set(scBySemaine[sem.id] || [])
-      const srInSem = (srAll || []).filter(s => s.semaine_id === sem.id && exIdsWithLift.has(s.exercice_id))
-      if (!srInSem.length) continue
-
-      // Best 1RM per lift
       const bestByLift = { squat: null, bench: null, deadlift: null }
       for (const s of srInSem) {
-        const ex = exById[s.exercice_id]; if (!ex?.main_lift) continue
+        const ex = exById[s.exercice_id]
+        if (!ex?.main_lift) continue
         const est = epley1RM(s.charge, s.reps, s.rpe)
         if (est && (bestByLift[ex.main_lift] === null || est > bestByLift[ex.main_lift])) {
           bestByLift[ex.main_lift] = est
@@ -228,20 +273,20 @@ export default function AthleteProgression() {
 
       const total = (bestByLift.squat || 0) + (bestByLift.bench || 0) + (bestByLift.deadlift || 0)
       const hasAny = Object.values(bestByLift).some(v => v !== null)
-      if (!hasAny) continue
+      if (!hasAny) return null
 
-      rows.push({
+      return {
         semaine: `S${sem.numero}`,
-        squat:    bestByLift.squat,
-        bench:    bestByLift.bench,
+        squat: bestByLift.squat,
+        bench: bestByLift.bench,
         deadlift: bestByLift.deadlift,
-        total:    total > 0 ? total : null,
-      })
-    }
+        total: total > 0 ? total : null,
+      }
+    }).filter(Boolean)
+
     setOneRMData(rows)
   }
 
-  // ─────────────────────────────────────────────────────────────────────
   const DataChart = ({ data, dataKey, name, color: c }) => (
     <ResponsiveContainer width="100%" height={160}>
       <LineChart data={data}>
@@ -297,7 +342,6 @@ export default function AthleteProgression() {
         </button>
       </div>
 
-      {/* Configuration */}
       {showConfig && (
         <div className="bg-white border border-gray-100 rounded-xl p-4 mb-4 space-y-4">
           <div>
@@ -358,7 +402,7 @@ export default function AthleteProgression() {
       ) : (
         <div className="space-y-4">
 
-          {/* ── 1RM Progression (powerlifting) ────────────────────────── */}
+          {/* 1RM Progression (powerlifting) */}
           {hasMainLifts && oneRMData.length > 0 && (
             <div className="bg-white border border-gray-100 rounded-xl p-4">
               <p className="text-sm font-medium text-gray-700 mb-1">1RM estimés par semaine</p>
@@ -374,7 +418,7 @@ export default function AthleteProgression() {
                     {oneRMData.some(d => d.squat)    && <Line type="monotone" dataKey="squat"    stroke={LIFT_COLORS.squat}    strokeWidth={2} dot={{ r: 3 }} connectNulls name="squat" />}
                     {oneRMData.some(d => d.bench)    && <Line type="monotone" dataKey="bench"    stroke={LIFT_COLORS.bench}    strokeWidth={2} dot={{ r: 3 }} connectNulls name="bench" />}
                     {oneRMData.some(d => d.deadlift) && <Line type="monotone" dataKey="deadlift" stroke={LIFT_COLORS.deadlift} strokeWidth={2} dot={{ r: 3 }} connectNulls name="deadlift" />}
-                    {oneRMData.some(d => d.total > 0) && <Line type="monotone" dataKey="total"  stroke={LIFT_COLORS.total}    strokeWidth={2} strokeDasharray="4 2" dot={{ r: 3 }} connectNulls name="total" />}
+                    {oneRMData.some(d => d.total > 0) && <Line type="monotone" dataKey="total"   stroke={LIFT_COLORS.total}    strokeWidth={2} strokeDasharray="4 2" dot={{ r: 3 }} connectNulls name="total" />}
                   </LineChart>
                 </ResponsiveContainer>
               )}
@@ -391,7 +435,7 @@ export default function AthleteProgression() {
             </div>
           )}
 
-          {/* ── Charge max exercice sélectionné ───────────────────────── */}
+          {/* Charge max exercice sélectionné */}
           <div className="bg-white border border-gray-100 rounded-xl p-4">
             <div className="flex items-center justify-between mb-3">
               <p className="text-sm font-medium text-gray-700">Charge max par semaine</p>
@@ -410,14 +454,16 @@ export default function AthleteProgression() {
             }
           </div>
 
-          {/* ── Exercices favoris ─────────────────────────────────────── */}
+          {/* Exercices favoris */}
           {favExos.length > 0 && (
             <div className="space-y-3">
-              {favExos.map(exoNom => <FavExoCard key={exoNom} exoNom={exoNom} athleteId={profile.id} metric={metric} mode={mode} color={color} />)}
+              {favExos.map(exoNom => (
+                <FavExoCard key={exoNom} exoNom={exoNom} athleteId={profile.id} metric={metric} mode={mode} color={color} />
+              ))}
             </div>
           )}
 
-          {/* ── Volume total par semaine ──────────────────────────────── */}
+          {/* Volume total par semaine */}
           {tonnageData.length > 0 && (
             <div className="bg-white border border-gray-100 rounded-xl p-4">
               <p className="text-sm font-medium text-gray-700 mb-3">Volume total par semaine</p>
@@ -436,7 +482,7 @@ export default function AthleteProgression() {
             </div>
           )}
 
-          {/* ── Volume par muscle PAR SEMAINE ─────────────────────────── */}
+          {/* Volume par muscle par semaine */}
           {volumeParSemaineData.length > 0 && volumeMuscles.length > 0 && (
             <div className="bg-white border border-gray-100 rounded-xl p-4">
               <p className="text-sm font-medium text-gray-700 mb-1">Volume par groupe musculaire / semaine</p>
@@ -493,9 +539,9 @@ export default function AthleteProgression() {
   )
 }
 
-// ── FavExoCard ─────────────────────────────────────────────────────────────
+// ── FavExoCard — version batch ────────────────────────────────────────────
 function FavExoCard({ exoNom, athleteId, metric, mode, color }) {
-  const [data, setData]     = useState([])
+  const [data, setData]       = useState([])
   const [loading, setLoading] = useState(true)
 
   useEffect(() => { loadData() }, [exoNom])
@@ -504,21 +550,39 @@ function FavExoCard({ exoNom, athleteId, metric, mode, color }) {
     setLoading(true)
     const { data: exs } = await supabase.from('exercices').select('id, seance_id').eq('nom', exoNom)
     if (!exs?.length) { setLoading(false); return }
-    const { data: seances } = await supabase.from('seances').select('id, semaine_id').in('id', exs.map(e => e.seance_id))
+
+    const { data: seances } = await supabase.from('seances')
+      .select('id, semaine_id').in('id', exs.map(e => e.seance_id))
     const semaineIds = [...new Set((seances || []).map(s => s.semaine_id))]
-    const { data: semaines } = await supabase.from('semaines').select('id, numero').in('id', semaineIds).order('numero')
-    const rows = []
-    for (const sem of semaines || []) {
-      const exsInSem = exs.filter(e => seances?.find(s => s.id === e.seance_id && s.semaine_id === sem.id))
-      if (!exsInSem.length) continue
-      const { data: sr } = await supabase.from('series_realisees').select('charge, reps')
-        .eq('athlete_id', athleteId).in('exercice_id', exsInSem.map(e => e.id)).not('charge', 'is', null)
-      if (!sr?.length) continue
+
+    const [{ data: semaines }, { data: srAll }] = await Promise.all([
+      supabase.from('semaines').select('id, numero').in('id', semaineIds).order('numero'),
+      supabase.from('series_realisees')
+        .select('charge, reps, exercice_id, semaine_id')
+        .eq('athlete_id', athleteId)
+        .in('semaine_id', semaineIds)
+        .not('charge', 'is', null),
+    ])
+
+    const seanceToSemaine = {}
+    ;(seances || []).forEach(sc => { seanceToSemaine[sc.id] = sc.semaine_id })
+
+    const exToSemaine = {}
+    ;(exs || []).forEach(ex => {
+      const semaineId = seanceToSemaine[ex.seance_id]
+      if (semaineId) exToSemaine[ex.id] = semaineId
+    })
+
+    const rows = (semaines || []).map(sem => {
+      const sr = (srAll || []).filter(s => exToSemaine[s.exercice_id] === sem.id)
+      if (!sr.length) return null
       const maxCharge = Math.max(...sr.map(s => Number(s.charge)))
       const tonnage = Math.round(sr.reduce((acc, s) => acc + Number(s.charge) * (Number(s.reps) || 0), 0))
-      rows.push({ semaine: `S${sem.numero}`, charge: maxCharge, series: sr.length, tonnage })
-    }
-    setData(rows); setLoading(false)
+      return { semaine: `S${sem.numero}`, charge: maxCharge, series: sr.length, tonnage }
+    }).filter(Boolean)
+
+    setData(rows)
+    setLoading(false)
   }
 
   return (

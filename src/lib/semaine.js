@@ -2,9 +2,9 @@ import { supabase } from './supabase'
 
 /**
  * Vérifie si toutes les séances (hors Bonus) d'une semaine ont au moins un exercice réalisé.
- * "Réalisé" = au moins une série avec reps ou charge renseignée.
+ * Accepte en option les series_realisees déjà fetchées pour éviter une requête supplémentaire.
  */
-async function isSemaineComplete(semaineId, athleteId) {
+async function isSemaineComplete(semaineId, athleteId, existingSr = null) {
   const { data: seances } = await supabase
     .from('seances')
     .select('id')
@@ -20,19 +20,30 @@ async function isSemaineComplete(semaineId, athleteId) {
 
   if (!exercices?.length) return false
 
-  const { data: seriesRealisees } = await supabase
-    .from('series_realisees')
-    .select('exercice_id')
-    .eq('athlete_id', athleteId)
-    .eq('semaine_id', semaineId)
-    .in('exercice_id', exercices.map(e => e.id))
+  const exoIds = new Set(exercices.map(e => e.id))
 
-  const exosRealises = new Set((seriesRealisees || []).map(s => s.exercice_id))
+  // Réutiliser les sr déjà fetchés si possible
+  let srFiltered
+  if (existingSr) {
+    srFiltered = existingSr.filter(s => s.semaine_id === semaineId && exoIds.has(s.exercice_id))
+  } else {
+    const { data } = await supabase
+      .from('series_realisees')
+      .select('exercice_id')
+      .eq('athlete_id', athleteId)
+      .eq('semaine_id', semaineId)
+      .in('exercice_id', [...exoIds])
+    srFiltered = data || []
+  }
+
+  const exosRealises = new Set(srFiltered.map(s => s.exercice_id))
   return exosRealises.size >= exercices.length
 }
 
 /**
  * Trouve la semaine active pour un athlète.
+ * Version batch : une seule requête series_realisees pour toutes les semaines,
+ * puis traitement côté JS pour éviter les boucles séquentielles.
  *
  * Logique :
  * - On cherche la dernière semaine ayant de l'activité (en partant de la fin).
@@ -44,22 +55,37 @@ async function isSemaineComplete(semaineId, athleteId) {
 export async function findActiveSemaine(semaines, athleteId) {
   if (!semaines?.length) return null
 
+  const semIds = semaines.map(s => s.id)
+
+  // Une seule requête pour savoir quelles semaines ont de l'activité
+  const { data: sr } = await supabase
+    .from('series_realisees')
+    .select('semaine_id, exercice_id')
+    .eq('athlete_id', athleteId)
+    .in('semaine_id', semIds)
+
+  if (!sr?.length) return semaines[0]
+
+  const semainesAvecActivite = new Set(sr.map(s => s.semaine_id))
+
+  // Trouver la dernière semaine avec activité en partant de la fin
+  let derniere = null
+  let derniereIdx = -1
   for (let i = semaines.length - 1; i >= 0; i--) {
-    const { count } = await supabase
-      .from('series_realisees')
-      .select('id', { count: 'exact', head: true })
-      .eq('athlete_id', athleteId)
-      .eq('semaine_id', semaines[i].id)
-
-    if (count > 0) {
-      const complete = await isSemaineComplete(semaines[i].id, athleteId)
-
-      if (complete && semaines[i + 1]) {
-        return semaines[i + 1]
-      }
-      return semaines[i]
+    if (semainesAvecActivite.has(semaines[i].id)) {
+      derniere = semaines[i]
+      derniereIdx = i
+      break
     }
   }
 
-  return semaines[0]
+  if (!derniere) return semaines[0]
+
+  // Vérifier si cette semaine est complète en réutilisant les sr déjà fetchés
+  const complete = await isSemaineComplete(derniere.id, athleteId, sr)
+
+  if (complete && semaines[derniereIdx + 1]) {
+    return semaines[derniereIdx + 1]
+  }
+  return derniere
 }

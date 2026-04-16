@@ -65,41 +65,83 @@ export default function CoachAthlete() {
   }
 
   async function duplicateBloc(bloc) {
+    // 1. Créer le nouveau bloc
     const { data: newBloc } = await supabase.from('blocs')
       .insert({ athlete_id: athleteId, name: bloc.name + ' (copie)' }).select().single()
+
+    // 2. Dupliquer les objectifs
     const objData = Array.isArray(bloc.objectifs_bloc) ? bloc.objectifs_bloc[0] : bloc.objectifs_bloc
     if (objData) {
-      await supabase.from('objectifs_bloc').insert({
-        bloc_id: newBloc.id, poids_cible: objData.poids_cible, kcal: objData.kcal,
-        proteines: objData.proteines, glucides: objData.glucides, lipides: objData.lipides,
-        sommeil: objData.sommeil, pas_journaliers: objData.pas_journaliers,
-        stress_cible: objData.stress_cible, seances_par_semaine: objData.seances_par_semaine,
-        bornes: objData.bornes,
-      })
+      const { id: _id, bloc_id: _b, ...objRest } = objData
+      await supabase.from('objectifs_bloc').insert({ ...objRest, bloc_id: newBloc.id })
     }
-    const { data: semaines } = await supabase.from('semaines').select('*').eq('bloc_id', bloc.id).order('numero')
-    for (const sem of semaines || []) {
-      const { data: newSem } = await supabase.from('semaines')
-        .insert({ bloc_id: newBloc.id, numero: sem.numero }).select().single()
-      const { data: seances } = await supabase.from('seances')
-        .select('*, exercices(*), activites_bonus(*)').eq('semaine_id', sem.id).order('ordre')
-      for (const sc of seances || []) {
-        const { data: newSc } = await supabase.from('seances')
-          .insert({ semaine_id: newSem.id, nom: sc.nom, ordre: sc.ordre }).select().single()
-        if (sc.exercices?.length) {
-          await supabase.from('exercices').insert(sc.exercices.map(ex => ({
-            seance_id: newSc.id, muscle: ex.muscle, nom: ex.nom, sets: ex.sets,
-            rep_range: ex.rep_range, repos: ex.repos, indications: ex.indications, ordre: ex.ordre
-          })))
-        }
-        if (sc.activites_bonus?.length) {
-          await supabase.from('activites_bonus').insert(sc.activites_bonus.map(act => ({
-            seance_id: newSc.id, nom: act.nom, ordre: act.ordre
-          })))
-        }
-      }
+
+    // 3. Charger toutes les semaines source
+    const { data: semaines } = await supabase
+      .from('semaines').select('*').eq('bloc_id', bloc.id).order('numero')
+    if (!semaines?.length) {
+      setBlocs(bs => [newBloc, ...bs]); setActiveBloc(newBloc); return
     }
-    setBlocs(bs => [newBloc, ...bs]); setActiveBloc(newBloc)
+
+    // 4. Batch insert toutes les semaines
+    const { data: newSemaines } = await supabase.from('semaines')
+      .insert(semaines.map(s => ({ bloc_id: newBloc.id, numero: s.numero })))
+      .select()
+
+    // Map ancien id → nouveau id
+    const oldToNewSem = {}
+    semaines.forEach((s, i) => { oldToNewSem[s.id] = newSemaines[i].id })
+
+    // 5. Charger toutes les séances source avec exercices et bonus en une requête
+    const { data: seancesSource } = await supabase
+      .from('seances')
+      .select('*, exercices(*), activites_bonus(*)')
+      .in('semaine_id', semaines.map(s => s.id))
+      .order('ordre')
+
+    if (!seancesSource?.length) {
+      setBlocs(bs => [newBloc, ...bs]); setActiveBloc(newBloc); return
+    }
+
+    // 6. Batch insert toutes les séances
+    const { data: newSeances } = await supabase.from('seances')
+      .insert(seancesSource.map(sc => ({
+        semaine_id: oldToNewSem[sc.semaine_id],
+        nom: sc.nom,
+        ordre: sc.ordre,
+      }))).select()
+
+    const oldToNewSc = {}
+    seancesSource.forEach((sc, i) => { oldToNewSc[sc.id] = newSeances[i].id })
+
+    // 7. Batch insert exercices et bonus en parallèle
+    const allExercices = seancesSource.flatMap(sc =>
+      (sc.exercices || []).map(ex => ({
+        seance_id: oldToNewSc[sc.id],
+        muscle: ex.muscle, nom: ex.nom, sets: ex.sets,
+        rep_range: ex.rep_range, repos: ex.repos,
+        indications: ex.indications, ordre: ex.ordre,
+        charge_indicative: ex.charge_indicative,
+        rpe_cible: ex.rpe_cible,
+        unilateral: ex.unilateral,
+        main_lift: ex.main_lift,
+      }))
+    )
+    const allBonus = seancesSource.flatMap(sc =>
+      (sc.activites_bonus || []).map(act => ({
+        seance_id: oldToNewSc[sc.id],
+        nom: act.nom,
+        ordre: act.ordre,
+      }))
+    )
+
+    await Promise.all([
+      allExercices.length ? supabase.from('exercices').insert(allExercices) : null,
+      allBonus.length ? supabase.from('activites_bonus').insert(allBonus) : null,
+    ].filter(Boolean))
+
+    setBlocs(bs => [newBloc, ...bs])
+    setActiveBloc(newBloc)
   }
 
   async function deleteBloc(blocId) {

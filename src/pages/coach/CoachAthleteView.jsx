@@ -61,11 +61,23 @@ export default function CoachAthleteView() {
 
   async function generateExport() {
     let text = `=== COMPTE RENDU ${athlete?.full_name} — ${activeBloc?.name} — Semaine ${activeSemaine?.numero} ===\n\n`
-    for (const sc of seances.filter(s => s.nom !== 'Bonus')) {
+
+    const seancesNormales = seances.filter(s => s.nom !== 'Bonus')
+
+    // Batch : toutes les notes en une requête
+    const { data: notesAll } = await supabase
+      .from('notes_seances')
+      .select('contenu, seance_id')
+      .eq('athlete_id', athleteId)
+      .eq('semaine_id', activeSemaine.id)
+      .in('seance_id', seancesNormales.map(s => s.id))
+
+    const notesMap = {}
+    ;(notesAll || []).forEach(n => { notesMap[n.seance_id] = n.contenu })
+
+    for (const sc of seancesNormales) {
       text += `## ${sc.nom}\n`
-      const note = await supabase.from('notes_seances').select('contenu')
-        .eq('athlete_id', athleteId).eq('seance_id', sc.id).eq('semaine_id', activeSemaine.id).single()
-      if (note.data?.contenu) text += `Note globale : ${note.data.contenu}\n`
+      if (notesMap[sc.id]) text += `Note globale : ${notesMap[sc.id]}\n`
       for (const ex of (sc.exercices || []).sort((a, b) => a.ordre - b.ordre)) {
         const series = (ex.series_realisees || []).sort((a, b) => a.numero_set - b.numero_set)
         if (series.length === 0) { text += `  ${ex.nom} : non réalisé\n`; continue }
@@ -76,6 +88,7 @@ export default function CoachAthleteView() {
       }
       text += '\n'
     }
+
     const bonus = seances.find(s => s.nom === 'Bonus')
     if (bonus) {
       const done = (bonus.activites_bonus || []).filter(a =>
@@ -83,6 +96,8 @@ export default function CoachAthleteView() {
       )
       if (done.length) text += `## Bonus réalisés\n${done.map(a => `  ✓ ${a.nom}`).join('\n')}\n\n`
     }
+
+    // Tracking — filtré par les 7 derniers jours du bloc courant
     const { data: tracking } = await supabase
       .from('data_tracking')
       .select('*')
@@ -209,10 +224,6 @@ function SeanceCard({ seance, semaineId, athleteId, isFemme, navigate }) {
       .then(({ data }) => { if (data) setNote(data.contenu || '') })
   }, [seance.id, semaineId])
 
-  // FIX : les exercices sont déjà uniques par id — on les affiche tels quels,
-  // triés par ordre. Pas de groupement par nom.
-  const exercicesTries = (seance.exercices || []).sort((a, b) => a.ordre - b.ordre)
-
   return (
     <div className="bg-white border border-gray-100 rounded-xl overflow-hidden">
       <div className="px-5 py-4 flex items-center justify-between">
@@ -234,8 +245,7 @@ function SeanceCard({ seance, semaineId, athleteId, isFemme, navigate }) {
           {note && (
             <div className="bg-gray-50 rounded-lg px-3 py-2 text-xs text-gray-600 italic">💬 {note}</div>
           )}
-          {exercicesTries.map(ex => {
-            // FIX : séries indexées par exercice id — pas de collision possible
+          {(seance.exercices || []).sort((a, b) => a.ordre - b.ordre).map(ex => {
             const seriesDone = (ex.series_realisees || []).sort((a, b) => a.numero_set - b.numero_set)
             return (
               <div key={ex.id}>
@@ -253,7 +263,7 @@ function SeanceCard({ seance, semaineId, athleteId, isFemme, navigate }) {
                   <div className="flex flex-wrap gap-1">
                     {seriesDone.map(s => (
                       <span key={s.id} className={`text-xs px-2 py-0.5 rounded-md border ${isFemme ? 'bg-pink-50 border-pink-100 text-pink-700' : 'bg-brand-50 border-brand-100 text-brand-700'}`}>
-                        S{s.numero_set} : {s.charge ? `${s.charge}kg` : '—'} × {s.reps || '—'}{s.rpe ? ` @${s.rpe}` : ''}{s.notes ? ` · ${s.notes}` : ''}
+                        S{s.numero_set} : {s.charge ? `${s.charge}kg` : '—'} × {s.reps || '—'}{s.notes ? ` · ${s.notes}` : ''}
                       </span>
                     ))}
                   </div>
