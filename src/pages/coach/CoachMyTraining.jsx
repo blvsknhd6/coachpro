@@ -8,15 +8,15 @@ import { findActiveSemaine } from '../../lib/semaine'
 export default function CoachMyTraining() {
   const { profile } = useAuth()
   const navigate = useNavigate()
-  const [blocs, setBlocs]               = useState([])
-  const [activeBloc, setActiveBloc]     = useState(null)
-  const [semaines, setSemaines]         = useState([])
+  const [blocs, setBlocs]                 = useState([])
+  const [activeBloc, setActiveBloc]       = useState(null)
+  const [semaines, setSemaines]           = useState([])
   const [activeSemaine, setActiveSemaine] = useState(null)
-  const [seances, setSeances]           = useState([])
-  const [loading, setLoading]           = useState(true)
-  const [showNewBloc, setShowNewBloc]   = useState(false)
-  const [newBlocName, setNewBlocName]   = useState('')
-  const [savingBloc, setSavingBloc]     = useState(false)
+  const [seances, setSeances]             = useState([])
+  const [loading, setLoading]             = useState(true)
+  const [showNewBloc, setShowNewBloc]     = useState(false)
+  const [newBlocName, setNewBlocName]     = useState('')
+  const [savingBloc, setSavingBloc]       = useState(false)
 
   useEffect(() => { if (profile) fetchBlocs() }, [profile])
   useEffect(() => { if (activeSemaine) fetchSeances(activeSemaine.id) }, [activeSemaine])
@@ -55,24 +55,27 @@ export default function CoachMyTraining() {
 
   async function fetchSeances(semaineId) {
     setLoading(true)
+    // series_realisees et activites_realisees filtrées par athlete_id côté SQL
     const { data, error } = await supabase
       .from('seances')
-      .select('*, exercices(*, series_realisees(id, athlete_id)), activites_bonus(*, activites_realisees(id, athlete_id))')
+      .select(`
+        id, nom, ordre,
+        exercices(
+          id,
+          series_realisees(id)
+        ),
+        activites_bonus(
+          id, nom, ordre,
+          activites_realisees(id)
+        )
+      `)
       .eq('semaine_id', semaineId)
+      .eq('exercices.series_realisees.athlete_id', profile.id)
+      .eq('activites_bonus.activites_realisees.athlete_id', profile.id)
       .order('ordre')
+
     if (error) { console.error('fetchSeances:', error); setLoading(false); return }
-    const filtered = (data || []).map(sc => ({
-      ...sc,
-      exercices: (sc.exercices || []).map(ex => ({
-        ...ex,
-        series_realisees: (ex.series_realisees || []).filter(s => s.athlete_id === profile.id)
-      })),
-      activites_bonus: (sc.activites_bonus || []).map(act => ({
-        ...act,
-        activites_realisees: (act.activites_realisees || []).filter(r => r.athlete_id === profile.id)
-      }))
-    }))
-    setSeances(filtered)
+    setSeances(data || [])
     setLoading(false)
   }
 
@@ -99,8 +102,7 @@ export default function CoachMyTraining() {
     setActiveBloc(b)
     setSeances([])
     setSemaines([])
-    fetchSemaines(b.id).then(() => {})
-    // fetchSemaines sets activeSemaine which triggers fetchSeances via useEffect
+    fetchSemaines(b.id)
   }
 
   return (
@@ -198,7 +200,7 @@ export default function CoachMyTraining() {
         <div className="grid gap-3 sm:grid-cols-2">
           {seances.filter(s => s.nom !== 'Bonus').map(seance => {
             const totalEx = seance.exercices?.length || 0
-            const doneEx  = seance.exercices?.filter(e => e.series_realisees?.length > 0).length || 0
+            const doneEx  = seance.exercices?.filter(e => (e.series_realisees?.length || 0) > 0).length || 0
             const pct = totalEx > 0 ? Math.round((doneEx / totalEx) * 100) : 0
             return (
               <Link
@@ -221,7 +223,7 @@ export default function CoachMyTraining() {
               className="bg-white border border-gray-100 rounded-xl p-5 hover:border-brand-200 hover:shadow-sm transition-all group">
               <p className="font-medium text-sm text-gray-900 group-hover:text-brand-700 mb-1">Activités bonus</p>
               <p className="text-xs text-gray-400">
-                {seance.activites_bonus?.filter(a => a.activites_realisees?.length > 0).length || 0}/{seance.activites_bonus?.length || 0} réalisées
+                {seance.activites_bonus?.filter(a => (a.activites_realisees?.length || 0) > 0).length || 0}/{seance.activites_bonus?.length || 0} réalisées
               </p>
             </Link>
           ))}

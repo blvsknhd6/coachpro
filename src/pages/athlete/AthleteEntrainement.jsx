@@ -50,11 +50,23 @@ export default function AthleteEntrainement() {
 
   async function fetchSeances(semaineId) {
     setLoading(true)
+
+    // Batch : séances + activités réalisées en parallèle
+    // series_realisees filtrées par athlete_id côté SQL (évite de ramener toutes les séries)
     const [seancesRes, activitesRes] = await Promise.all([
       supabase
         .from('seances')
-        .select('id, nom, ordre, exercices(id, series_realisees(id)), activites_bonus(id, nom, ordre)')
+        .select(`
+          id, nom, ordre,
+          exercices(
+            id,
+            series_realisees(id)
+          ),
+          activites_bonus(id, nom, ordre)
+        `)
         .eq('semaine_id', semaineId)
+        .eq('exercices.series_realisees.athlete_id', profile.id)
+        .eq('exercices.series_realisees.semaine_id', semaineId)
         .order('ordre'),
       supabase
         .from('activites_realisees')
@@ -62,7 +74,9 @@ export default function AthleteEntrainement() {
         .eq('athlete_id', profile.id)
         .eq('semaine_id', semaineId),
     ])
+
     setSeances(seancesRes.data || [])
+
     const map = {}
     ;(activitesRes.data || []).forEach(r => { map[r.activite_id] = r.realisee })
     setActivitesRealisees(map)
@@ -102,7 +116,7 @@ export default function AthleteEntrainement() {
   const accentBg    = theme.isFemme ? 'bg-pink-600' : 'bg-brand-600'
   const accentLight = theme.isFemme ? 'bg-pink-50 text-pink-700 border-pink-200' : 'bg-brand-50 text-brand-700 border-brand-200'
 
-  const bonusSeance    = seances.find(s => s.nom === 'Bonus')
+  const bonusSeance     = seances.find(s => s.nom === 'Bonus')
   const seancesNormales = seances.filter(s => s.nom !== 'Bonus')
 
   return (

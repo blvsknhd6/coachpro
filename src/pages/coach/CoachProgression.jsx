@@ -17,6 +17,7 @@ export default function CoachProgression() {
   const [chargeData, setChargeData]     = useState([])
   const [tonnageData, setTonnageData]   = useState([])
   const [volumeData, setVolumeData]     = useState([])
+  const [favData, setFavData]           = useState({})
   const [loading, setLoading]           = useState(true)
   const [loadingChart, setLoadingChart] = useState(false)
   const [showConfig, setShowConfig]     = useState(false)
@@ -30,6 +31,10 @@ export default function CoachProgression() {
 
   useEffect(() => { if (profile) loadInitialData() }, [profile])
   useEffect(() => { if (selectedExo && allExercices.length) loadChargeData(selectedExo) }, [selectedExo, allExercices])
+  useEffect(() => {
+    if (favExos.length && allExercices.length) loadFavData(favExos)
+    else if (!favExos.length) setFavData({})
+  }, [JSON.stringify(favExos), allExercices.length])
 
   async function loadInitialData() {
     setLoading(true)
@@ -45,17 +50,76 @@ export default function CoachProgression() {
     })
     setAllExercices(unique.sort((a, b) => a.nom.localeCompare(b.nom)))
     setAllMuscles([...muscles].sort())
-
     if (!selectedExo && unique.length) updateProgression({ selected_exo: unique[0].nom })
-
     await loadTonnageAndVolume()
     setLoading(false)
   }
 
   /**
-   * loadChargeData — batch : 1 requête series_realisees pour toutes les semaines,
-   * agrégation côté JS. Élimine la boucle for/await séquentielle.
+   * Une seule passe pour tous les exercices favoris.
+   * 3 requêtes batch indépendantes de N (nombre de favoris).
    */
+  async function loadFavData(exoNoms) {
+    if (!exoNoms.length) return
+
+    const { data: exs } = await supabase
+      .from('exercices').select('id, nom, seance_id').in('nom', exoNoms)
+    if (!exs?.length) return
+
+    const scIds = [...new Set(exs.map(e => e.seance_id))]
+
+    const [{ data: seances }, { data: srAll }] = await Promise.all([
+      supabase.from('seances').select('id, semaine_id').in('id', scIds),
+      supabase.from('series_realisees')
+        .select('charge, reps, exercice_id, semaine_id')
+        .eq('athlete_id', profile.id)
+        .in('exercice_id', exs.map(e => e.id))
+        .not('charge', 'is', null),
+    ])
+
+    const semaineIds = [...new Set((seances || []).map(s => s.semaine_id))]
+    const { data: semaines } = await supabase
+      .from('semaines').select('id, numero').in('id', semaineIds).order('numero')
+
+    const seanceToSemaine = {}
+    ;(seances || []).forEach(sc => { seanceToSemaine[sc.id] = sc.semaine_id })
+    const exToNom = {}, exToSemaine = {}
+    ;(exs || []).forEach(ex => {
+      exToNom[ex.id] = ex.nom
+      const semId = seanceToSemaine[ex.seance_id]
+      if (semId) exToSemaine[ex.id] = semId
+    })
+    const semaineNumero = {}
+    ;(semaines || []).forEach(s => { semaineNumero[s.id] = s.numero })
+
+    const aggr = {}
+    ;(srAll || []).forEach(s => {
+      const nom = exToNom[s.exercice_id]
+      const semId = exToSemaine[s.exercice_id]
+      if (!nom || !semId) return
+      if (!aggr[nom]) aggr[nom] = {}
+      if (!aggr[nom][semId]) aggr[nom][semId] = { maxCharge: 0, series: 0, tonnage: 0 }
+      const d = aggr[nom][semId]
+      d.maxCharge = Math.max(d.maxCharge, Number(s.charge))
+      d.series++
+      d.tonnage += Number(s.charge) * (Number(s.reps) || 0)
+    })
+
+    const result = {}
+    for (const nom of exoNoms) {
+      if (!aggr[nom]) { result[nom] = []; continue }
+      result[nom] = Object.entries(aggr[nom])
+        .sort((a, b) => (semaineNumero[a[0]] || 0) - (semaineNumero[b[0]] || 0))
+        .map(([semId, d]) => ({
+          semaine: `S${semaineNumero[semId]}`,
+          charge: d.maxCharge,
+          series: d.series,
+          tonnage: Math.round(d.tonnage),
+        }))
+    }
+    setFavData(result)
+  }
+
   async function loadChargeData(exoNom) {
     setLoadingChart(true)
     const { data: exs } = await supabase.from('exercices').select('id, seance_id').eq('nom', exoNom)
@@ -76,12 +140,8 @@ export default function CoachProgression() {
 
     const seanceToSemaine = {}
     ;(seances || []).forEach(sc => { seanceToSemaine[sc.id] = sc.semaine_id })
-
     const exToSemaine = {}
-    ;(exs || []).forEach(ex => {
-      const semaineId = seanceToSemaine[ex.seance_id]
-      if (semaineId) exToSemaine[ex.id] = semaineId
-    })
+    ;(exs || []).forEach(ex => { const s = seanceToSemaine[ex.seance_id]; if (s) exToSemaine[ex.id] = s })
 
     const data = (semaines || []).map(sem => {
       const sr = (srAll || []).filter(s => exToSemaine[s.exercice_id] === sem.id)
@@ -95,10 +155,6 @@ export default function CoachProgression() {
     setLoadingChart(false)
   }
 
-  /**
-   * loadTonnageAndVolume — fusionne les deux anciennes passes séquentielles
-   * (loadTonnageData + volume par muscle) en une seule passe batch.
-   */
   async function loadTonnageAndVolume() {
     const { data: blocs } = await supabase.from('blocs').select('id').eq('athlete_id', profile.id)
     if (!blocs?.length) return
@@ -108,7 +164,6 @@ export default function CoachProgression() {
     if (!semaines?.length) return
 
     const semIds = semaines.map(s => s.id)
-
     const { data: scAll } = await supabase.from('seances').select('id, semaine_id').in('semaine_id', semIds)
     const scIds = (scAll || []).map(s => s.id)
     if (!scIds.length) return
@@ -119,57 +174,37 @@ export default function CoachProgression() {
         .select('charge, reps, exercice_id, semaine_id')
         .eq('athlete_id', profile.id)
         .in('semaine_id', semIds)
-        .not('charge', 'is', null)
-        .not('reps', 'is', null),
+        .not('charge', 'is', null).not('reps', 'is', null),
     ])
 
     const scToSemaine = {}
     ;(scAll || []).forEach(sc => { scToSemaine[sc.id] = sc.semaine_id })
-
     const exById = {}
     ;(exAll || []).forEach(ex => {
       exById[ex.id] = { muscle: ex.muscle || 'autre', semaine_id: scToSemaine[ex.seance_id] }
     })
 
-    const tonnageMap = {}     // semaine_id → { tonnage, series }
-    const muscleVolMap = {}   // muscle → total volume
-
+    const tonnageMap = {}, muscleVolMap = {}
     ;(srAll || []).forEach(s => {
-      const ex = exById[s.exercice_id]
-      if (!ex) return
+      const ex = exById[s.exercice_id]; if (!ex) return
       const muscle = ex.muscle
       if (musclesExclus.includes(muscle)) return
-
       const vol = Number(s.charge) * Number(s.reps)
       const semId = s.semaine_id
-
       if (!tonnageMap[semId]) tonnageMap[semId] = { tonnage: 0, series: 0 }
-      tonnageMap[semId].tonnage += vol
-      tonnageMap[semId].series++
-
+      tonnageMap[semId].tonnage += vol; tonnageMap[semId].series++
       muscleVolMap[muscle] = (muscleVolMap[muscle] || 0) + vol
     })
 
-    setTonnageData(
-      semaines
-        .filter(s => tonnageMap[s.id])
-        .map(s => ({
-          semaine: `S${s.numero}`,
-          tonnage: Math.round(tonnageMap[s.id].tonnage),
-          series: tonnageMap[s.id].series,
-        }))
-    )
-
+    setTonnageData(semaines.filter(s => tonnageMap[s.id]).map(s => ({
+      semaine: `S${s.numero}`, tonnage: Math.round(tonnageMap[s.id].tonnage), series: tonnageMap[s.id].series,
+    })))
     setVolumeData(
       Object.entries(muscleVolMap)
         .map(([m, v]) => ({ muscle: m, volume: Math.round(v) }))
-        .sort((a, b) => b.volume - a.volume)
-        .slice(0, 8)
+        .sort((a, b) => b.volume - a.volume).slice(0, 8)
     )
   }
-
-  function getMetricKey() { return metric === 'tonnage' ? 'tonnage' : metric === 'series' ? 'series' : null }
-  function getMetricLabel() { return metric === 'tonnage' ? 'Tonnage (kg)' : metric === 'series' ? 'Nb séries' : '' }
 
   const DataChart = ({ data, dataKey, name, color: c }) => (
     <ResponsiveContainer width="100%" height={160}>
@@ -285,7 +320,7 @@ export default function CoachProgression() {
         <p className="text-sm text-gray-400 text-center py-16">Commence à remplir tes séances pour voir ta progression.</p>
       ) : (
         <div className="space-y-4">
-          {/* Exercice sélectionné — charge max */}
+
           <div className="bg-white border border-gray-100 rounded-xl p-4">
             <div className="flex items-center justify-between mb-3">
               <p className="text-sm font-medium text-gray-700">Charge max par semaine</p>
@@ -298,26 +333,62 @@ export default function CoachProgression() {
               chargeData.length > 0 ? (
                 <>
                   {(mode === 'graphe' || mode === 'les_deux') && <DataChart data={chargeData} dataKey="charge" name="Charge max (kg)" color={color} />}
-                  {(mode === 'tableau' || mode === 'les_deux') && (
-                    <div className={mode === 'les_deux' ? 'mt-3' : ''}>
-                      <DataTable data={chargeData} dataKeys={[{ key: 'charge', label: 'Charge max (kg)' }]} />
-                    </div>
-                  )}
+                  {(mode === 'tableau' || mode === 'les_deux') && <div className={mode === 'les_deux' ? 'mt-3' : ''}><DataTable data={chargeData} dataKeys={[{ key: 'charge', label: 'Charge max (kg)' }]} /></div>}
                 </>
               ) : <p className="text-xs text-gray-400 text-center py-8">Pas encore de données</p>
             }
           </div>
 
-          {/* Exercices favoris */}
-          {favExos.length > 0 && (
-            <div className="space-y-3">
-              {favExos.map(exoNom => (
-                <FavExoCard key={exoNom} exoNom={exoNom} athleteId={profile.id} metric={metric} mode={mode} color={color} />
-              ))}
-            </div>
-          )}
+          {/* Exercices favoris — rendu inline, données venant du state favData */}
+          {favExos.length > 0 && favExos.map(exoNom => {
+            const data = favData[exoNom] || []
+            return (
+              <div key={exoNom} className="bg-white border border-gray-100 rounded-xl p-4">
+                <p className="text-sm font-medium text-gray-700 mb-3">{exoNom}</p>
+                {!favData[exoNom] ? (
+                  <div className="h-36 bg-gray-50 rounded-lg animate-pulse" />
+                ) : data.length === 0 ? (
+                  <p className="text-xs text-gray-400">Pas encore de données</p>
+                ) : (
+                  <>
+                    {(mode === 'graphe' || mode === 'les_deux') && (
+                      <ResponsiveContainer width="100%" height={140}>
+                        <LineChart data={data}>
+                          <CartesianGrid strokeDasharray="3 3" stroke="#f3f4f6" />
+                          <XAxis dataKey="semaine" tick={{ fontSize: 10 }} />
+                          <YAxis tick={{ fontSize: 10 }} width={35} />
+                          <Tooltip contentStyle={{ fontSize: 11 }} />
+                          {metric !== 'series'  && <Line type="monotone" dataKey="tonnage" stroke={color}   strokeWidth={2} dot={{ r: 3 }} name="Tonnage" />}
+                          {metric !== 'tonnage' && <Line type="monotone" dataKey="series"  stroke="#10b981" strokeWidth={2} dot={{ r: 3 }} name="Séries" />}
+                        </LineChart>
+                      </ResponsiveContainer>
+                    )}
+                    {(mode === 'tableau' || mode === 'les_deux') && (
+                      <div className={mode === 'les_deux' ? 'mt-3' : ''}>
+                        <table className="w-full text-xs">
+                          <thead><tr className="border-b border-gray-100">
+                            <th className="text-left py-1.5 text-gray-400">Sem.</th>
+                            <th className="text-right py-1.5 text-gray-400">Charge max</th>
+                            {metric !== 'series'  && <th className="text-right py-1.5 text-gray-400">Tonnage</th>}
+                            {metric !== 'tonnage' && <th className="text-right py-1.5 text-gray-400">Séries</th>}
+                          </tr></thead>
+                          <tbody>{data.map((r, i) => (
+                            <tr key={i} className="border-b border-gray-50">
+                              <td className="py-1.5 text-gray-700">{r.semaine}</td>
+                              <td className="py-1.5 text-right text-gray-600">{r.charge}kg</td>
+                              {metric !== 'series'  && <td className="py-1.5 text-right text-gray-600">{r.tonnage.toLocaleString('fr')}</td>}
+                              {metric !== 'tonnage' && <td className="py-1.5 text-right text-gray-600">{r.series}</td>}
+                            </tr>
+                          ))}</tbody>
+                        </table>
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+            )
+          })}
 
-          {/* Volume total par semaine */}
           {tonnageData.length > 0 && (
             <div className="bg-white border border-gray-100 rounded-xl p-4">
               <p className="text-sm font-medium text-gray-700 mb-3">Volume total par semaine</p>
@@ -339,7 +410,6 @@ export default function CoachProgression() {
             </div>
           )}
 
-          {/* Par groupe musculaire */}
           {volumeData.length > 0 && (
             <div className="bg-white border border-gray-100 rounded-xl p-4">
               <p className="text-sm font-medium text-gray-700 mb-3">Volume par groupe musculaire</p>
@@ -360,99 +430,9 @@ export default function CoachProgression() {
               )}
             </div>
           )}
+
         </div>
       )}
     </Layout>
-  )
-}
-
-// ── FavExoCard — version batch ────────────────────────────────────────────
-function FavExoCard({ exoNom, athleteId, metric, mode, color }) {
-  const [data, setData]       = useState([])
-  const [loading, setLoading] = useState(true)
-
-  useEffect(() => { loadData() }, [exoNom])
-
-  async function loadData() {
-    setLoading(true)
-    const { data: exs } = await supabase.from('exercices').select('id, seance_id').eq('nom', exoNom)
-    if (!exs?.length) { setLoading(false); return }
-
-    const { data: seances } = await supabase.from('seances')
-      .select('id, semaine_id').in('id', exs.map(e => e.seance_id))
-    const semaineIds = [...new Set((seances || []).map(s => s.semaine_id))]
-
-    const [{ data: semaines }, { data: srAll }] = await Promise.all([
-      supabase.from('semaines').select('id, numero').in('id', semaineIds).order('numero'),
-      supabase.from('series_realisees')
-        .select('charge, reps, exercice_id, semaine_id')
-        .eq('athlete_id', athleteId)
-        .in('semaine_id', semaineIds)
-        .not('charge', 'is', null),
-    ])
-
-    const seanceToSemaine = {}
-    ;(seances || []).forEach(sc => { seanceToSemaine[sc.id] = sc.semaine_id })
-
-    const exToSemaine = {}
-    ;(exs || []).forEach(ex => {
-      const semaineId = seanceToSemaine[ex.seance_id]
-      if (semaineId) exToSemaine[ex.id] = semaineId
-    })
-
-    const rows = (semaines || []).map(sem => {
-      const sr = (srAll || []).filter(s => exToSemaine[s.exercice_id] === sem.id)
-      if (!sr.length) return null
-      const maxCharge = Math.max(...sr.map(s => Number(s.charge)))
-      const tonnage = Math.round(sr.reduce((acc, s) => acc + Number(s.charge) * (Number(s.reps) || 0), 0))
-      return { semaine: `S${sem.numero}`, charge: maxCharge, series: sr.length, tonnage }
-    }).filter(Boolean)
-
-    setData(rows)
-    setLoading(false)
-  }
-
-  return (
-    <div className="bg-white border border-gray-100 rounded-xl p-4">
-      <p className="text-sm font-medium text-gray-700 mb-3">{exoNom}</p>
-      {loading ? <div className="h-36 bg-gray-50 rounded-lg animate-pulse" /> : data.length === 0 ? (
-        <p className="text-xs text-gray-400">Pas encore de données</p>
-      ) : (
-        <>
-          {(mode === 'graphe' || mode === 'les_deux') && (
-            <ResponsiveContainer width="100%" height={140}>
-              <LineChart data={data}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#f3f4f6" />
-                <XAxis dataKey="semaine" tick={{ fontSize: 10 }} />
-                <YAxis tick={{ fontSize: 10 }} width={35} />
-                <Tooltip contentStyle={{ fontSize: 11 }} />
-                {metric !== 'series' && <Line type="monotone" dataKey="tonnage" stroke={color} strokeWidth={2} dot={{ r: 3 }} name="Tonnage" />}
-                {metric !== 'tonnage' && <Line type="monotone" dataKey="series" stroke="#10b981" strokeWidth={2} dot={{ r: 3 }} name="Séries" />}
-              </LineChart>
-            </ResponsiveContainer>
-          )}
-          {(mode === 'tableau' || mode === 'les_deux') && (
-            <div className={mode === 'les_deux' ? 'mt-3' : ''}>
-              <table className="w-full text-xs">
-                <thead><tr className="border-b border-gray-100">
-                  <th className="text-left py-1.5 text-gray-400">Sem.</th>
-                  <th className="text-right py-1.5 text-gray-400">Charge max</th>
-                  {metric !== 'series' && <th className="text-right py-1.5 text-gray-400">Tonnage</th>}
-                  {metric !== 'tonnage' && <th className="text-right py-1.5 text-gray-400">Séries</th>}
-                </tr></thead>
-                <tbody>{data.map((r, i) => (
-                  <tr key={i} className="border-b border-gray-50">
-                    <td className="py-1.5 text-gray-700">{r.semaine}</td>
-                    <td className="py-1.5 text-right text-gray-600">{r.charge}kg</td>
-                    {metric !== 'series' && <td className="py-1.5 text-right text-gray-600">{r.tonnage.toLocaleString('fr')}</td>}
-                    {metric !== 'tonnage' && <td className="py-1.5 text-right text-gray-600">{r.series}</td>}
-                  </tr>
-                ))}</tbody>
-              </table>
-            </div>
-          )}
-        </>
-      )}
-    </div>
   )
 }

@@ -20,15 +20,15 @@ export default function Layout({ children }) {
     { to: '/coach',               label: 'Accueil',          exact: true },
     { to: '/coach/athletes',      label: 'Mes coachés' },
     { to: '/coach/mon-programme', label: 'Mon entraînement' },
-    { to: '/coach/progression',   label: 'Ma progression' },
     { to: '/coach/tracking',      label: 'Mon suivi' },
+    { to: '/coach/progression',   label: 'Ma progression' },
   ]
 
   const athleteTabs = [
     { to: '/athlete',              label: 'Accueil',          exact: true },
     { to: '/athlete/entrainement', label: 'Mon entraînement' },
     { to: '/athlete/tracking',     label: 'Mon suivi' },
-    { to: '/athlete/progression',  label: 'Progression' },
+    { to: '/athlete/progression',  label: 'Ma Progression' },
   ]
 
   const tabs        = isCoach ? coachTabs : athleteTabs
