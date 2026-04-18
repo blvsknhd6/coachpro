@@ -41,7 +41,6 @@ export default function AthleteSeance() {
   const [exercices, setExercices]               = useState([])
   const [activites, setActivites]               = useState([])
   const [series, setSeries]                     = useState({})
-  // FIX: seriesPrev indexé par ex.id (pas ex.nom) pour gérer les doublons
   const [seriesPrev, setSeriesPrev]             = useState({})
   const [notePrev, setNotePrev]                 = useState('')
   const [activitesRealisees, setActivitesRealisees] = useState({})
@@ -55,21 +54,26 @@ export default function AthleteSeance() {
   const [addingActivite, setAddingActivite]     = useState(false)
   const [showChargeIndicative, setShowChargeIndicative] = useState(false)
   const [showRpe, setShowRpe]                   = useState(false)
+  const [isPowerlifting, setIsPowerlifting]     = useState(false)
+  const [powerMaxes, setPowerMaxes]             = useState({})
+  const [showCalc, setShowCalc]                 = useState(null)
 
-  const [isPowerlifting, setIsPowerlifting] = useState(false)
-  const [powerMaxes, setPowerMaxes]         = useState({})
-  const [showCalc, setShowCalc]             = useState(null)
-
-  useEffect(() => { fetchAll() }, [seanceId, semaineId, profile])
+  useEffect(() => { if (profile) fetchAll() }, [seanceId, semaineId, profile])
 
   async function fetchAll() {
     if (!profile) return
-    const { data: sc } = await supabase.from('seances').select('*').eq('id', seanceId).single()
+
+    // 1. Charger séance + semaine + bloc en parallèle
+    const [{ data: sc }, { data: semaine }] = await Promise.all([
+      supabase.from('seances').select('*').eq('id', seanceId).single(),
+      supabase.from('semaines').select('bloc_id').eq('id', semaineId).single(),
+    ])
     setSeance(sc)
 
-    const { data: semaine } = await supabase.from('semaines').select('bloc_id').eq('id', semaineId).single()
     const { data: bloc } = semaine
-      ? await supabase.from('blocs').select('athlete_id, show_charge_indicative, show_rpe, powerlifting').eq('id', semaine.bloc_id).single()
+      ? await supabase.from('blocs')
+          .select('athlete_id, show_charge_indicative, show_rpe, powerlifting')
+          .eq('id', semaine.bloc_id).single()
       : { data: null }
 
     const athId = bloc?.athlete_id || profile.id
@@ -79,18 +83,22 @@ export default function AthleteSeance() {
     setShowRpe(bloc?.show_rpe || false)
     setIsPowerlifting(bloc?.powerlifting || false)
 
+    // 2. Charger les maxes powerlifting si besoin
     if (bloc?.powerlifting && semaine?.bloc_id) {
-      const { data: maxData } = await supabase.from('powerlifting_maxes').select('lift, max_kg')
-        .eq('bloc_id', semaine.bloc_id).eq('athlete_id', athId)
+      const { data: maxData } = await supabase.from('powerlifting_maxes')
+        .select('lift, max_kg').eq('bloc_id', semaine.bloc_id).eq('athlete_id', athId)
       const maxMap = {}
       ;(maxData || []).forEach(m => { maxMap[m.lift] = Number(m.max_kg) })
       setPowerMaxes(maxMap)
     }
 
+    // 3. Vue Bonus
     if (sc?.nom === 'Bonus') {
-      const { data: acts } = await supabase.from('activites_bonus').select('*').eq('seance_id', seanceId).order('ordre')
+      const [{ data: acts }, { data: realisees }] = await Promise.all([
+        supabase.from('activites_bonus').select('*').eq('seance_id', seanceId).order('ordre'),
+        supabase.from('activites_realisees').select('*').eq('semaine_id', semaineId).eq('athlete_id', athId),
+      ])
       setActivites(acts || [])
-      const { data: realisees } = await supabase.from('activites_realisees').select('*').eq('semaine_id', semaineId).eq('athlete_id', athId)
       const map = {}
       ;(realisees || []).forEach(r => { map[r.activite_id] = r.realisee })
       setActivitesRealisees(map)
@@ -98,63 +106,94 @@ export default function AthleteSeance() {
       return
     }
 
-    const { data: exs } = await supabase.from('exercices').select('*').eq('seance_id', seanceId).order('ordre')
+    // 4. Charger exercices + series_realisees filtrées par athlete_id côté SQL + note de séance
+    // series_realisees filtrées directement en SQL : évite de ramener toutes les séries de tous les athlètes
+    const [{ data: exs }, { data: srData }, { data: noteData }] = await Promise.all([
+      supabase.from('exercices').select('*').eq('seance_id', seanceId).order('ordre'),
+      supabase.from('series_realisees')
+        .select('*')
+        .eq('semaine_id', semaineId)
+        .eq('athlete_id', athId)
+        .order('numero_set'),
+      supabase.from('notes_seances')
+        .select('contenu')
+        .eq('athlete_id', athId)
+        .eq('seance_id', seanceId)
+        .eq('semaine_id', semaineId)
+        .single(),
+    ])
+
     setExercices(exs || [])
-
-    const { data: sr } = await supabase.from('series_realisees').select('*')
-      .eq('semaine_id', semaineId).eq('athlete_id', athId)
-      .in('exercice_id', (exs || []).map(e => e.id)).order('numero_set')
-    const map = {}
-    ;(exs || []).forEach(ex => { map[ex.id] = [] })
-    ;(sr || []).forEach(s => { if (map[s.exercice_id]) map[s.exercice_id].push(s) })
-    setSeries(map)
-
-    const { data: noteData } = await supabase.from('notes_seances').select('contenu')
-      .eq('athlete_id', athId).eq('seance_id', seanceId).eq('semaine_id', semaineId).single()
     setNoteSeance(noteData?.contenu || '')
 
-    await fetchSeriesPrev(exs || [], semaineId, athId, sc?.nom)
+    // Regrouper les séries par exercice_id
+    const map = {}
+    ;(exs || []).forEach(ex => { map[ex.id] = [] })
+    ;(srData || []).forEach(s => { if (map[s.exercice_id]) map[s.exercice_id].push(s) })
+    setSeries(map)
+
+    // 5. Charger les séries de la semaine précédente (batch)
+    await fetchSeriesPrev(exs || [], semaineId, athId, sc?.nom, semaine?.bloc_id)
     setLoading(false)
   }
 
-  async function fetchSeriesPrev(exs, currentSemaineId, athId, seanceNom) {
-    const { data: semaineCourante } = await supabase.from('semaines').select('numero, bloc_id').eq('id', currentSemaineId).single()
+  /**
+   * Charge les séries de la semaine précédente en batch.
+   * Avant : 5 requêtes séquentielles. Après : 3 requêtes en parallèle.
+   */
+  async function fetchSeriesPrev(exs, currentSemaineId, athId, seanceNom, blocId) {
+    if (!blocId) return
+
+    // 1. Trouver le numéro de la semaine courante
+    const { data: semaineCourante } = await supabase
+      .from('semaines').select('numero').eq('id', currentSemaineId).single()
     if (!semaineCourante || semaineCourante.numero <= 1) return
-    const { data: semPrev } = await supabase.from('semaines').select('id')
-      .eq('bloc_id', semaineCourante.bloc_id).eq('numero', semaineCourante.numero - 1).single()
+
+    // 2. Semaine précédente + séance précédente + note précédente en parallèle
+    const { data: semPrev } = await supabase
+      .from('semaines')
+      .select('id')
+      .eq('bloc_id', blocId)
+      .eq('numero', semaineCourante.numero - 1)
+      .single()
     if (!semPrev) return
-    const { data: seancePrev } = await supabase.from('seances').select('id')
-      .eq('semaine_id', semPrev.id).eq('nom', seanceNom || '').single()
+
+    const { data: seancePrev } = await supabase
+      .from('seances').select('id').eq('semaine_id', semPrev.id).eq('nom', seanceNom || '').single()
     if (!seancePrev) return
 
-    const { data: notePrevData } = await supabase.from('notes_seances').select('contenu')
-      .eq('athlete_id', athId).eq('seance_id', seancePrev.id).eq('semaine_id', semPrev.id).single()
-    setNotePrev(notePrevData?.contenu || '')
+    // 3. Exercices + séries + note en parallèle
+    const [{ data: exsPrev }, { data: notePrevSeance }] = await Promise.all([
+      supabase.from('exercices').select('*').eq('seance_id', seancePrev.id).order('ordre'),
+      supabase.from('notes_seances')
+        .select('contenu')
+        .eq('athlete_id', athId)
+        .eq('seance_id', seancePrev.id)
+        .eq('semaine_id', semPrev.id)
+        .single(),
+    ])
 
-    // FIX : on charge les exos précédents triés par ordre
-    const { data: exsPrev } = await supabase.from('exercices').select('*')
-      .eq('seance_id', seancePrev.id).order('ordre')
-    const { data: srPrev } = await supabase.from('series_realisees').select('*')
-      .eq('semaine_id', semPrev.id).eq('athlete_id', athId)
-      .in('exercice_id', (exsPrev || []).map(e => e.id)).order('numero_set')
+    setNotePrev(notePrevSeance?.contenu || '')
 
-    // FIX : on construit un map par ORDRE de l'exercice (pas par nom)
-    // Chaque exercice courant est associé à l'exercice précédent du même ordre
-    // (même position dans la séance = même "slot" topset/backoff)
-    const mapByOrdre = {}
-    ;(exsPrev || []).forEach(ex => { mapByOrdre[ex.ordre] = [] })
-    ;(srPrev || []).forEach(s => {
-      const exPrev = (exsPrev || []).find(e => e.id === s.exercice_id)
-      if (exPrev) mapByOrdre[exPrev.ordre].push(s)
+    const exPrevIds = (exsPrev || []).map(e => e.id)
+    if (!exPrevIds.length) return
+
+    const { data: srPrevReal } = await supabase
+      .from('series_realisees')
+      .select('*')
+      .eq('semaine_id', semPrev.id)
+      .eq('athlete_id', athId)
+      .in('exercice_id', exPrevIds)
+      .order('numero_set')
+
+    // Regrouper par nom d'exercice (pour faire correspondre avec la semaine courante)
+    const mapByNom = {}
+    ;(exsPrev || []).forEach(ex => { mapByNom[ex.nom] = [] })
+    ;(srPrevReal || []).forEach(s => {
+      const ex = (exsPrev || []).find(e => e.id === s.exercice_id)
+      if (ex && mapByNom[ex.nom]) mapByNom[ex.nom].push(s)
     })
-
-    // On associe chaque exercice courant à son équivalent par ordre
-    const mapByCurrentId = {}
-    ;(exs || []).forEach(ex => {
-      mapByCurrentId[ex.id] = mapByOrdre[ex.ordre] || []
-    })
-
-    setSeriesPrev(mapByCurrentId)
+    setSeriesPrev(mapByNom)
   }
 
   async function saveNoteSeance(contenu) {
@@ -204,7 +243,8 @@ export default function AthleteSeance() {
   async function addCustomActivite() {
     if (!newActiviteInput.trim()) return
     const ordre = activites.length
-    const { data } = await supabase.from('activites_bonus').insert({ seance_id: seanceId, nom: newActiviteInput.trim(), ordre }).select().single()
+    const { data } = await supabase.from('activites_bonus')
+      .insert({ seance_id: seanceId, nom: newActiviteInput.trim(), ordre }).select().single()
     if (data) { setActivites(prev => [...prev, data]); setNewActiviteInput(''); setAddingActivite(false) }
   }
 
@@ -222,7 +262,7 @@ export default function AthleteSeance() {
 
   if (loading) return <Layout><p className="text-sm text-gray-400">Chargement…</p></Layout>
 
-  // ── Vue Bonus ─────────────────────────────────────────────────────────
+  // ── Vue Bonus ────────────────────────────────────────────────────────
   if (seance?.nom === 'Bonus') {
     const doneCount = activites.filter(a => activitesRealisees[a.id]).length
     return (
@@ -267,7 +307,7 @@ export default function AthleteSeance() {
     )
   }
 
-  // ── Vue séance normale ────────────────────────────────────────────────
+  // ── Vue séance normale ───────────────────────────────────────────────
   const totalSeries = exercices.reduce((acc, ex) => acc + ex.sets, 0)
   const doneSeries  = Object.values(series).reduce((acc, arr) => acc + arr.filter(s => s.reps || s.charge).length, 0)
   const pct = totalSeries > 0 ? Math.round((doneSeries / totalSeries) * 100) : 0
@@ -299,7 +339,7 @@ export default function AthleteSeance() {
         {exercices.map(ex => (
           <ExerciceCard key={ex.id} exercice={ex}
             series={series[ex.id] || []}
-            prevSeries={seriesPrev[ex.id] || []}
+            prevSeries={seriesPrev[ex.nom] || []}
             showChargeIndicative={showChargeIndicative}
             showRpe={showRpe}
             theme={theme}
@@ -342,11 +382,10 @@ export default function AthleteSeance() {
   )
 }
 
-// ── Récap semaine précédente ──────────────────────────────────────────────
-// FIX : prend seriesPrev indexé par ex.id
+// ── Récap semaine précédente ──────────────────────────────────────────
 function RecapSemainePrev({ exercices, seriesPrev, notePrev, theme }) {
   const [open, setOpen] = useState(true)
-  const exsAvecPerfs = exercices.filter(ex => (seriesPrev[ex.id] || []).some(s => s.charge || s.reps))
+  const exsAvecPerfs = exercices.filter(ex => (seriesPrev[ex.nom] || []).some(s => s.charge || s.reps))
   return (
     <div className="bg-gray-50 border border-gray-100 rounded-xl mb-4 overflow-hidden">
       <button onClick={() => setOpen(o => !o)} className="w-full flex items-center justify-between px-4 py-3">
@@ -360,7 +399,7 @@ function RecapSemainePrev({ exercices, seriesPrev, notePrev, theme }) {
             <div key={ex.id}>
               <p className="text-xs font-medium text-gray-600 mb-1">{ex.nom}</p>
               <div className="flex flex-wrap gap-1">
-                {(seriesPrev[ex.id] || []).map((s, i) => (
+                {(seriesPrev[ex.nom] || []).map((s, i) => (
                   <span key={i} className={`text-xs border px-2 py-0.5 rounded-md ${theme.isFemme ? 'bg-pink-50 border-pink-100 text-pink-600' : 'bg-brand-50 border-brand-100 text-brand-600'}`}>
                     S{i+1} : {s.charge ? `${s.charge}kg` : '—'} × {s.reps || '—'}{s.rpe ? ` @${s.rpe}` : ''}{s.notes ? ` · ${s.notes}` : ''}
                   </span>
@@ -374,7 +413,7 @@ function RecapSemainePrev({ exercices, seriesPrev, notePrev, theme }) {
   )
 }
 
-// ── ExerciceCard ──────────────────────────────────────────────────────────
+// ── ExerciceCard ──────────────────────────────────────────────────────
 function ExerciceCard({ exercice, series, prevSeries, showChargeIndicative, showRpe, onAddSerie, onUpdate, onDelete, theme, onStartChrono, isPowerlifting, maxForLift, onOpenCalc }) {
   const nextSet   = series.length + 1
   const canAddSet = series.length < exercice.sets
@@ -417,16 +456,11 @@ function ExerciceCard({ exercice, series, prevSeries, showChargeIndicative, show
           )}
           {isPowerlifting && exercice.main_lift && (
             <div className="flex items-center gap-3 mt-1 flex-wrap">
-              {maxForLift && (
-                <span className="text-xs text-amber-600 font-medium">Max réf : {maxForLift}kg</span>
-              )}
-              {best1RM && (
-                <span className="text-xs text-green-600 font-medium">~1RM session : {best1RM}kg</span>
-              )}
+              {maxForLift && <span className="text-xs text-amber-600 font-medium">Max réf : {maxForLift}kg</span>}
+              {best1RM && <span className="text-xs text-green-600 font-medium">~1RM session : {best1RM}kg</span>}
               <button
                 onClick={() => onOpenCalc(series[series.length - 1]?.charge, series[series.length - 1]?.reps)}
-                className="text-xs text-gray-400 hover:text-amber-600 border border-gray-200 hover:border-amber-300 rounded px-1.5 py-0.5 transition-colors"
-              >
+                className="text-xs text-gray-400 hover:text-amber-600 border border-gray-200 hover:border-amber-300 rounded px-1.5 py-0.5 transition-colors">
                 🧮 Calculer 1RM
               </button>
             </div>
@@ -470,7 +504,7 @@ function ExerciceCard({ exercice, series, prevSeries, showChargeIndicative, show
   )
 }
 
-// ── SerieRow ──────────────────────────────────────────────────────────────
+// ── SerieRow ──────────────────────────────────────────────────────────
 function SerieRow({ serie, index, prevSerie, repRange, repos, showRpe, onUpdate, onDelete, theme, onStartChrono, maxForLift, isPowerlifting }) {
   const [charge, setCharge] = useState(serie.charge ?? '')
   const [reps, setReps]     = useState(serie.reps   ?? '')
@@ -503,9 +537,7 @@ function SerieRow({ serie, index, prevSerie, repRange, repos, showRpe, onUpdate,
             className={inputBase + ' w-full'}
           />
           {pctOfMax !== null && (
-            <span className={`absolute right-2 top-1/2 -translate-y-1/2 text-xs font-semibold pointer-events-none ${
-              pctOfMax >= 90 ? 'text-red-500' : pctOfMax >= 80 ? 'text-amber-500' : 'text-green-500'
-            }`}>
+            <span className={`absolute right-2 top-1/2 -translate-y-1/2 text-xs font-semibold pointer-events-none ${pctOfMax >= 90 ? 'text-red-500' : pctOfMax >= 80 ? 'text-amber-500' : 'text-green-500'}`}>
               {pctOfMax}%
             </span>
           )}
@@ -518,7 +550,6 @@ function SerieRow({ serie, index, prevSerie, repRange, repos, showRpe, onUpdate,
         />
         <button onClick={onDelete} className="text-gray-200 hover:text-red-400 text-xl flex-shrink-0">×</button>
       </div>
-
       <div className="flex gap-2 items-center pl-7">
         <input type="text" value={notes} placeholder="Note (facile, douleur…)"
           onChange={e => setNotes(e.target.value)}
@@ -534,13 +565,9 @@ function SerieRow({ serie, index, prevSerie, repRange, repos, showRpe, onUpdate,
           </select>
         )}
       </div>
-
       {liveEst1RM && (
-        <div className="pl-7">
-          <p className="text-xs text-amber-600 font-medium">~1RM estimé : {liveEst1RM}kg</p>
-        </div>
+        <div className="pl-7"><p className="text-xs text-amber-600 font-medium">~1RM estimé : {liveEst1RM}kg</p></div>
       )}
-
       {prevSerie && (prevSerie.charge || prevSerie.reps) && (
         <div className="pl-7">
           <p className="text-xs text-gray-300">
@@ -553,7 +580,7 @@ function SerieRow({ serie, index, prevSerie, repRange, repos, showRpe, onUpdate,
   )
 }
 
-// ── Calculator1RM ─────────────────────────────────────────────────────────
+// ── Calculator1RM ─────────────────────────────────────────────────────
 function Calculator1RM({ lift, defaultCharge, defaultReps, currentMax, onSaveMax, onClose, theme }) {
   const [charge, setCharge] = useState(defaultCharge || '')
   const [reps, setReps]     = useState(defaultReps || '')
@@ -587,14 +614,16 @@ function Calculator1RM({ lift, defaultCharge, defaultReps, currentMax, onSaveMax
               <input type="number" inputMode="decimal" value={charge}
                 onChange={e => setCharge(e.target.value)}
                 className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-amber-400"
-                placeholder="100" />
+                placeholder="100"
+              />
             </div>
             <div>
               <label className="text-xs font-medium text-gray-500 block mb-1">Répétitions</label>
               <input type="number" inputMode="numeric" value={reps}
                 onChange={e => setReps(e.target.value)}
                 className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-amber-400"
-                placeholder="5" />
+                placeholder="5"
+              />
             </div>
             <div>
               <label className="text-xs font-medium text-gray-500 block mb-1">RPE (opt.)</label>
@@ -633,7 +662,7 @@ function Calculator1RM({ lift, defaultCharge, defaultReps, currentMax, onSaveMax
   )
 }
 
-// ── ChronoRepos ───────────────────────────────────────────────────────────
+// ── ChronoRepos ───────────────────────────────────────────────────────
 function ChronoRepos({ duree, onClose }) {
   const secondes = (() => {
     if (!duree) return 120

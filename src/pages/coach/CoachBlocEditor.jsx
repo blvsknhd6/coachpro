@@ -98,18 +98,32 @@ export default function CoachBlocEditor() {
   }
 
   async function createBlocStructure({ nomsSeances, nbSemaines }) {
-    const semaineCrees = []
-    for (let i = 1; i <= nbSemaines; i++) {
-      const { data: sem } = await supabase.from('semaines').insert({ bloc_id: blocId, numero: i }).select().single()
-      semaineCrees.push(sem)
+    // 1. Batch insert toutes les semaines en une requête
+    const { data: semaineCrees } = await supabase
+      .from('semaines')
+      .insert(Array.from({ length: nbSemaines }, (_, i) => ({ bloc_id: blocId, numero: i + 1 })))
+      .select()
+
+    // 2. Batch insert toutes les séances (normales + Bonus) pour toutes les semaines
+    const allSeancesPayload = semaineCrees.flatMap(sem => [
+      ...nomsSeances.map((nom, j) => ({ semaine_id: sem.id, nom, ordre: j })),
+      { semaine_id: sem.id, nom: 'Bonus', ordre: nomsSeances.length },
+    ])
+    const { data: allNewSeances } = await supabase.from('seances').insert(allSeancesPayload).select()
+
+    // 3. Batch insert activités bonus par défaut pour toutes les séances Bonus
+    const bonusSeances = (allNewSeances || []).filter(s => s.nom === 'Bonus')
+    if (bonusSeances.length) {
+      await supabase.from('activites_bonus').insert(
+        bonusSeances.flatMap(bonus =>
+          BONUS_DEFAUT.map((nom, k) => ({ seance_id: bonus.id, nom, ordre: k }))
+        )
+      )
     }
-    for (const sem of semaineCrees) {
-      const sp = [...nomsSeances.map((nom, j) => ({ semaine_id: sem.id, nom, ordre: j })), { semaine_id: sem.id, nom: 'Bonus', ordre: nomsSeances.length }]
-      const { data: newSeances } = await supabase.from('seances').insert(sp).select()
-      const bonus = (newSeances || []).find(s => s.nom === 'Bonus')
-      if (bonus) await supabase.from('activites_bonus').insert(BONUS_DEFAUT.map((nom, k) => ({ seance_id: bonus.id, nom, ordre: k })))
-    }
-    setSemaines(semaineCrees); setActiveSemaine(semaineCrees[0]); setShowCreateBloc(false)
+
+    setSemaines(semaineCrees)
+    setActiveSemaine(semaineCrees[0])
+    setShowCreateBloc(false)
   }
 
   async function addSemaine() {
@@ -167,12 +181,12 @@ export default function CoachBlocEditor() {
 
   async function deleteSemaine(semaineId) {
     await supabase.from('semaines').delete().eq('id', semaineId)
-    const remaining = semaines.filter(s => s.id !== semaineId)
-    for (let i = 0; i < remaining.length; i++) {
-      await supabase.from('semaines').update({ numero: i + 1 }).eq('id', remaining[i].id)
-      remaining[i] = { ...remaining[i], numero: i + 1 }
-    }
-    setSemaines(remaining); setActiveSemaine(remaining[remaining.length - 1] || null); setConfirmDeleteSemaine(null)
+    const remaining = semaines.filter(s => s.id !== semaineId).map((s, i) => ({ ...s, numero: i + 1 }))
+    // Batch : tous les updates de numéro en parallèle
+    await Promise.all(remaining.map(s => supabase.from('semaines').update({ numero: s.numero }).eq('id', s.id)))
+    setSemaines(remaining)
+    setActiveSemaine(remaining[remaining.length - 1] || null)
+    setConfirmDeleteSemaine(null)
   }
 
   /**
@@ -279,11 +293,15 @@ export default function CoachBlocEditor() {
   }
 
   async function updateSeanceNom(seanceId, ancien, nouveau) {
-    await supabase.from('seances').update({ nom: nouveau }).eq('id', seanceId)
+    const suivIds = semaines.filter(s => s.numero > activeSemaine.numero).map(s => s.id)
+    // Batch : update la séance courante + toutes les séances du même nom dans les semaines suivantes
+    await Promise.all([
+      supabase.from('seances').update({ nom: nouveau }).eq('id', seanceId),
+      suivIds.length
+        ? supabase.from('seances').update({ nom: nouveau }).in('semaine_id', suivIds).eq('nom', ancien)
+        : null,
+    ].filter(Boolean))
     setSeances(prev => prev.map(s => s.id === seanceId ? { ...s, nom: nouveau } : s))
-    for (const sem of semaines.filter(s => s.numero > activeSemaine.numero)) {
-      await supabase.from('seances').update({ nom: nouveau }).eq('semaine_id', sem.id).eq('nom', ancien)
-    }
   }
 
   async function addCustomExo(muscle, nom) {
