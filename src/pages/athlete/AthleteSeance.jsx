@@ -63,7 +63,6 @@ export default function AthleteSeance() {
   async function fetchAll() {
     if (!profile) return
 
-    // 1. Charger séance + semaine + bloc en parallèle
     const [{ data: sc }, { data: semaine }] = await Promise.all([
       supabase.from('seances').select('*').eq('id', seanceId).single(),
       supabase.from('semaines').select('bloc_id').eq('id', semaineId).single(),
@@ -83,7 +82,6 @@ export default function AthleteSeance() {
     setShowRpe(bloc?.show_rpe || false)
     setIsPowerlifting(bloc?.powerlifting || false)
 
-    // 2. Charger les maxes powerlifting si besoin
     if (bloc?.powerlifting && semaine?.bloc_id) {
       const { data: maxData } = await supabase.from('powerlifting_maxes')
         .select('lift, max_kg').eq('bloc_id', semaine.bloc_id).eq('athlete_id', athId)
@@ -92,7 +90,6 @@ export default function AthleteSeance() {
       setPowerMaxes(maxMap)
     }
 
-    // 3. Vue Bonus
     if (sc?.nom === 'Bonus') {
       const [{ data: acts }, { data: realisees }] = await Promise.all([
         supabase.from('activites_bonus').select('*').eq('seance_id', seanceId).order('ordre'),
@@ -106,8 +103,6 @@ export default function AthleteSeance() {
       return
     }
 
-    // 4. Charger exercices + series_realisees filtrées par athlete_id côté SQL + note de séance
-    // series_realisees filtrées directement en SQL : évite de ramener toutes les séries de tous les athlètes
     const [{ data: exs }, { data: srData }, { data: noteData }] = await Promise.all([
       supabase.from('exercices').select('*').eq('seance_id', seanceId).order('ordre'),
       supabase.from('series_realisees')
@@ -126,30 +121,22 @@ export default function AthleteSeance() {
     setExercices(exs || [])
     setNoteSeance(noteData?.contenu || '')
 
-    // Regrouper les séries par exercice_id
     const map = {}
     ;(exs || []).forEach(ex => { map[ex.id] = [] })
     ;(srData || []).forEach(s => { if (map[s.exercice_id]) map[s.exercice_id].push(s) })
     setSeries(map)
 
-    // 5. Charger les séries de la semaine précédente (batch)
     await fetchSeriesPrev(exs || [], semaineId, athId, sc?.nom, semaine?.bloc_id)
     setLoading(false)
   }
 
-  /**
-   * Charge les séries de la semaine précédente en batch.
-   * Avant : 5 requêtes séquentielles. Après : 3 requêtes en parallèle.
-   */
   async function fetchSeriesPrev(exs, currentSemaineId, athId, seanceNom, blocId) {
     if (!blocId) return
 
-    // 1. Trouver le numéro de la semaine courante
     const { data: semaineCourante } = await supabase
       .from('semaines').select('numero').eq('id', currentSemaineId).single()
     if (!semaineCourante || semaineCourante.numero <= 1) return
 
-    // 2. Semaine précédente + séance précédente + note précédente en parallèle
     const { data: semPrev } = await supabase
       .from('semaines')
       .select('id')
@@ -162,7 +149,6 @@ export default function AthleteSeance() {
       .from('seances').select('id').eq('semaine_id', semPrev.id).eq('nom', seanceNom || '').single()
     if (!seancePrev) return
 
-    // 3. Exercices + séries + note en parallèle
     const [{ data: exsPrev }, { data: notePrevSeance }] = await Promise.all([
       supabase.from('exercices').select('*').eq('seance_id', seancePrev.id).order('ordre'),
       supabase.from('notes_seances')
@@ -186,14 +172,15 @@ export default function AthleteSeance() {
       .in('exercice_id', exPrevIds)
       .order('numero_set')
 
-    // Regrouper par nom d'exercice (pour faire correspondre avec la semaine courante)
-    const mapByNom = {}
-    ;(exsPrev || []).forEach(ex => { mapByNom[ex.nom] = [] })
+    // ✅ FIX : indexer par ordre (position dans la séance) plutôt que par nom
+    // Permet de gérer correctement les doublons (topset / backoff du même exercice)
+    const mapByOrdre = {}
+    ;(exsPrev || []).forEach(ex => { mapByOrdre[ex.ordre] = [] })
     ;(srPrevReal || []).forEach(s => {
       const ex = (exsPrev || []).find(e => e.id === s.exercice_id)
-      if (ex && mapByNom[ex.nom]) mapByNom[ex.nom].push(s)
+      if (ex != null && mapByOrdre[ex.ordre] !== undefined) mapByOrdre[ex.ordre].push(s)
     })
-    setSeriesPrev(mapByNom)
+    setSeriesPrev(mapByOrdre)
   }
 
   async function saveNoteSeance(contenu) {
@@ -339,7 +326,7 @@ export default function AthleteSeance() {
         {exercices.map(ex => (
           <ExerciceCard key={ex.id} exercice={ex}
             series={series[ex.id] || []}
-            prevSeries={seriesPrev[ex.nom] || []}
+            prevSeries={seriesPrev[ex.ordre] || []}  {/* ✅ FIX : clé par ordre */}
             showChargeIndicative={showChargeIndicative}
             showRpe={showRpe}
             theme={theme}
@@ -385,7 +372,8 @@ export default function AthleteSeance() {
 // ── Récap semaine précédente ──────────────────────────────────────────
 function RecapSemainePrev({ exercices, seriesPrev, notePrev, theme }) {
   const [open, setOpen] = useState(true)
-  const exsAvecPerfs = exercices.filter(ex => (seriesPrev[ex.nom] || []).some(s => s.charge || s.reps))
+  // ✅ FIX : clé par ordre
+  const exsAvecPerfs = exercices.filter(ex => (seriesPrev[ex.ordre] || []).some(s => s.charge || s.reps))
   return (
     <div className="bg-gray-50 border border-gray-100 rounded-xl mb-4 overflow-hidden">
       <button onClick={() => setOpen(o => !o)} className="w-full flex items-center justify-between px-4 py-3">
@@ -399,7 +387,8 @@ function RecapSemainePrev({ exercices, seriesPrev, notePrev, theme }) {
             <div key={ex.id}>
               <p className="text-xs font-medium text-gray-600 mb-1">{ex.nom}</p>
               <div className="flex flex-wrap gap-1">
-                {(seriesPrev[ex.nom] || []).map((s, i) => (
+                {/* ✅ FIX : clé par ordre */}
+                {(seriesPrev[ex.ordre] || []).map((s, i) => (
                   <span key={i} className={`text-xs border px-2 py-0.5 rounded-md ${theme.isFemme ? 'bg-pink-50 border-pink-100 text-pink-600' : 'bg-brand-50 border-brand-100 text-brand-600'}`}>
                     S{i+1} : {s.charge ? `${s.charge}kg` : '—'} × {s.reps || '—'}{s.rpe ? ` @${s.rpe}` : ''}{s.notes ? ` · ${s.notes}` : ''}
                   </span>
