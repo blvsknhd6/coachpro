@@ -326,7 +326,7 @@ export default function AthleteSeance() {
         {exercices.map(ex => (
           <ExerciceCard key={ex.id} exercice={ex}
             series={series[ex.id] || []}
-            prevSeries={seriesPrev[ex.ordre] || []}  {/* ✅ FIX : clé par ordre */}
+            prevSeries={seriesPrev[ex.ordre] || []}
             showChargeIndicative={showChargeIndicative}
             showRpe={showRpe}
             theme={theme}
