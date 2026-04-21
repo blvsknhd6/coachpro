@@ -503,7 +503,7 @@ function ObjectifsBloc({ bloc, athlete, onSave }) {
           </div>
           {editing && (
             <p className="text-xs text-blue-400 mt-2">
-              Sèche : {tdeeData.tdee - 350} kcal · Maintien : {tdeeData.tdee} kcal · Prise : {tdeeData.tdee + 250} kcal
+              Sèche : {tdeeData.tdee - 200} kcal · Maintien : {tdeeData.tdee} kcal · Prise : {tdeeData.tdee + 250} kcal
             </p>
           )}
         </div>
