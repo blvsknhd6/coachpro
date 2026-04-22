@@ -18,20 +18,34 @@ export function calcBMR(poids, taille, age, sexe) {
 
 /**
  * Détermine le multiplicateur d'activité à partir des moyennes de tracking.
+ * Basé sur une matrice croisée : la valeur la plus haute entre le volume de pas et les séances l'emporte.
  * @param {number} pasJournaliersMoy  - moyenne des pas sur la période
  * @param {number} seancesParSemaine  - nombre de séances par semaine sur la période
  */
 export function activityMultiplier(pasJournaliersMoy, seancesParSemaine) {
-  // Grille combinée pas + séances
-  const actif = seancesParSemaine >= 4 || pasJournaliersMoy >= 10000
-  const moderement = seancesParSemaine >= 3 || pasJournaliersMoy >= 7500
-  const legerement = seancesParSemaine >= 2 || pasJournaliersMoy >= 5000
 
-  if (actif && (seancesParSemaine >= 5 || pasJournaliersMoy >= 12000)) return { mult: 1.725, label: 'Très actif' }
-  if (actif) return { mult: 1.55, label: 'Modérément actif' }
-  if (moderement) return { mult: 1.55, label: 'Modérément actif' }
-  if (legerement) return { mult: 1.375, label: 'Légèrement actif' }
-  return { mult: 1.2, label: 'Sédentaire' }
+  // 1. Extrêmement actif : 15 000 pas et +
+  if (pasJournaliersMoy >= 15000) {
+    return { mult: 1.9, label: 'Extrêmement actif' };
+  }
+
+  // 2. Très actif : 5 séances et + OU 10 000 pas et +
+  if (seancesParSemaine >= 5 || pasJournaliersMoy >= 10000) {
+    return { mult: 1.725, label: 'Très actif' };
+  }
+
+  // 3. Modérément actif : 4 séances et + OU 7 500 pas et +
+  if (seancesParSemaine >= 4 || pasJournaliersMoy >= 7500) {
+    return { mult: 1.55, label: 'Modérément actif' };
+  }
+
+  // 4. Légèrement actif : 2 séances et + OU 5 000 pas et +
+  if (seancesParSemaine >= 2 || pasJournaliersMoy >= 5000) {
+    return { mult: 1.375, label: 'Légèrement actif' };
+  }
+
+  // 5. Sédentaire : Moins de 2 séances ET moins de 5 000 pas (Valeur par défaut)
+  return { mult: 1.2, label: 'Sédentaire' };
 }
 
 /**
@@ -68,12 +82,12 @@ export function nutritionSuggestions(tdee, poids, plan) {
   const adjustments = {
     prise_de_masse: +250,
     maintien:       0,
-    seche:          -350,
+    seche:          -250,
   }
   const kcal = tdee + (adjustments[plan] ?? 0)
 
-  // Répartition standard : 2g/kg protéines, 25% lipides, reste glucides
-  const proteines = Math.round(poids * 2)
+  // Répartition standard : 2.4g/kg protéines, 25% lipides, reste glucides
+  const proteines = Math.round(poids * 2.4)
   const lipides   = Math.round((kcal * 0.25) / 9)
   const glucides  = Math.round((kcal - proteines * 4 - lipides * 9) / 4)
 
