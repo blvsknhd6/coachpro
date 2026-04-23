@@ -14,12 +14,10 @@ export default function CoachProgression() {
 
   const [allExercices, setAllExercices] = useState([])
   const [allMuscles, setAllMuscles]     = useState([])
-  const [chargeData, setChargeData]     = useState([])
   const [tonnageData, setTonnageData]   = useState([])
   const [volumeData, setVolumeData]     = useState([])
   const [favData, setFavData]           = useState({})
   const [loading, setLoading]           = useState(true)
-  const [loadingChart, setLoadingChart] = useState(false)
   const [showConfig, setShowConfig]     = useState(false)
 
   const config        = prefs?.progression_config || {}
@@ -27,10 +25,8 @@ export default function CoachProgression() {
   const metric        = config.metric || 'tonnage'
   const favExos       = config.fav_exercices || []
   const musclesExclus = config.muscles_exclus || []
-  const selectedExo   = config.selected_exo || ''
 
   useEffect(() => { if (profile) loadInitialData() }, [profile])
-  useEffect(() => { if (selectedExo && allExercices.length) loadChargeData(selectedExo) }, [selectedExo, allExercices])
   useEffect(() => {
     if (favExos.length && allExercices.length) loadFavData(favExos)
     else if (!favExos.length) setFavData({})
@@ -50,15 +46,10 @@ export default function CoachProgression() {
     })
     setAllExercices(unique.sort((a, b) => a.nom.localeCompare(b.nom)))
     setAllMuscles([...muscles].sort())
-    if (!selectedExo && unique.length) updateProgression({ selected_exo: unique[0].nom })
     await loadTonnageAndVolume()
     setLoading(false)
   }
 
-  /**
-   * Une seule passe pour tous les exercices favoris.
-   * 3 requêtes batch indépendantes de N (nombre de favoris).
-   */
   async function loadFavData(exoNoms) {
     if (!exoNoms.length) return
 
@@ -67,7 +58,6 @@ export default function CoachProgression() {
     if (!exs?.length) return
 
     const scIds = [...new Set(exs.map(e => e.seance_id))]
-
     const [{ data: seances }, { data: srAll }] = await Promise.all([
       supabase.from('seances').select('id, semaine_id').in('id', scIds),
       supabase.from('series_realisees')
@@ -112,47 +102,12 @@ export default function CoachProgression() {
         .sort((a, b) => (semaineNumero[a[0]] || 0) - (semaineNumero[b[0]] || 0))
         .map(([semId, d]) => ({
           semaine: `S${semaineNumero[semId]}`,
-          charge: d.maxCharge,
-          series: d.series,
+          charge:  d.maxCharge,
+          series:  d.series,
           tonnage: Math.round(d.tonnage),
         }))
     }
     setFavData(result)
-  }
-
-  async function loadChargeData(exoNom) {
-    setLoadingChart(true)
-    const { data: exs } = await supabase.from('exercices').select('id, seance_id').eq('nom', exoNom)
-    if (!exs?.length) { setChargeData([]); setLoadingChart(false); return }
-
-    const { data: seances } = await supabase.from('seances')
-      .select('id, semaine_id').in('id', exs.map(e => e.seance_id))
-    const semaineIds = [...new Set((seances || []).map(s => s.semaine_id))]
-
-    const [{ data: semaines }, { data: srAll }] = await Promise.all([
-      supabase.from('semaines').select('id, numero').in('id', semaineIds).order('numero'),
-      supabase.from('series_realisees')
-        .select('charge, reps, exercice_id, semaine_id')
-        .eq('athlete_id', profile.id)
-        .in('semaine_id', semaineIds)
-        .not('charge', 'is', null),
-    ])
-
-    const seanceToSemaine = {}
-    ;(seances || []).forEach(sc => { seanceToSemaine[sc.id] = sc.semaine_id })
-    const exToSemaine = {}
-    ;(exs || []).forEach(ex => { const s = seanceToSemaine[ex.seance_id]; if (s) exToSemaine[ex.id] = s })
-
-    const data = (semaines || []).map(sem => {
-      const sr = (srAll || []).filter(s => exToSemaine[s.exercice_id] === sem.id)
-      if (!sr.length) return null
-      const maxCharge = Math.max(...sr.map(s => Number(s.charge)))
-      const tonnage = sr.reduce((acc, s) => acc + Number(s.charge) * (Number(s.reps) || 0), 0)
-      return { semaine: `S${sem.numero}`, charge: maxCharge, series: sr.length, tonnage: Math.round(tonnage) }
-    }).filter(Boolean)
-
-    setChargeData(data)
-    setLoadingChart(false)
   }
 
   async function loadTonnageAndVolume() {
@@ -165,8 +120,7 @@ export default function CoachProgression() {
 
     const semIds = semaines.map(s => s.id)
     const { data: scAll } = await supabase.from('seances').select('id, semaine_id').in('semaine_id', semIds)
-    const scIds = (scAll || []).map(s => s.id)
-    if (!scIds.length) return
+    const scIds = (scAll || []).map(s => s.id); if (!scIds.length) return
 
     const [{ data: exAll }, { data: srAll }] = await Promise.all([
       supabase.from('exercices').select('id, muscle, seance_id').in('seance_id', scIds),
@@ -255,7 +209,8 @@ export default function CoachProgression() {
     <Layout>
       <div className="flex items-center justify-between mb-5">
         <h1 className="text-xl font-semibold">Ma progression</h1>
-        <button onClick={() => setShowConfig(v => !v)} className="text-xs text-gray-400 hover:text-gray-600 border border-gray-200 rounded-lg px-2 py-1.5">
+        <button onClick={() => setShowConfig(v => !v)}
+          className="text-xs text-gray-400 hover:text-gray-600 border border-gray-200 rounded-lg px-2 py-1.5">
           {showConfig ? 'Fermer config' : 'Configurer'}
         </button>
       </div>
@@ -284,7 +239,7 @@ export default function CoachProgression() {
             <p className="text-xs font-medium text-gray-500 mb-2">Exercices favoris (1-5)</p>
             <div className="flex flex-wrap gap-1.5">
               {allExercices.map(ex => {
-                const isFav = favExos.includes(ex.nom)
+                const isFav    = favExos.includes(ex.nom)
                 const disabled = !isFav && favExos.length >= 5
                 return (
                   <button key={ex.id} disabled={disabled}
@@ -321,25 +276,7 @@ export default function CoachProgression() {
       ) : (
         <div className="space-y-4">
 
-          <div className="bg-white border border-gray-100 rounded-xl p-4">
-            <div className="flex items-center justify-between mb-3">
-              <p className="text-sm font-medium text-gray-700">Charge max par semaine</p>
-              <select value={selectedExo} onChange={e => updateProgression({ selected_exo: e.target.value })}
-                className="border border-gray-200 rounded-lg px-2 py-1 text-xs focus:outline-none max-w-40 truncate">
-                {allExercices.map(e => <option key={e.id} value={e.nom}>{e.nom}</option>)}
-              </select>
-            </div>
-            {loadingChart ? <div className="h-40 bg-gray-50 rounded-lg animate-pulse" /> :
-              chargeData.length > 0 ? (
-                <>
-                  {(mode === 'graphe' || mode === 'les_deux') && <DataChart data={chargeData} dataKey="charge" name="Charge max (kg)" color={color} />}
-                  {(mode === 'tableau' || mode === 'les_deux') && <div className={mode === 'les_deux' ? 'mt-3' : ''}><DataTable data={chargeData} dataKeys={[{ key: 'charge', label: 'Charge max (kg)' }]} /></div>}
-                </>
-              ) : <p className="text-xs text-gray-400 text-center py-8">Pas encore de données</p>
-            }
-          </div>
-
-          {/* Exercices favoris — rendu inline, données venant du state favData */}
+          {/* Exercices favoris */}
           {favExos.length > 0 && favExos.map(exoNom => {
             const data = favData[exoNom] || []
             return (
@@ -389,6 +326,7 @@ export default function CoachProgression() {
             )
           })}
 
+          {/* Volume total */}
           {tonnageData.length > 0 && (
             <div className="bg-white border border-gray-100 rounded-xl p-4">
               <p className="text-sm font-medium text-gray-700 mb-3">Volume total par semaine</p>
@@ -404,12 +342,10 @@ export default function CoachProgression() {
                   {(mode === 'tableau' || mode === 'les_deux') && <div className="mt-3"><DataTable data={tonnageData} dataKeys={[{ key: 'series', label: 'Nb séries' }]} /></div>}
                 </>
               )}
-              {metric === 'les_deux' && (mode === 'tableau' || mode === 'les_deux') && (
-                <div className="mt-3"><DataTable data={tonnageData} dataKeys={[{ key: 'tonnage', label: 'Tonnage' }, { key: 'series', label: 'Séries' }]} /></div>
-              )}
             </div>
           )}
 
+          {/* Volume par groupe musculaire */}
           {volumeData.length > 0 && (
             <div className="bg-white border border-gray-100 rounded-xl p-4">
               <p className="text-sm font-medium text-gray-700 mb-3">Volume par groupe musculaire</p>
@@ -425,7 +361,10 @@ export default function CoachProgression() {
               )}
               {(mode === 'tableau' || mode === 'les_deux') && (
                 <div className="mt-3">
-                  <DataTable data={volumeData.map(v => ({ semaine: v.muscle, tonnage: v.volume }))} dataKeys={[{ key: 'tonnage', label: 'Volume total' }]} />
+                  <DataTable
+                    data={volumeData.map(v => ({ semaine: v.muscle, tonnage: v.volume }))}
+                    dataKeys={[{ key: 'tonnage', label: 'Volume total' }]}
+                  />
                 </div>
               )}
             </div>

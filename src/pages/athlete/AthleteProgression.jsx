@@ -26,29 +26,24 @@ export default function AthleteProgression() {
   const { prefs, updateProgression } = usePreferences()
   const color = theme.isFemme ? '#ec4899' : '#6366f1'
 
-  const [allExercices, setAllExercices]             = useState([])
-  const [allMuscles, setAllMuscles]                 = useState([])
-  const [chargeData, setChargeData]                 = useState([])
-  const [tonnageData, setTonnageData]               = useState([])
+  const [allExercices, setAllExercices]                 = useState([])
+  const [allMuscles, setAllMuscles]                     = useState([])
+  const [tonnageData, setTonnageData]                   = useState([])
   const [volumeParSemaineData, setVolumeParSemaineData] = useState([])
-  const [volumeMuscles, setVolumeMuscles]           = useState([])
-  const [oneRMData, setOneRMData]                   = useState([])
-  const [hasMainLifts, setHasMainLifts]             = useState(false)
-  // favData : map exoNom → rows[]  — chargé en une passe, pas par composant
-  const [favData, setFavData]                       = useState({})
-  const [loading, setLoading]                       = useState(true)
-  const [loadingChart, setLoadingChart]             = useState(false)
-  const [showConfig, setShowConfig]                 = useState(false)
+  const [volumeMuscles, setVolumeMuscles]               = useState([])
+  const [oneRMData, setOneRMData]                       = useState([])
+  const [hasMainLifts, setHasMainLifts]                 = useState(false)
+  const [favData, setFavData]                           = useState({})
+  const [loading, setLoading]                           = useState(true)
+  const [showConfig, setShowConfig]                     = useState(false)
 
   const config        = prefs?.progression_config || {}
   const mode          = config.mode || 'graphe'
   const metric        = config.metric || 'tonnage'
   const favExos       = config.fav_exercices || []
   const musclesExclus = config.muscles_exclus || []
-  const selectedExo   = config.selected_exo || ''
 
   useEffect(() => { if (profile) loadInitialData() }, [profile])
-  useEffect(() => { if (selectedExo && allExercices.length) loadChargeData(selectedExo) }, [selectedExo, allExercices])
   useEffect(() => {
     if (favExos.length && allExercices.length) loadFavData(favExos)
     else if (!favExos.length) setFavData({})
@@ -71,7 +66,6 @@ export default function AthleteProgression() {
 
     const hasLifts = (exs || []).some(e => e.main_lift)
     setHasMainLifts(hasLifts)
-    if (!selectedExo && unique.length) updateProgression({ selected_exo: unique[0].nom })
 
     await Promise.all([
       loadTonnageAndVolume(),
@@ -80,11 +74,6 @@ export default function AthleteProgression() {
     setLoading(false)
   }
 
-  /**
-   * Une seule passe pour TOUS les exercices favoris.
-   * Avant : N×3 requêtes séquentielles (une par FavExoCard au montage).
-   * Après : 3 requêtes batch indépendantes de N.
-   */
   async function loadFavData(exoNoms) {
     if (!exoNoms.length) return
 
@@ -121,7 +110,6 @@ export default function AthleteProgression() {
     const semaineNumero = {}
     ;(semaines || []).forEach(s => { semaineNumero[s.id] = s.numero })
 
-    // Agrégation : exoNom → semaineId → stats
     const aggr = {}
     ;(srAll || []).forEach(s => {
       const nom = exToNom[s.exercice_id]
@@ -142,47 +130,12 @@ export default function AthleteProgression() {
         .sort((a, b) => (semaineNumero[a[0]] || 0) - (semaineNumero[b[0]] || 0))
         .map(([semId, d]) => ({
           semaine: `S${semaineNumero[semId]}`,
-          charge: d.maxCharge,
-          series: d.series,
+          charge:  d.maxCharge,
+          series:  d.series,
           tonnage: Math.round(d.tonnage),
         }))
     }
     setFavData(result)
-  }
-
-  async function loadChargeData(exoNom) {
-    setLoadingChart(true)
-    const { data: exs } = await supabase.from('exercices').select('id, seance_id').eq('nom', exoNom)
-    if (!exs?.length) { setChargeData([]); setLoadingChart(false); return }
-
-    const { data: seances } = await supabase.from('seances')
-      .select('id, semaine_id').in('id', exs.map(e => e.seance_id))
-    const semaineIds = [...new Set((seances || []).map(s => s.semaine_id))]
-
-    const [{ data: semaines }, { data: srAll }] = await Promise.all([
-      supabase.from('semaines').select('id, numero').in('id', semaineIds).order('numero'),
-      supabase.from('series_realisees')
-        .select('charge, reps, exercice_id, semaine_id')
-        .eq('athlete_id', profile.id)
-        .in('semaine_id', semaineIds)
-        .not('charge', 'is', null),
-    ])
-
-    const seanceToSemaine = {}
-    ;(seances || []).forEach(sc => { seanceToSemaine[sc.id] = sc.semaine_id })
-    const exToSemaine = {}
-    ;(exs || []).forEach(ex => { const s = seanceToSemaine[ex.seance_id]; if (s) exToSemaine[ex.id] = s })
-
-    const data = (semaines || []).map(sem => {
-      const sr = (srAll || []).filter(s => exToSemaine[s.exercice_id] === sem.id)
-      if (!sr.length) return null
-      const maxCharge = Math.max(...sr.map(s => Number(s.charge)))
-      const tonnage   = sr.reduce((acc, s) => acc + Number(s.charge) * (Number(s.reps) || 0), 0)
-      return { semaine: `S${sem.numero}`, charge: maxCharge, series: sr.length, tonnage: Math.round(tonnage) }
-    }).filter(Boolean)
-
-    setChargeData(data)
-    setLoadingChart(false)
   }
 
   async function loadTonnageAndVolume() {
@@ -275,7 +228,6 @@ export default function AthleteProgression() {
     setOneRMData(rows)
   }
 
-  // ── Composants réutilisables ──────────────────────────────────────────
   const DataChart = ({ data, dataKey, name, color: c }) => (
     <ResponsiveContainer width="100%" height={160}>
       <LineChart data={data}>
@@ -355,7 +307,7 @@ export default function AthleteProgression() {
             <p className="text-xs font-medium text-gray-500 mb-2">Exercices favoris (1-5)</p>
             <div className="flex flex-wrap gap-1.5">
               {allExercices.map(ex => {
-                const isFav = favExos.includes(ex.nom)
+                const isFav    = favExos.includes(ex.nom)
                 const disabled = !isFav && favExos.length >= 5
                 return (
                   <button key={ex.id} disabled={disabled}
@@ -391,6 +343,7 @@ export default function AthleteProgression() {
       ) : (
         <div className="space-y-4">
 
+          {/* 1RM estimés — powerlifting uniquement */}
           {hasMainLifts && oneRMData.length > 0 && (
             <div className="bg-white border border-gray-100 rounded-xl p-4">
               <p className="text-sm font-medium text-gray-700 mb-1">1RM estimés par semaine</p>
@@ -413,33 +366,17 @@ export default function AthleteProgression() {
               {(mode === 'tableau' || mode === 'les_deux') && (
                 <div className={mode === 'les_deux' ? 'mt-3' : ''}>
                   <DataTable data={oneRMData} dataKeys={[
-                    { key: 'squat', label: '🏋️ Squat (kg)' }, { key: 'bench', label: '💪 Bench (kg)' },
-                    { key: 'deadlift', label: '⚡ Deadlift (kg)' }, { key: 'total', label: '∑ Total' },
+                    { key: 'squat',    label: '🏋️ Squat (kg)'    },
+                    { key: 'bench',    label: '💪 Bench (kg)'    },
+                    { key: 'deadlift', label: '⚡ Deadlift (kg)' },
+                    { key: 'total',    label: '∑ Total'          },
                   ]} />
                 </div>
               )}
             </div>
           )}
 
-          <div className="bg-white border border-gray-100 rounded-xl p-4">
-            <div className="flex items-center justify-between mb-3">
-              <p className="text-sm font-medium text-gray-700">Charge max par semaine</p>
-              <select value={selectedExo} onChange={e => updateProgression({ selected_exo: e.target.value })}
-                className="border border-gray-200 rounded-lg px-2 py-1 text-xs focus:outline-none max-w-40 truncate">
-                {allExercices.map(e => <option key={e.id} value={e.nom}>{e.nom}</option>)}
-              </select>
-            </div>
-            {loadingChart ? <div className="h-40 bg-gray-50 rounded-lg animate-pulse" /> :
-              chargeData.length > 0 ? (
-                <>
-                  {(mode === 'graphe' || mode === 'les_deux') && <DataChart data={chargeData} dataKey="charge" name="Charge max (kg)" color={color} />}
-                  {(mode === 'tableau' || mode === 'les_deux') && <div className={mode === 'les_deux' ? 'mt-3' : ''}><DataTable data={chargeData} dataKeys={[{ key: 'charge', label: 'Charge max (kg)' }]} /></div>}
-                </>
-              ) : <p className="text-xs text-gray-400 text-center py-8">Pas encore de données</p>
-            }
-          </div>
-
-          {/* Exercices favoris — rendu inline, données venant du state favData */}
+          {/* Exercices favoris */}
           {favExos.length > 0 && favExos.map(exoNom => {
             const data = favData[exoNom] || []
             return (
@@ -489,6 +426,7 @@ export default function AthleteProgression() {
             )
           })}
 
+          {/* Volume total */}
           {tonnageData.length > 0 && (
             <div className="bg-white border border-gray-100 rounded-xl p-4">
               <p className="text-sm font-medium text-gray-700 mb-3">Volume total par semaine</p>
@@ -507,6 +445,7 @@ export default function AthleteProgression() {
             </div>
           )}
 
+          {/* Volume par groupe musculaire */}
           {volumeParSemaineData.length > 0 && volumeMuscles.length > 0 && (
             <div className="bg-white border border-gray-100 rounded-xl p-4">
               <p className="text-sm font-medium text-gray-700 mb-1">Volume par groupe musculaire / semaine</p>
