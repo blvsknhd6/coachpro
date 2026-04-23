@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { supabase } from '../../lib/supabase'
 import { useAuth } from '../../hooks/useAuth'
@@ -9,25 +9,74 @@ import WidgetConfig from '../../components/shared/WidgetConfig'
 import { findActiveSemaine } from '../../lib/semaine'
 import { metricColor, computeAverages } from '../../lib/tracking'
 
-// ── ObjectifsBloc (coach perso) ──────────────────────────────────────────
+// ── Utilitaire base64 ─────────────────────────────────────────────────
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload  = () => resolve(reader.result.split(',')[1])
+    reader.onerror = reject
+    reader.readAsDataURL(file)
+  })
+}
+
+// ── Panneau d'ajustement des macros avant validation ──────────────────
+function MacroAdjustPanel({ initial, description, onConfirm, onCancel, accentBtn }) {
+  const [form, setForm] = useState({
+    kcal:      initial.kcal      ?? '',
+    proteines: initial.proteines ?? '',
+    glucides:  initial.glucides  ?? '',
+    lipides:   initial.lipides   ?? '',
+  })
+  return (
+    <div className="mt-2 bg-gray-50 border border-gray-200 rounded-xl p-3 space-y-2">
+      <p className="text-xs font-medium text-gray-600 truncate">{description}</p>
+      <div className="grid grid-cols-2 gap-2">
+        {[['kcal','Kcal',''],['proteines','Prot.','g'],['glucides','Gluc.','g'],['lipides','Lip.','g']].map(([key, label, unit]) => (
+          <div key={key} className="flex items-center gap-1">
+            <label className="text-xs text-gray-400 w-10 flex-shrink-0">{label}</label>
+            <input type="number" value={form[key]}
+              onChange={e => setForm(f => ({ ...f, [key]: e.target.value }))}
+              className="flex-1 border border-gray-200 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-gray-300" />
+            {unit && <span className="text-xs text-gray-400 flex-shrink-0">{unit}</span>}
+          </div>
+        ))}
+      </div>
+      <div className="flex gap-2 pt-1">
+        <button onClick={() => onConfirm({
+          kcal:      Math.round(Number(form.kcal)      || 0),
+          proteines: Math.round((Number(form.proteines) || 0) * 10) / 10,
+          glucides:  Math.round((Number(form.glucides)  || 0) * 10) / 10,
+          lipides:   Math.round((Number(form.lipides)   || 0) * 10) / 10,
+        })} className={`flex-1 py-1.5 rounded-lg text-sm font-medium ${accentBtn}`}>
+          ✓ Valider
+        </button>
+        <button onClick={onCancel} className="flex-1 border border-gray-200 rounded-lg py-1.5 text-sm text-gray-500">
+          Annuler
+        </button>
+      </div>
+    </div>
+  )
+}
+
+// ── ObjectifsBloc (coach perso) ───────────────────────────────────────
 const METRICS = [
-  { key: 'seances_par_semaine', borneKey: 'seances', label: 'Séances / sem.',  unit: '',     type: 'number' },
-  { key: 'kcal',                borneKey: 'kcal',    label: 'Kcal / jour',     unit: 'kcal', type: 'number' },
-  { key: 'proteines',           borneKey: 'proteines',label: 'Protéines',      unit: 'g',    type: 'number' },
-  { key: 'glucides',            borneKey: 'glucides', label: 'Glucides',       unit: 'g',    type: 'number' },
-  { key: 'lipides',             borneKey: 'lipides',  label: 'Lipides',        unit: 'g',    type: 'number' },
-  { key: 'sommeil',             borneKey: 'sommeil',  label: 'Sommeil',        unit: 'h',    type: 'number', step: '0.5' },
-  { key: 'pas_journaliers',     borneKey: 'pas',      label: 'Pas / jour',     unit: '',     type: 'number' },
-  { key: 'stress_cible',        borneKey: 'stress',   label: 'Stress cible',   unit: '/10',  type: 'number' },
+  { key: 'seances_par_semaine', borneKey: 'seances',   label: 'Séances / sem.',  unit: '',     type: 'number' },
+  { key: 'kcal',                borneKey: 'kcal',      label: 'Kcal / jour',     unit: 'kcal', type: 'number' },
+  { key: 'proteines',           borneKey: 'proteines', label: 'Protéines',       unit: 'g',    type: 'number' },
+  { key: 'glucides',            borneKey: 'glucides',  label: 'Glucides',        unit: 'g',    type: 'number' },
+  { key: 'lipides',             borneKey: 'lipides',   label: 'Lipides',         unit: 'g',    type: 'number' },
+  { key: 'sommeil',             borneKey: 'sommeil',   label: 'Sommeil',         unit: 'h',    type: 'number', step: '0.5' },
+  { key: 'pas_journaliers',     borneKey: 'pas',       label: 'Pas / jour',      unit: '',     type: 'number' },
+  { key: 'stress_cible',        borneKey: 'stress',    label: 'Stress cible',    unit: '/10',  type: 'number' },
 ]
 
 function ObjectifsBloc({ bloc, onSave }) {
-  const [obj, setObj]         = useState(null)
-  const [editing, setEditing] = useState(false)
-  const [form, setForm]       = useState({})
+  const [obj, setObj]               = useState(null)
+  const [editing, setEditing]       = useState(false)
+  const [form, setForm]             = useState({})
   const [bornesForm, setBornesForm] = useState({})
   const [showBornes, setShowBornes] = useState(false)
-  const [saving, setSaving]   = useState(false)
+  const [saving, setSaving]         = useState(false)
 
   useEffect(() => { if (bloc?.id) fetchObj() }, [bloc?.id])
 
@@ -43,6 +92,23 @@ function ObjectifsBloc({ bloc, onSave }) {
     const payload = { ...form, bloc_id: bloc.id, bornes: bornesForm }
     if (obj) await supabase.from('objectifs_bloc').update(payload).eq('id', obj.id)
     else      await supabase.from('objectifs_bloc').insert(payload)
+
+    // Historique
+    await supabase.from('objectifs_bloc_historique').insert({
+      bloc_id:             bloc.id,
+      date_debut:          new Date().toISOString().split('T')[0],
+      kcal:                form.kcal                || null,
+      proteines:           form.proteines           || null,
+      glucides:            form.glucides            || null,
+      lipides:             form.lipides             || null,
+      sommeil:             form.sommeil             || null,
+      pas_journaliers:     form.pas_journaliers     || null,
+      stress_cible:        form.stress_cible        || null,
+      seances_par_semaine: form.seances_par_semaine || null,
+      plan_nutritionnel:   form.plan_nutritionnel   || null,
+      bornes:              bornesForm,
+    })
+
     await fetchObj()
     if (onSave) onSave()
     setEditing(false)
@@ -77,7 +143,6 @@ function ObjectifsBloc({ bloc, onSave }) {
 
       {editing ? (
         <div className="space-y-5">
-          {/* Plan nutritionnel */}
           <div>
             <label className="text-xs text-gray-500 block mb-1">Plan nutritionnel</label>
             <div className="flex gap-2 flex-wrap">
@@ -90,8 +155,6 @@ function ObjectifsBloc({ bloc, onSave }) {
               ))}
             </div>
           </div>
-
-          {/* Cibles */}
           <div>
             <label className="text-xs text-gray-500 block mb-2">Cibles</label>
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
@@ -109,8 +172,6 @@ function ObjectifsBloc({ bloc, onSave }) {
               ))}
             </div>
           </div>
-
-          {/* Bornes */}
           <div>
             <button type="button" onClick={() => setShowBornes(v => !v)}
               className="text-xs text-brand-600 hover:text-brand-800 font-medium flex items-center gap-1">
@@ -195,34 +256,31 @@ export default function CoachHome() {
   const { isWidgetEnabled } = usePreferences()
   const [showConfig, setShowConfig] = useState(false)
   const [loading, setLoading]       = useState(true)
+  const photoInputRef = useRef(null)
 
-  // Athletes
-  const [athletes, setAthletes]               = useState([])
-  const [athleteTracking, setAthleteTracking] = useState({})
+  const [athletes, setAthletes]                 = useState([])
+  const [athleteTracking, setAthleteTracking]   = useState({})
   const [athleteObjectifs, setAthleteObjectifs] = useState({})
 
-  // Personal (self-profile)
-  const [myNextSeance, setMyNextSeance]   = useState(null)
-  const [mySuivi, setMySuivi]             = useState(null)
-  const [myMacros, setMyMacros]           = useState(null)
-  const [myObjectifs, setMyObjectifs]     = useState(null)
-  const [activeBlocId, setActiveBlocId]   = useState(null)
-  const [activeBloc, setActiveBloc]       = useState(null)
-
-  // Séances de la semaine
+  const [myNextSeance, setMyNextSeance] = useState(null)
+  const [mySuivi, setMySuivi]           = useState(null)
+  const [myMacros, setMyMacros]         = useState(null)
+  const [myObjectifs, setMyObjectifs]   = useState(null)
+  const [activeBlocId, setActiveBlocId] = useState(null)
+  const [activeBloc, setActiveBloc]     = useState(null)
   const [activeSemaine, setActiveSemaine] = useState(null)
-  const [seances, setSeances]             = useState([])
+  const [seances, setSeances]           = useState([])
 
-  // Saisie Repas IA
   const [repasInput, setRepasInput]         = useState('')
   const [repasJour, setRepasJour]           = useState([])
   const [analyzeLoading, setAnalyzeLoading] = useState(false)
+  const [photoLoading, setPhotoLoading]     = useState(false)
   const [showFavoris, setShowFavoris]       = useState(false)
   const [favoris, setFavoris]               = useState([])
   const [totalMacros, setTotalMacros]       = useState({ kcal: 0, proteines: 0, glucides: 0, lipides: 0 })
+  const [pendingMacros, setPendingMacros]   = useState(null)
 
-  const today = new Date().toISOString().split('T')[0]
-
+  const today      = new Date().toISOString().split('T')[0]
   const accentBtn  = theme?.isFemme ? 'bg-pink-600 hover:bg-pink-700 text-white' : 'bg-brand-600 hover:bg-brand-700 text-white'
   const accentText = theme?.isFemme ? 'text-pink-600' : 'text-brand-600'
   const accentBg   = theme?.isFemme ? 'bg-pink-600' : 'bg-brand-600'
@@ -250,13 +308,10 @@ export default function CoachHome() {
     const [trackingRes, blocsRes] = await Promise.all([
       supabase.from('data_tracking')
         .select('athlete_id, date, sport_fait, kcal, proteines, sommeil, pas_journaliers, stress')
-        .in('athlete_id', athIds)
-        .gte('date', sevenDaysAgoStr)
-        .order('date'),
+        .in('athlete_id', athIds).gte('date', sevenDaysAgoStr).order('date'),
       supabase.from('blocs')
         .select('athlete_id, objectifs_bloc(*)')
-        .in('athlete_id', athIds)
-        .order('created_at', { ascending: false }),
+        .in('athlete_id', athIds).order('created_at', { ascending: false }),
     ])
 
     const trackingMap = {}
@@ -273,14 +328,11 @@ export default function CoachHome() {
     }
     setAthleteTracking(trackingMap)
 
-    const objMap = {}
-    const seen   = new Set()
+    const objMap = {}; const seen = new Set()
     for (const bloc of (blocsRes.data || [])) {
       if (!seen.has(bloc.athlete_id)) {
         seen.add(bloc.athlete_id)
-        objMap[bloc.athlete_id] = Array.isArray(bloc.objectifs_bloc)
-          ? bloc.objectifs_bloc[0]
-          : bloc.objectifs_bloc
+        objMap[bloc.athlete_id] = Array.isArray(bloc.objectifs_bloc) ? bloc.objectifs_bloc[0] : bloc.objectifs_bloc
       }
     }
     setAthleteObjectifs(objMap)
@@ -292,14 +344,12 @@ export default function CoachHome() {
   async function fetchPersonalData(athleteId) {
     const { data: blocs } = await supabase
       .from('blocs').select('id, name, objectifs_bloc(*)')
-      .eq('athlete_id', athleteId)
-      .order('created_at', { ascending: false }).limit(1)
+      .eq('athlete_id', athleteId).order('created_at', { ascending: false }).limit(1)
     if (!blocs?.length) return
 
     const bloc = blocs[0]
-    setActiveBlocId(bloc.id)
-    setActiveBloc(bloc)
-    const obj  = Array.isArray(bloc.objectifs_bloc) ? bloc.objectifs_bloc[0] : bloc.objectifs_bloc
+    setActiveBlocId(bloc.id); setActiveBloc(bloc)
+    const obj = Array.isArray(bloc.objectifs_bloc) ? bloc.objectifs_bloc[0] : bloc.objectifs_bloc
     setMyObjectifs(obj)
 
     const { data: semaines } = await supabase
@@ -307,18 +357,12 @@ export default function CoachHome() {
     if (semaines?.length) {
       const activeSem = await findActiveSemaine(semaines, athleteId)
       setActiveSemaine(activeSem)
-
       const { data: sc } = await supabase
-        .from('seances')
-        .select('id, nom, ordre, exercices(id, series_realisees(id))')
+        .from('seances').select('id, nom, ordre, exercices(id, series_realisees(id))')
         .eq('semaine_id', activeSem.id).order('ordre')
-
       setSeances(sc || [])
-
       const seancesNormales = (sc || []).filter(s => s.nom !== 'Bonus' && (s.exercices?.length || 0) > 0)
-      const pasCommencee    = seancesNormales.find(s =>
-        s.exercices.filter(e => (e.series_realisees?.length || 0) > 0).length === 0
-      )
+      const pasCommencee    = seancesNormales.find(s => s.exercices.filter(e => (e.series_realisees?.length || 0) > 0).length === 0)
       const enCours = seancesNormales.find(s => {
         const done = s.exercices.filter(e => (e.series_realisees?.length || 0) > 0).length
         return done > 0 && done < s.exercices.length
@@ -328,8 +372,7 @@ export default function CoachHome() {
     }
 
     const sevenDaysAgo = new Date(); sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7)
-    const { data: tracking } = await supabase
-      .from('data_tracking').select('*')
+    const { data: tracking } = await supabase.from('data_tracking').select('*')
       .eq('athlete_id', athleteId).eq('bloc_id', bloc.id)
       .gte('date', sevenDaysAgo.toISOString().split('T')[0])
       .order('date', { ascending: false }).limit(7)
@@ -342,7 +385,6 @@ export default function CoachHome() {
     await fetchFavoris(athleteId)
   }
 
-  // --- Fonctions Saisie Repas IA ---
   async function fetchRepasJour(athleteId = profile.id) {
     const { data } = await supabase.from('repas').select('*')
       .eq('athlete_id', athleteId).eq('date', today).order('created_at')
@@ -369,55 +411,95 @@ export default function CoachHome() {
     setFavoris(data || [])
   }
 
-  // ✅ FIX : passe par /api/analyze-repas comme AthleteHome
   async function analyzeRepas() {
     if (!repasInput.trim()) return
     setAnalyzeLoading(true)
     try {
       const response = await fetch('/api/analyze-repas', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ meal: repasInput })
       })
       if (!response.ok) throw new Error('Erreur serveur')
       const macros = await response.json()
-
-      await supabase.from('repas').insert({
-        athlete_id: profile.id, date: today, description: repasInput.trim(),
-        kcal: Math.round(macros.kcal || 0),
-        proteines: Math.round((macros.proteines || 0) * 10) / 10,
-        glucides:  Math.round((macros.glucides  || 0) * 10) / 10,
-        lipides:   Math.round((macros.lipides   || 0) * 10) / 10,
-      })
-      setRepasInput('')
-
-      const { data: allRepas } = await supabase.from('repas').select('*')
-        .eq('athlete_id', profile.id).eq('date', today).order('created_at')
-      const list = allRepas || []
-      setRepasJour(list)
-      const newTotals = recalcTotals(list)
-
-      if (activeBlocId) {
-        await supabase.from('data_tracking').upsert({
-          athlete_id: profile.id, date: today, bloc_id: activeBlocId,
-          kcal:      Math.round(newTotals.kcal),
-          proteines: Math.round(newTotals.proteines * 10) / 10,
-          glucides:  Math.round(newTotals.glucides  * 10) / 10,
-          lipides:   Math.round(newTotals.lipides   * 10) / 10,
-        }, { onConflict: 'athlete_id,date' })
-      }
+      setPendingMacros({ source: 'text', data: macros, description: repasInput.trim() })
     } catch (e) { console.error('analyzeRepas:', e) }
     setAnalyzeLoading(false)
   }
 
+  async function handlePhoto(e) {
+    const file = e.target.files?.[0]
+    if (!file) return
+    setPhotoLoading(true)
+    try {
+      const base64 = await fileToBase64(file)
+      const response = await fetch('/api/analyze-repas', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ meal: '', image: { mimeType: file.type || 'image/jpeg', data: base64 } })
+      })
+      if (!response.ok) throw new Error('Erreur serveur')
+      const macros = await response.json()
+      setPendingMacros({ source: 'photo', data: macros, description: '📷 Photo étiquette' })
+    } catch (e) { console.error('handlePhoto:', e) }
+    e.target.value = ''
+    setPhotoLoading(false)
+  }
+
+  function addFavoriWithAdjust(f) {
+    setPendingMacros({
+      source: 'favori',
+      data: { kcal: f.kcal, proteines: f.proteines, glucides: f.glucides, lipides: f.lipides },
+      description: f.description || f.nom,
+      favori: f,
+    })
+    setShowFavoris(false)
+  }
+
+  async function confirmMacros(adjustedMacros) {
+    if (!pendingMacros) return
+    const description = pendingMacros.source === 'favori'
+      ? (pendingMacros.favori.description || pendingMacros.favori.nom)
+      : pendingMacros.description
+
+    await supabase.from('repas').insert({
+      athlete_id: profile.id, date: today, description,
+      kcal: adjustedMacros.kcal, proteines: adjustedMacros.proteines,
+      glucides: adjustedMacros.glucides, lipides: adjustedMacros.lipides,
+    })
+
+    if (pendingMacros.source === 'text') setRepasInput('')
+    setPendingMacros(null)
+
+    const { data: allRepas } = await supabase.from('repas').select('*')
+      .eq('athlete_id', profile.id).eq('date', today).order('created_at')
+    const list = allRepas || []
+    setRepasJour(list)
+    const newTotals = recalcTotals(list)
+
+    if (activeBlocId) {
+      await supabase.from('data_tracking').upsert({
+        athlete_id: profile.id, date: today, bloc_id: activeBlocId,
+        kcal:      Math.round(newTotals.kcal),
+        proteines: Math.round(newTotals.proteines * 10) / 10,
+        glucides:  Math.round(newTotals.glucides  * 10) / 10,
+        lipides:   Math.round(newTotals.lipides   * 10) / 10,
+      }, { onConflict: 'athlete_id,date' })
+    }
+  }
+
   async function addFavori(f) {
-    await supabase.from('repas').insert({ athlete_id: profile.id, date: today, description: f.description, kcal: f.kcal, proteines: f.proteines, glucides: f.glucides, lipides: f.lipides })
+    await supabase.from('repas').insert({
+      athlete_id: profile.id, date: today, description: f.description,
+      kcal: f.kcal, proteines: f.proteines, glucides: f.glucides, lipides: f.lipides
+    })
     await fetchRepasJour(); setShowFavoris(false)
   }
   async function saveAsFavori(repas) {
     const nom = window.prompt('Nom ?', repas.description.slice(0, 40))
     if (!nom) return
-    await supabase.from('repas_favoris').insert({ athlete_id: profile.id, nom, description: repas.description, kcal: repas.kcal, proteines: repas.proteines, glucides: repas.glucides, lipides: repas.lipides })
+    await supabase.from('repas_favoris').insert({
+      athlete_id: profile.id, nom, description: repas.description,
+      kcal: repas.kcal, proteines: repas.proteines, glucides: repas.glucides, lipides: repas.lipides
+    })
     await fetchFavoris()
   }
   async function deleteRepas(id) { await supabase.from('repas').delete().eq('id', id); await fetchRepasJour() }
@@ -449,6 +531,9 @@ export default function CoachHome() {
     <Layout>
       {showConfig && <WidgetConfig onClose={() => setShowConfig(false)} />}
 
+      <input ref={photoInputRef} type="file" accept="image/*" capture="environment"
+        className="hidden" onChange={handlePhoto} />
+
       <div className="flex items-center justify-between mb-5">
         <div>
           <p className="text-xs text-gray-400 capitalize">{todayLabel}</p>
@@ -461,18 +546,17 @@ export default function CoachHome() {
       </div>
 
       {loading ? (
-        <div className="space-y-3">{[1, 2, 3].map(i => <div key={i} className="h-20 bg-gray-100 rounded-xl animate-pulse" />)}</div>
+        <div className="space-y-3">{[1,2,3].map(i => <div key={i} className="h-20 bg-gray-100 rounded-xl animate-pulse" />)}</div>
       ) : (
         <div className="space-y-3">
 
-          {/* 1. ── Prochaine séance ── */}
+          {/* 1. Prochaine séance */}
           {isWidgetEnabled('next_seance') && (
             myNextSeance ? (
               <div className={`${accentBg} text-white rounded-2xl p-4`}>
                 <p className="text-xs font-medium opacity-70 mb-0.5">Ma prochaine séance</p>
                 <p className="text-base font-semibold mb-2">{myNextSeance.seance.nom}</p>
-                <button
-                  onClick={() => navigate(`/coach/my-training/seance/${myNextSeance.seance.id}/semaine/${myNextSeance.semaineId}`)}
+                <button onClick={() => navigate(`/coach/my-training/seance/${myNextSeance.seance.id}/semaine/${myNextSeance.semaineId}`)}
                   className={`bg-white px-3 py-1.5 rounded-xl text-xs font-medium hover:opacity-90 ${accentText}`}>
                   Commencer
                 </button>
@@ -485,7 +569,7 @@ export default function CoachHome() {
             )
           )}
 
-          {/* 2. ── Liste coachés avec tracking ── */}
+          {/* 2. Liste coachés */}
           {isWidgetEnabled('liste_coachés') && (
             <div className="space-y-2">
               <div className="flex items-center justify-between">
@@ -509,29 +593,11 @@ export default function CoachHome() {
                         <p className="text-sm font-medium text-gray-900 group-hover:text-brand-700 truncate">{a.full_name}</p>
                         {tr ? (
                           <div className="flex items-center gap-2 mt-0.5 flex-wrap">
-                            <span className={`text-xs ${metricColor(tr.sportJours, 'seances', obj, b) || 'text-gray-500'}`}>
-                              {tr.sportJours}j sport
-                            </span>
-                            {tr.avgs.kcal != null && (
-                              <span className={`text-xs ${metricColor(tr.avgs.kcal, 'kcal', obj, b) || 'text-gray-500'}`}>
-                                {Math.round(tr.avgs.kcal)} kcal
-                              </span>
-                            )}
-                            {tr.avgs.proteines != null && (
-                              <span className={`text-xs ${metricColor(tr.avgs.proteines, 'proteines', obj, b) || 'text-gray-500'}`}>
-                                P{Math.round(tr.avgs.proteines)}g
-                              </span>
-                            )}
-                            {tr.avgs.sommeil != null && (
-                              <span className={`text-xs ${metricColor(tr.avgs.sommeil, 'sommeil', obj, b) || 'text-gray-500'}`}>
-                                {parseFloat(tr.avgs.sommeil).toFixed(1)}h
-                              </span>
-                            )}
-                            {tr.avgs.stress != null && (
-                              <span className={`text-xs ${metricColor(tr.avgs.stress, 'stress', obj, b) || 'text-gray-500'}`}>
-                                stress {parseFloat(tr.avgs.stress).toFixed(1)}
-                              </span>
-                            )}
+                            <span className={`text-xs ${metricColor(tr.sportJours, 'seances', obj, b) || 'text-gray-500'}`}>{tr.sportJours}j sport</span>
+                            {tr.avgs.kcal      != null && <span className={`text-xs ${metricColor(tr.avgs.kcal,      'kcal',      obj, b) || 'text-gray-500'}`}>{Math.round(tr.avgs.kcal)} kcal</span>}
+                            {tr.avgs.proteines != null && <span className={`text-xs ${metricColor(tr.avgs.proteines, 'proteines', obj, b) || 'text-gray-500'}`}>P{Math.round(tr.avgs.proteines)}g</span>}
+                            {tr.avgs.sommeil   != null && <span className={`text-xs ${metricColor(tr.avgs.sommeil,   'sommeil',   obj, b) || 'text-gray-500'}`}>{parseFloat(tr.avgs.sommeil).toFixed(1)}h</span>}
+                            {tr.avgs.stress    != null && <span className={`text-xs ${metricColor(tr.avgs.stress,    'stress',    obj, b) || 'text-gray-500'}`}>stress {parseFloat(tr.avgs.stress).toFixed(1)}</span>}
                             <span className="text-xs text-gray-300">{relativeDate(tr.lastDate)}</span>
                           </div>
                         ) : (
@@ -546,12 +612,12 @@ export default function CoachHome() {
             </div>
           )}
 
-          {/* 3. ── Objectifs perso ── */}
+          {/* 3. Objectifs perso */}
           {isWidgetEnabled('suivi_perso') && activeBloc && (
             <ObjectifsBloc bloc={activeBloc} onSave={() => fetchPersonalData(profile.id)} />
           )}
 
-          {/* 4. ── Mon suivi 7j ── */}
+          {/* 4. Mon suivi 7j */}
           {isWidgetEnabled('suivi_perso') && (
             mySuivi ? (
               <div className="bg-white border border-gray-100 rounded-xl p-4">
@@ -561,18 +627,13 @@ export default function CoachHome() {
                 </div>
                 <div className="grid grid-cols-4 gap-x-3 gap-y-2 sm:grid-cols-8">
                   <div className="flex flex-col items-center">
-                    <span className={`text-sm font-semibold ${metricColor(mySuivi.sportJours, 'seances', myObjectifs, bornes) || 'text-gray-800'}`}>
-                      {mySuivi.sportJours}j
-                    </span>
+                    <span className={`text-sm font-semibold ${metricColor(mySuivi.sportJours, 'seances', myObjectifs, bornes) || 'text-gray-800'}`}>{mySuivi.sportJours}j</span>
                     <span className="text-xs text-gray-400 mt-0.5">Sport</span>
                   </div>
                   {SUIVI_METRICS.map(({ key, label, unit, isInt }) => {
-                    const val = mySuivi.avgs[key]
-                    if (val == null) return null
+                    const val = mySuivi.avgs[key]; if (val == null) return null
                     const color     = metricColor(val, key, myObjectifs, bornes)
-                    const displayed = key === 'pas'
-                      ? Math.round(val).toLocaleString('fr')
-                      : isInt ? Math.round(val) : parseFloat(val).toFixed(1)
+                    const displayed = key === 'pas' ? Math.round(val).toLocaleString('fr') : isInt ? Math.round(val) : parseFloat(val).toFixed(1)
                     return (
                       <div key={key} className="flex flex-col items-center">
                         <span className={`text-sm font-semibold tabular-nums ${color || 'text-gray-800'}`}>{displayed}{unit}</span>
@@ -591,7 +652,7 @@ export default function CoachHome() {
             )
           )}
 
-          {/* 5. ── Saisie repas IA ── */}
+          {/* 5. Saisie repas IA */}
           {isWidgetEnabled('saisie_repas') && (
             <div className="bg-white border border-gray-100 rounded-xl p-4">
               <div className="flex items-center justify-between mb-2">
@@ -601,6 +662,7 @@ export default function CoachHome() {
                   Mes repas
                 </button>
               </div>
+
               {showFavoris && (
                 <div className="mb-3 space-y-1 max-h-40 overflow-y-auto">
                   {favoris.length === 0
@@ -612,24 +674,41 @@ export default function CoachHome() {
                           <p className="text-xs text-gray-400">{f.kcal} kcal</p>
                         </div>
                         <div className="flex gap-1 ml-2">
-                          <button onClick={() => addFavori(f)} className={`text-xs px-2 py-1 rounded-lg ${accentBtn}`}>Ajouter</button>
+                          <button onClick={() => addFavoriWithAdjust(f)} className={`text-xs px-2 py-1 rounded-lg ${accentBtn}`}>Ajouter</button>
                           <button onClick={() => deleteFavori(f.id)} className="text-xs text-gray-300 hover:text-red-400 px-1">×</button>
                         </div>
                       </div>
                     ))}
                 </div>
               )}
+
+              {pendingMacros?.source === 'favori' && (
+                <MacroAdjustPanel initial={pendingMacros.data} description={pendingMacros.description}
+                  onConfirm={confirmMacros} onCancel={() => setPendingMacros(null)} accentBtn={accentBtn} />
+              )}
+
               <div className="flex gap-2">
                 <input value={repasInput} onChange={e => setRepasInput(e.target.value)}
-                  onKeyDown={e => e.key === 'Enter' && analyzeRepas()}
+                  onKeyDown={e => e.key === 'Enter' && !pendingMacros && analyzeRepas()}
                   placeholder="Ex: 2 oeufs, 80g flocons, 200ml lait…"
                   className="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-gray-300"
                 />
+                <button onClick={() => photoInputRef.current?.click()} disabled={photoLoading}
+                  title="Scanner une étiquette"
+                  className="border border-gray-200 rounded-lg px-3 py-2 text-lg hover:border-gray-300 disabled:opacity-50 flex-shrink-0">
+                  {photoLoading ? '…' : '📷'}
+                </button>
                 <button onClick={analyzeRepas} disabled={analyzeLoading || !repasInput.trim()}
                   className={`${accentBtn} px-3 py-2 rounded-lg text-sm font-medium disabled:opacity-50 flex-shrink-0`}>
                   {analyzeLoading ? '…' : 'OK'}
                 </button>
               </div>
+
+              {(pendingMacros?.source === 'text' || pendingMacros?.source === 'photo') && (
+                <MacroAdjustPanel initial={pendingMacros.data} description={pendingMacros.description}
+                  onConfirm={confirmMacros} onCancel={() => setPendingMacros(null)} accentBtn={accentBtn} />
+              )}
+
               {repasJour.length > 0 && (
                 <div className="mt-2 space-y-1">
                   {repasJour.map(r => (
@@ -653,7 +732,7 @@ export default function CoachHome() {
             </div>
           )}
 
-          {/* 6. ── Mes macros du jour ── */}
+          {/* 6. Macros du jour */}
           {isWidgetEnabled('macros_jour') && (
             myMacros ? (
               <div className="bg-white border border-gray-100 rounded-xl p-4">
@@ -662,12 +741,7 @@ export default function CoachHome() {
                   <Link to="/coach/tracking" className={`text-xs font-medium ${accentText}`}>Suivi complet →</Link>
                 </div>
                 <div className="grid grid-cols-4 gap-3">
-                  {[
-                    ['Kcal',  myMacros.kcal,      myObjectifs?.kcal,      '' ],
-                    ['Prot.', myMacros.proteines, myObjectifs?.proteines, 'g'],
-                    ['Lip.',  myMacros.lipides,   myObjectifs?.lipides,   'g'],
-                    ['Gluc.', myMacros.glucides,  myObjectifs?.glucides,  'g'],
-                  ].map(([label, val, target, unit]) => {
+                  {[['Kcal',myMacros.kcal,myObjectifs?.kcal,''],['Prot.',myMacros.proteines,myObjectifs?.proteines,'g'],['Lip.',myMacros.lipides,myObjectifs?.lipides,'g'],['Gluc.',myMacros.glucides,myObjectifs?.glucides,'g']].map(([label,val,target,unit]) => {
                     const pct = target && val ? Math.min(100, Math.round((val / target) * 100)) : 0
                     return (
                       <div key={label}>
@@ -694,7 +768,7 @@ export default function CoachHome() {
             )
           )}
 
-          {/* 7. ── Séances de la semaine ── */}
+          {/* 7. Séances de la semaine */}
           {isWidgetEnabled('semaine_seances') && seances.length > 0 && (
             <div className="bg-white border border-gray-100 rounded-xl p-4">
               <div className="flex items-center justify-between mb-2">

@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { supabase } from '../../lib/supabase'
 import { useAuth } from '../../hooks/useAuth'
@@ -9,12 +9,74 @@ import WidgetConfig from '../../components/shared/WidgetConfig'
 import { findActiveSemaine } from '../../lib/semaine'
 import { metricColor, computeAverages } from '../../lib/tracking'
 
+// ── Utilitaire : convertit un File en base64 ──────────────────────────
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload  = () => resolve(reader.result.split(',')[1])
+    reader.onerror = reject
+    reader.readAsDataURL(file)
+  })
+}
+
+// ── Panneau d'ajustement des macros avant validation ─────────────────
+function MacroAdjustPanel({ initial, description, onConfirm, onCancel, accentBtn, accentText }) {
+  const [form, setForm] = useState({
+    kcal:      initial.kcal      ?? '',
+    proteines: initial.proteines ?? '',
+    glucides:  initial.glucides  ?? '',
+    lipides:   initial.lipides   ?? '',
+  })
+
+  return (
+    <div className="mt-2 bg-gray-50 border border-gray-200 rounded-xl p-3 space-y-2">
+      <p className="text-xs font-medium text-gray-600 truncate">{description}</p>
+      <div className="grid grid-cols-2 gap-2">
+        {[
+          ['kcal',      'Kcal',   ''],
+          ['proteines', 'Prot.',  'g'],
+          ['glucides',  'Gluc.',  'g'],
+          ['lipides',   'Lip.',   'g'],
+        ].map(([key, label, unit]) => (
+          <div key={key} className="flex items-center gap-1">
+            <label className="text-xs text-gray-400 w-10 flex-shrink-0">{label}</label>
+            <input
+              type="number"
+              value={form[key]}
+              onChange={e => setForm(f => ({ ...f, [key]: e.target.value }))}
+              className="flex-1 border border-gray-200 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-gray-300"
+            />
+            {unit && <span className="text-xs text-gray-400 flex-shrink-0">{unit}</span>}
+          </div>
+        ))}
+      </div>
+      <div className="flex gap-2 pt-1">
+        <button
+          onClick={() => onConfirm({
+            kcal:      Math.round(Number(form.kcal)      || 0),
+            proteines: Math.round((Number(form.proteines) || 0) * 10) / 10,
+            glucides:  Math.round((Number(form.glucides)  || 0) * 10) / 10,
+            lipides:   Math.round((Number(form.lipides)   || 0) * 10) / 10,
+          })}
+          className={`flex-1 py-1.5 rounded-lg text-sm font-medium ${accentBtn}`}>
+          ✓ Valider
+        </button>
+        <button onClick={onCancel}
+          className="flex-1 border border-gray-200 rounded-lg py-1.5 text-sm text-gray-500">
+          Annuler
+        </button>
+      </div>
+    </div>
+  )
+}
+
 export default function AthleteHome() {
   const { profile } = useAuth()
   const theme = useTheme()
   const navigate = useNavigate()
   const { isWidgetEnabled } = usePreferences()
   const [showConfig, setShowConfig] = useState(false)
+  const photoInputRef = useRef(null)
 
   const [nextSeance, setNextSeance]       = useState(null)
   const [streak, setStreak]               = useState(0)
@@ -24,13 +86,17 @@ export default function AthleteHome() {
   const [loading, setLoading]             = useState(true)
   const [activeBlocId, setActiveBlocId]   = useState(null)
 
-  const [repasInput, setRepasInput]       = useState('')
-  const [repasJour, setRepasJour]         = useState([])
+  const [repasInput, setRepasInput]         = useState('')
+  const [repasJour, setRepasJour]           = useState([])
   const [analyzeLoading, setAnalyzeLoading] = useState(false)
-  const [showFavoris, setShowFavoris]     = useState(false)
-  const [favoris, setFavoris]             = useState([])
-  const [totalMacros, setTotalMacros]     = useState({ kcal: 0, proteines: 0, glucides: 0, lipides: 0 })
-  const [suiviSemaine, setSuiviSemaine]   = useState(null)
+  const [photoLoading, setPhotoLoading]     = useState(false)
+  const [showFavoris, setShowFavoris]       = useState(false)
+  const [favoris, setFavoris]               = useState([])
+  const [totalMacros, setTotalMacros]       = useState({ kcal: 0, proteines: 0, glucides: 0, lipides: 0 })
+  const [suiviSemaine, setSuiviSemaine]     = useState(null)
+
+  // Panneau d'ajustement des macros : { source: 'text'|'photo'|'favori', data, description }
+  const [pendingMacros, setPendingMacros] = useState(null)
 
   const today      = new Date().toISOString().split('T')[0]
   const accentBtn  = theme.isFemme ? 'bg-pink-600 hover:bg-pink-700 text-white' : 'bg-brand-600 hover:bg-brand-700 text-white'
@@ -85,7 +151,6 @@ export default function AthleteHome() {
       .eq('semaine_id', activeSem.id).order('ordre')
     setSeances(sc || [])
 
-    // Prochaine séance : priorité à celle pas encore commencée
     const seancesNormales = (sc || []).filter(s =>
       s.nom !== 'Bonus' && (s.exercices?.length || 0) > 0
     )
@@ -135,6 +200,7 @@ export default function AthleteHome() {
     setFavoris(data || [])
   }
 
+  // ── Analyse texte → ouvre le panneau d'ajustement ────────────────────
   async function analyzeRepas() {
     if (!repasInput.trim()) return
     setAnalyzeLoading(true)
@@ -146,45 +212,102 @@ export default function AthleteHome() {
       })
       if (!response.ok) throw new Error('Erreur serveur')
       const macros = await response.json()
-      
-      await supabase.from('repas').insert({
-        athlete_id: profile.id, date: today, description: repasInput.trim(),
-        kcal: Math.round(macros.kcal || 0),
-        proteines: Math.round((macros.proteines || 0) * 10) / 10,
-        glucides:  Math.round((macros.glucides  || 0) * 10) / 10,
-        lipides:   Math.round((macros.lipides   || 0) * 10) / 10,
-      })
-      setRepasInput('')
-      const { data: allRepas } = await supabase.from('repas').select('*')
-        .eq('athlete_id', profile.id).eq('date', today).order('created_at')
-      const list = allRepas || []
-      setRepasJour(list)
-      const newTotals = recalcTotals(list)
-      if (activeBlocId) {
-        await supabase.from('data_tracking').upsert({
-          athlete_id: profile.id, date: today, bloc_id: activeBlocId,
-          kcal:      Math.round(newTotals.kcal),
-          proteines: Math.round(newTotals.proteines * 10) / 10,
-          glucides:  Math.round(newTotals.glucides  * 10) / 10,
-          lipides:   Math.round(newTotals.lipides   * 10) / 10,
-        }, { onConflict: 'athlete_id,date' })
-      }
+      setPendingMacros({ source: 'text', data: macros, description: repasInput.trim() })
     } catch (e) { console.error('analyzeRepas:', e) }
     setAnalyzeLoading(false)
   }
 
-  async function addFavori(f) {
-    await supabase.from('repas').insert({ athlete_id: profile.id, date: today, description: f.description, kcal: f.kcal, proteines: f.proteines, glucides: f.glucides, lipides: f.lipides })
-    await fetchRepasJour(); setShowFavoris(false)
+  // ── Photo étiquette → ouvre le panneau d'ajustement ──────────────────
+  async function handlePhoto(e) {
+    const file = e.target.files?.[0]
+    if (!file) return
+    setPhotoLoading(true)
+    try {
+      const base64 = await fileToBase64(file)
+      const response = await fetch('/api/analyze-repas', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          meal: '',
+          image: { mimeType: file.type || 'image/jpeg', data: base64 }
+        })
+      })
+      if (!response.ok) throw new Error('Erreur serveur')
+      const macros = await response.json()
+      setPendingMacros({ source: 'photo', data: macros, description: '📷 Photo étiquette' })
+    } catch (e) { console.error('handlePhoto:', e) }
+    // Reset input pour permettre de reprendre la même photo
+    e.target.value = ''
+    setPhotoLoading(false)
   }
+
+  // ── Ajout depuis un favori → ouvre le panneau d'ajustement ───────────
+  function addFavoriWithAdjust(f) {
+    setPendingMacros({
+      source:      'favori',
+      data:        { kcal: f.kcal, proteines: f.proteines, glucides: f.glucides, lipides: f.lipides },
+      description: f.description || f.nom,
+      favori:      f,
+    })
+    setShowFavoris(false)
+  }
+
+  // ── Validation après ajustement ───────────────────────────────────────
+  async function confirmMacros(adjustedMacros) {
+    if (!pendingMacros) return
+    const description = pendingMacros.source === 'text' ? pendingMacros.description
+      : pendingMacros.source === 'favori' ? (pendingMacros.favori.description || pendingMacros.favori.nom)
+      : pendingMacros.description
+
+    await supabase.from('repas').insert({
+      athlete_id: profile.id,
+      date:        today,
+      description,
+      kcal:        adjustedMacros.kcal,
+      proteines:   adjustedMacros.proteines,
+      glucides:    adjustedMacros.glucides,
+      lipides:     adjustedMacros.lipides,
+    })
+
+    if (pendingMacros.source === 'text') setRepasInput('')
+    setPendingMacros(null)
+
+    const { data: allRepas } = await supabase.from('repas').select('*')
+      .eq('athlete_id', profile.id).eq('date', today).order('created_at')
+    const list = allRepas || []
+    setRepasJour(list)
+    const newTotals = recalcTotals(list)
+
+    if (activeBlocId) {
+      await supabase.from('data_tracking').upsert({
+        athlete_id: profile.id, date: today, bloc_id: activeBlocId,
+        kcal:      Math.round(newTotals.kcal),
+        proteines: Math.round(newTotals.proteines * 10) / 10,
+        glucides:  Math.round(newTotals.glucides  * 10) / 10,
+        lipides:   Math.round(newTotals.lipides   * 10) / 10,
+      }, { onConflict: 'athlete_id,date' })
+    }
+  }
+
   async function saveAsFavori(repas) {
     const nom = window.prompt('Nom ?', repas.description.slice(0, 40))
     if (!nom) return
-    await supabase.from('repas_favoris').insert({ athlete_id: profile.id, nom, description: repas.description, kcal: repas.kcal, proteines: repas.proteines, glucides: repas.glucides, lipides: repas.lipides })
+    await supabase.from('repas_favoris').insert({
+      athlete_id: profile.id, nom, description: repas.description,
+      kcal: repas.kcal, proteines: repas.proteines, glucides: repas.glucides, lipides: repas.lipides
+    })
     await fetchFavoris()
   }
-  async function deleteRepas(id) { await supabase.from('repas').delete().eq('id', id); await fetchRepasJour() }
-  async function deleteFavori(id) { await supabase.from('repas_favoris').delete().eq('id', id); await fetchFavoris() }
+
+  async function deleteRepas(id) {
+    await supabase.from('repas').delete().eq('id', id)
+    await fetchRepasJour()
+  }
+
+  async function deleteFavori(id) {
+    await supabase.from('repas_favoris').delete().eq('id', id)
+    await fetchFavoris()
+  }
 
   const MacroBar = ({ label, val, target, color }) => {
     const pct = target && val ? Math.min(100, Math.round((val / target) * 100)) : 0
@@ -192,7 +315,9 @@ export default function AthleteHome() {
       <div>
         <div className="flex justify-between text-xs mb-1">
           <span className="text-gray-500">{label}</span>
-          <span className="text-gray-700 font-medium">{Math.round(val || 0)}{label === 'Kcal' ? '' : 'g'} / {target || '—'}{target && label !== 'Kcal' ? 'g' : ''}</span>
+          <span className="text-gray-700 font-medium">
+            {Math.round(val || 0)}{label === 'Kcal' ? '' : 'g'} / {target || '—'}{target && label !== 'Kcal' ? 'g' : ''}
+          </span>
         </div>
         <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
           <div className={`h-full ${color} rounded-full`} style={{ width: `${pct}%` }} />
@@ -220,6 +345,16 @@ export default function AthleteHome() {
   return (
     <Layout>
       {showConfig && <WidgetConfig onClose={() => setShowConfig(false)} />}
+
+      {/* Input fichier caché pour la photo */}
+      <input
+        ref={photoInputRef}
+        type="file"
+        accept="image/*"
+        capture="environment"
+        className="hidden"
+        onChange={handlePhoto}
+      />
 
       <div className="flex items-center justify-between mb-5">
         <div>
@@ -295,6 +430,7 @@ export default function AthleteHome() {
             </div>
           )}
 
+          {/* ── Widget saisie repas ── */}
           {isWidgetEnabled('saisie_repas') && (
             <div className="bg-white border border-gray-100 rounded-xl p-4">
               <div className="flex items-center justify-between mb-2">
@@ -304,6 +440,8 @@ export default function AthleteHome() {
                   Mes repas
                 </button>
               </div>
+
+              {/* Liste des favoris */}
               {showFavoris && (
                 <div className="mb-3 space-y-1 max-h-40 overflow-y-auto">
                   {favoris.length === 0
@@ -315,31 +453,77 @@ export default function AthleteHome() {
                           <p className="text-xs text-gray-400">{f.kcal} kcal</p>
                         </div>
                         <div className="flex gap-1 ml-2">
-                          <button onClick={() => addFavori(f)} className={`text-xs px-2 py-1 rounded-lg ${accentBtn}`}>Ajouter</button>
+                          <button
+                            onClick={() => addFavoriWithAdjust(f)}
+                            className={`text-xs px-2 py-1 rounded-lg ${accentBtn}`}>
+                            Ajouter
+                          </button>
                           <button onClick={() => deleteFavori(f.id)} className="text-xs text-gray-300 hover:text-red-400 px-1">×</button>
                         </div>
                       </div>
                     ))}
                 </div>
               )}
+
+              {/* Panneau ajustement macros (favori) */}
+              {pendingMacros?.source === 'favori' && (
+                <MacroAdjustPanel
+                  initial={pendingMacros.data}
+                  description={pendingMacros.description}
+                  onConfirm={confirmMacros}
+                  onCancel={() => setPendingMacros(null)}
+                  accentBtn={accentBtn}
+                  accentText={accentText}
+                />
+              )}
+
+              {/* Barre de saisie texte + bouton photo */}
               <div className="flex gap-2">
-                <input value={repasInput} onChange={e => setRepasInput(e.target.value)}
-                  onKeyDown={e => e.key === 'Enter' && analyzeRepas()}
+                <input
+                  value={repasInput}
+                  onChange={e => setRepasInput(e.target.value)}
+                  onKeyDown={e => e.key === 'Enter' && !pendingMacros && analyzeRepas()}
                   placeholder="Ex: 2 oeufs, 80g flocons, 200ml lait…"
                   className="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-gray-300"
                 />
-                <button onClick={analyzeRepas} disabled={analyzeLoading || !repasInput.trim()}
+                {/* Bouton photo étiquette */}
+                <button
+                  onClick={() => photoInputRef.current?.click()}
+                  disabled={photoLoading}
+                  title="Scanner une étiquette"
+                  className="border border-gray-200 rounded-lg px-3 py-2 text-lg hover:border-gray-300 disabled:opacity-50 flex-shrink-0">
+                  {photoLoading ? '…' : '📷'}
+                </button>
+                <button
+                  onClick={analyzeRepas}
+                  disabled={analyzeLoading || !repasInput.trim()}
                   className={`${accentBtn} px-3 py-2 rounded-lg text-sm font-medium disabled:opacity-50 flex-shrink-0`}>
                   {analyzeLoading ? '…' : 'OK'}
                 </button>
               </div>
+
+              {/* Panneau ajustement macros (texte ou photo) */}
+              {(pendingMacros?.source === 'text' || pendingMacros?.source === 'photo') && (
+                <MacroAdjustPanel
+                  initial={pendingMacros.data}
+                  description={pendingMacros.description}
+                  onConfirm={confirmMacros}
+                  onCancel={() => setPendingMacros(null)}
+                  accentBtn={accentBtn}
+                  accentText={accentText}
+                />
+              )}
+
+              {/* Repas du jour */}
               {repasJour.length > 0 && (
                 <div className="mt-2 space-y-1">
                   {repasJour.map(r => (
                     <div key={r.id} className="flex items-center justify-between bg-gray-50 rounded-lg px-3 py-1.5 gap-2">
                       <div className="flex-1 min-w-0">
                         <p className="text-xs text-gray-700 truncate">{r.description}</p>
-                        <p className={`text-xs font-medium mt-0.5 ${accentText}`}>{r.kcal} kcal · P{Math.round(r.proteines)}g G{Math.round(r.glucides)}g L{Math.round(r.lipides)}g</p>
+                        <p className={`text-xs font-medium mt-0.5 ${accentText}`}>
+                          {r.kcal} kcal · P{Math.round(r.proteines)}g G{Math.round(r.glucides)}g L{Math.round(r.lipides)}g
+                        </p>
                       </div>
                       <div className="flex gap-1 flex-shrink-0">
                         <button onClick={() => saveAsFavori(r)} className="text-xs text-gray-300 hover:text-amber-400">★</button>
@@ -349,7 +533,9 @@ export default function AthleteHome() {
                   ))}
                   <div className={`flex justify-between px-3 py-1.5 rounded-lg text-xs font-medium ${theme.isFemme ? 'bg-pink-50 text-pink-700' : 'bg-brand-50 text-brand-700'}`}>
                     <span>Total</span>
-                    <span>{Math.round(totalMacros.kcal)} kcal · P{Math.round(totalMacros.proteines)}g G{Math.round(totalMacros.glucides)}g L{Math.round(totalMacros.lipides)}g</span>
+                    <span>
+                      {Math.round(totalMacros.kcal)} kcal · P{Math.round(totalMacros.proteines)}g G{Math.round(totalMacros.glucides)}g L{Math.round(totalMacros.lipides)}g
+                    </span>
                   </div>
                 </div>
               )}
