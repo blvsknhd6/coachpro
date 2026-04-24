@@ -4,6 +4,19 @@
  */
 
 /**
+ * Calcule l'âge en années à partir d'une date de naissance ISO (YYYY-MM-DD).
+ */
+export function ageFromDateNaissance(dateNaissance) {
+  if (!dateNaissance) return null
+  const today = new Date()
+  const dob   = new Date(dateNaissance)
+  let age = today.getFullYear() - dob.getFullYear()
+  const monthDiff = today.getMonth() - dob.getMonth()
+  if (monthDiff < 0 || (monthDiff === 0 && today.getDate() < dob.getDate())) age--
+  return age > 0 ? age : null
+}
+
+/**
  * Calcule le BMR (métabolisme de base) via Mifflin-St Jeor.
  * @param {number} poids  - en kg
  * @param {number} taille - en cm
@@ -17,45 +30,29 @@ export function calcBMR(poids, taille, age, sexe) {
 }
 
 /**
- * Détermine le multiplicateur d'activité à partir des moyennes de tracking.
- * Basé sur une matrice croisée : la valeur la plus haute entre le volume de pas et les séances l'emporte.
- * @param {number} pasJournaliersMoy  - moyenne des pas sur la période
- * @param {number} seancesParSemaine  - nombre de séances par semaine sur la période
+ * Détermine le multiplicateur d'activité.
  */
 export function activityMultiplier(pasJournaliersMoy, seancesParSemaine) {
+  const tresTactif = seancesParSemaine >= 5 || pasJournaliersMoy >= 12000
+  const actif      = seancesParSemaine >= 4 || pasJournaliersMoy >= 10000
+  const moderement = seancesParSemaine >= 3 || pasJournaliersMoy >= 7500
+  const legerement = seancesParSemaine >= 2 || pasJournaliersMoy >= 5000
 
-  // 1. Extrêmement actif : 15 000 pas et +
-  if (pasJournaliersMoy >= 15000) {
-    return { mult: 1.9, label: 'Extrêmement actif' };
-  }
-
-  // 2. Très actif : 5 séances et + OU 10 000 pas et +
-  if (seancesParSemaine >= 5 || pasJournaliersMoy >= 10000) {
-    return { mult: 1.725, label: 'Très actif' };
-  }
-
-  // 3. Modérément actif : 4 séances et + OU 7 500 pas et +
-  if (seancesParSemaine >= 4 || pasJournaliersMoy >= 7500) {
-    return { mult: 1.55, label: 'Modérément actif' };
-  }
-
-  // 4. Légèrement actif : 2 séances et + OU 5 000 pas et +
-  if (seancesParSemaine >= 2 || pasJournaliersMoy >= 5000) {
-    return { mult: 1.375, label: 'Légèrement actif' };
-  }
-
-  // 5. Sédentaire : Moins de 2 séances ET moins de 5 000 pas (Valeur par défaut)
-  return { mult: 1.2, label: 'Sédentaire' };
+  if (tresTactif)  return { mult: 1.725, label: 'Très actif' }
+  if (actif)       return { mult: 1.55,  label: 'Modérément actif' }
+  if (moderement)  return { mult: 1.55,  label: 'Modérément actif' }
+  if (legerement)  return { mult: 1.375, label: 'Légèrement actif' }
+  return { mult: 1.2, label: 'Sédentaire' }
 }
 
 /**
- * Calcule le TDEE complet à partir des données de profil et de tracking.
- * @param {object} profile  - { poids (dernier tracking), taille, age, genre }
+ * Calcule le TDEE complet.
+ * @param {object} profile  - { poids, taille, date_naissance, genre }
  * @param {object} activity - { pasJournaliersMoy, seancesParSemaine }
- * @returns {{ tdee: number, bmr: number, multiplier: number, activityLabel: string } | null}
  */
 export function calcTDEE(profile, activity) {
-  const { poids, taille, age, genre } = profile
+  const { poids, taille, date_naissance, genre } = profile
+  const age = ageFromDateNaissance(date_naissance)
   const bmr = calcBMR(poids, taille, age, genre)
   if (!bmr) return null
 
@@ -69,27 +66,18 @@ export function calcTDEE(profile, activity) {
     bmr:           Math.round(bmr),
     multiplier:    mult,
     activityLabel: label,
+    age,
   }
 }
 
 /**
  * Suggestions nutritionnelles selon l'objectif.
- * @param {number} tdee
- * @param {number} poids
- * @param {string} plan - 'prise_de_masse' | 'maintien' | 'seche'
  */
 export function nutritionSuggestions(tdee, poids, plan) {
-  const adjustments = {
-    prise_de_masse: +250,
-    maintien:       0,
-    seche:          -250,
-  }
+  const adjustments = { prise_de_masse: +250, maintien: 0, seche: -350 }
   const kcal = tdee + (adjustments[plan] ?? 0)
-
-  // Répartition standard : 2.4g/kg protéines, 25% lipides, reste glucides
-  const proteines = Math.round(poids * 2.4)
+  const proteines = Math.round(poids * 2)
   const lipides   = Math.round((kcal * 0.25) / 9)
   const glucides  = Math.round((kcal - proteines * 4 - lipides * 9) / 4)
-
   return { kcal: Math.round(kcal), proteines, glucides, lipides }
 }
