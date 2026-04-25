@@ -498,15 +498,7 @@ export default function AthleteHome() {
                 {/* Valeur principale */}
                 <div className="flex-shrink-0">
                   <p className={`text-3xl font-bold ${accentText} leading-none`}>
-                    {tdeeData.tdee}
-                  </p>
-                  <p className="text-xs text-gray-400 mt-1">kcal / jour</p>
-                  <p className="text-xs text-gray-300 mt-0.5">
-                    BMR {tdeeData.bmr} · {tdeeData.activityLabel}
-                  </p>
-                  <p className="text-xs text-gray-300 mt-0.5">
-                    {tdeeData.poids}kg · {tdeeData.age} ans
-                  </p>
+                    {tdeeData.tdee} kcal / jour</p>
                 </div>                
               </div>
 
