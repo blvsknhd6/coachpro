@@ -497,7 +497,7 @@ export default function AthleteHome() {
               <div className="flex items-start gap-4">
                 {/* Valeur principale */}
                 <div className="flex-shrink-0">
-                  <p className={`text-3xl font-bold ${accentText} leading-none`}>
+                  <p className={`text-xl font-bold ${accentText} leading-none`}>
                     {tdeeData.tdee} kcal / jour</p>
                 </div>                
               </div>
