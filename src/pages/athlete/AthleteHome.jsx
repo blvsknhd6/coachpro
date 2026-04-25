@@ -517,11 +517,11 @@ export default function AthleteHome() {
                   </div>
                   <div className={`border rounded-xl p-2.5 text-center ${theme.isFemme ? 'bg-pink-50 border-pink-100' : 'bg-brand-50 border-brand-100'}`}>
                     <p className={`text-base font-bold ${accentText}`}>{tdeeData.tdee}</p>
-                    <p className={`text-xs font-medium mt-0.5 ${accentText}`}>⚖️ Maintien</p>
+                    <p className={`text-xs font-medium mt-0.5 ${accentText}`}>⚖️</p>
                   </div>
                   <div className="bg-green-50 border border-green-100 rounded-xl p-2.5 text-center">
                     <p className="text-base font-bold text-green-600">{tdeeData.tdee + 250}</p>
-                    <p className="text-xs text-green-500 font-medium mt-0.5">💪 Prise</p>
+                    <p className="text-xs text-green-500 font-medium mt-0.5">💪 PDM</p>
                   </div>
                 </div>
               </div>
