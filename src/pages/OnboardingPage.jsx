@@ -175,7 +175,7 @@ export default function OnboardingPage() {
     <div className="min-h-screen flex items-center justify-center bg-gray-50 p-4">
       <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-8 w-full max-w-sm">
         <div className="mb-6">
-          <h1 className="text-2xl font-semibold text-gray-900">Bienvenue 👋</h1>
+          <h1 className="text-2xl font-semibold text-gray-900">Bienvenue</h1>
           <p className="text-sm text-gray-500 mt-1">
             Complète ton profil pour accéder à ton espace.
           </p>
@@ -202,7 +202,7 @@ export default function OnboardingPage() {
                 <button key={g} type="button"
                   onClick={() => setForm(f => ({ ...f, genre: g }))}
                   className={`flex-1 py-2 rounded-lg text-sm font-medium border transition-colors ${form.genre === g ? 'bg-brand-600 text-white border-brand-600' : 'border-gray-200 text-gray-600'}`}>
-                  {g === 'femme' ? '♀ Femme' : '♂ Homme'}
+                  {g === 'femme' ? 'Femme' : 'Homme'}
                 </button>
               ))}
             </div>
