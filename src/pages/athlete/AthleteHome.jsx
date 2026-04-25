@@ -437,26 +437,6 @@ export default function AthleteHome() {
             </div>
           )}
 
-          {/* ── Streak ── */}
-          {isWidgetEnabled('streak') && (
-            <div className="grid grid-cols-3 gap-2">
-              <div className="bg-white border border-gray-100 rounded-xl p-3 text-center">
-                <p className="text-xl font-semibold text-amber-500">{streak}</p>
-                <p className="text-xs text-gray-400 mt-0.5">jours consécutifs</p>
-              </div>
-              <div className="bg-white border border-gray-100 rounded-xl p-3 text-center">
-                <p className="text-xl font-semibold text-gray-900">{Math.round(totalMacros.kcal) || '—'}</p>
-                <p className="text-xs text-gray-400 mt-0.5">kcal aujourd'hui</p>
-              </div>
-              <div className="bg-white border border-gray-100 rounded-xl p-3 text-center">
-                <p className={`text-xl font-semibold ${Math.round(totalMacros.proteines) > 0 ? accentText : 'text-gray-300'}`}>
-                  {Math.round(totalMacros.proteines) || '—'}g
-                </p>
-                <p className="text-xs text-gray-400 mt-0.5">protéines</p>
-              </div>
-            </div>
-          )}
-
           {/* ── Suivi 7 derniers jours ── */}
           {isWidgetEnabled('suivi_bloc') && suiviSemaine && (
             <div className="bg-white border border-gray-100 rounded-xl p-4">
