@@ -509,26 +509,6 @@ export default function AthleteHome() {
                   </p>
                 </div>
 
-                {/* 3 scénarios */}
-                <div className="flex-1 grid grid-cols-3 gap-2">
-                  <div className="bg-orange-50 border border-orange-100 rounded-xl p-2.5 text-center">
-                    <p className="text-base font-bold text-orange-600">{tdeeData.tdee - 350}</p>
-                    <p className="text-xs text-orange-500 font-medium mt-0.5">🔥 Sèche</p>
-                    <p className="text-xs text-gray-400 mt-0.5">−350 kcal</p>
-                  </div>
-                  <div className={`border rounded-xl p-2.5 text-center ${theme.isFemme ? 'bg-pink-50 border-pink-100' : 'bg-brand-50 border-brand-100'}`}>
-                    <p className={`text-base font-bold ${accentText}`}>{tdeeData.tdee}</p>
-                    <p className={`text-xs font-medium mt-0.5 ${accentText}`}>⚖️ Maintien</p>
-                    <p className="text-xs text-gray-400 mt-0.5">équilibre</p>
-                  </div>
-                  <div className="bg-green-50 border border-green-100 rounded-xl p-2.5 text-center">
-                    <p className="text-base font-bold text-green-600">{tdeeData.tdee + 250}</p>
-                    <p className="text-xs text-green-500 font-medium mt-0.5">💪 Prise</p>
-                    <p className="text-xs text-gray-400 mt-0.5">+250 kcal</p>
-                  </div>
-                </div>
-              </div>
-
               {/* Indication si objectif coach défini */}
               {objectifs?.kcal && (
                 <div className={`mt-3 flex items-center gap-2 text-xs px-3 py-2 rounded-lg ${theme.isFemme ? 'bg-pink-50 text-pink-700' : 'bg-brand-50 text-brand-700'}`}>
