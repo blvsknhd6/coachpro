@@ -4,7 +4,11 @@ import { supabase } from '../../lib/supabase'
 import Layout from '../../components/shared/Layout'
 import RecapTracking from '../../components/coach/RecapTracking'
 import ProgressionPanel from '../../components/shared/ProgressionPanel'
-import { calcTDEE, nutritionSuggestions } from '../../lib/tdee'
+import { calcTDEE, nutritionSuggestions, ageFromDateNaissance } from '../../lib/tdee'
+
+function calcAge(dateNaissance) {
+  return ageFromDateNaissance(dateNaissance) ?? '?'
+}
 
 export default function CoachAthlete() {
   const { athleteId } = useParams()
@@ -15,7 +19,7 @@ export default function CoachAthlete() {
   const [showNewBloc, setShowNewBloc] = useState(false)
   const [newBlocName, setNewBlocName] = useState('')
   const [editingProfile, setEditingProfile] = useState(false)
-  const [profileForm, setProfileForm] = useState({ full_name: '', genre: 'homme', taille: '', age: '' })
+  const [profileForm, setProfileForm] = useState({ full_name: '', genre: 'homme', taille: '', date_naissance: '' })
   const [savingProfile, setSavingProfile] = useState(false)
   const [profileErr, setProfileErr]   = useState('')
   const [confirmDeleteBloc, setConfirmDeleteBloc] = useState(null)
@@ -30,10 +34,10 @@ export default function CoachAthlete() {
     if (ath) {
       setAthlete(ath)
       setProfileForm({
-        full_name: ath.full_name || '',
-        genre:     ath.genre    || 'homme',
-        taille:    ath.taille   || '',
-        age:       ath.age      || '',
+        full_name:      ath.full_name      || '',
+        genre:          ath.genre          || 'homme',
+        taille:         ath.taille         || '',
+        date_naissance: ath.date_naissance || '',
       })
     }
     const { data: bl } = await supabase
@@ -49,10 +53,10 @@ export default function CoachAthlete() {
     setSavingProfile(true); setProfileErr('')
     const { data, error } = await supabase.from('profiles')
       .update({
-        full_name: profileForm.full_name.trim(),
-        genre:     profileForm.genre,
-        taille:    profileForm.taille ? Number(profileForm.taille) : null,
-        age:       profileForm.age    ? Number(profileForm.age)    : null,
+        full_name:      profileForm.full_name.trim(),
+        genre:          profileForm.genre,
+        taille:         profileForm.taille         ? Number(profileForm.taille)         : null,
+        date_naissance: profileForm.date_naissance || null,
       })
       .eq('id', athleteId).select().single()
     if (!error && data) { setAthlete(data); setEditingProfile(false) }
@@ -195,12 +199,11 @@ export default function CoachAthlete() {
                     <span className="text-xs text-gray-400">cm</span>
                   </div>
                   <div className="flex items-center gap-1">
-                    <input type="number" value={profileForm.age}
-                      onChange={e => setProfileForm(f => ({ ...f, age: e.target.value }))}
-                      className="w-16 border border-gray-200 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400"
-                      placeholder="Âge"
+                    <input type="date" value={profileForm.date_naissance}
+                      onChange={e => setProfileForm(f => ({ ...f, date_naissance: e.target.value }))}
+                      max={new Date().toISOString().split('T')[0]}
+                      className="border border-gray-200 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400"
                     />
-                    <span className="text-xs text-gray-400">ans</span>
                   </div>
                   <button onClick={saveProfile} disabled={savingProfile}
                     className="text-sm text-brand-600 font-medium hover:text-brand-800">
@@ -219,8 +222,8 @@ export default function CoachAthlete() {
                   </div>
                   <p className="text-xs text-gray-400">
                     {athlete?.genre === 'femme' ? '♀ Femme' : '♂ Homme'}
-                    {athlete?.taille ? ` · ${athlete.taille}cm` : ''}
-                    {athlete?.age    ? ` · ${athlete.age}ans`   : ''}
+                    {athlete?.taille         ? ` · ${athlete.taille}cm`                      : ''}
+                    {athlete?.date_naissance ? ` · ${calcAge(athlete.date_naissance)} ans` : ''}
                     {!athlete?.is_self ? ` · ${athlete?.email}` : ''}
                   </p>
                 </div>
@@ -346,7 +349,7 @@ function ObjectifsBloc({ bloc, athlete, onSave }) {
   }
 
   async function fetchTdee() {
-    if (!athlete?.taille || !athlete?.age) return
+    if (!athlete?.taille || !athlete?.date_naissance) return
     setLoadingTdee(true)
 
     // Dernier poids non-null dans data_tracking
@@ -361,7 +364,7 @@ function ObjectifsBloc({ bloc, athlete, onSave }) {
     const poids = poidsData?.[0]?.poids
     if (!poids) { setLoadingTdee(false); return }
 
-    // Moyennes d'activité sur les 30 derniers jours
+    // Moyennes d'activité sur les 30 derniers jours de tracking
     const thirtyAgo = new Date()
     thirtyAgo.setDate(thirtyAgo.getDate() - 30)
     const { data: tracking } = await supabase
@@ -371,26 +374,44 @@ function ObjectifsBloc({ bloc, athlete, onSave }) {
       .gte('date', thirtyAgo.toISOString().split('T')[0])
       .order('date')
 
-    const entries = tracking || []
-    const pasVals = entries.map(e => e.pas_journaliers).filter(v => v != null)
+    const entries          = tracking || []
+    const pasVals          = entries.map(e => e.pas_journaliers).filter(v => v != null)
     const pasJournaliersMoy = pasVals.length
       ? pasVals.reduce((a, b) => a + b, 0) / pasVals.length
       : 0
-    const sportJours = entries.filter(e => e.sport_fait).length
-    const nbSemaines = Math.max(1, entries.length / 7)
-    const seancesParSemaine = sportJours / nbSemaines
+    const sportJours        = entries.filter(e => e.sport_fait).length
+    const nbSemaines        = Math.max(1, entries.length / 7)
+    const seancesTracking   = sportJours / nbSemaines
+
+    // Objectifs du bloc pour le fallback d'activité (données onboarding)
+    const { data: objBloc } = await supabase
+      .from('objectifs_bloc')
+      .select('pas_journaliers, seances_par_semaine')
+      .eq('bloc_id', bloc.id)
+      .single()
+
+    // Si peu de données de tracking (< 7 jours), utiliser les valeurs d'onboarding
+    const hasSufficientTracking = entries.length >= 7
+    const pasUsed = hasSufficientTracking
+      ? pasJournaliersMoy
+      : (objBloc?.pas_journaliers || pasJournaliersMoy || 0)
+    const seancesUsed = hasSufficientTracking
+      ? seancesTracking
+      : (objBloc?.seances_par_semaine || seancesTracking || 0)
 
     const result = calcTDEE(
-      { poids, taille: athlete.taille, age: athlete.age, genre: athlete.genre },
-      { pasJournaliersMoy, seancesParSemaine }
+      { poids, taille: athlete.taille, date_naissance: athlete.date_naissance, genre: athlete.genre },
+      { pasJournaliersMoy: pasUsed, seancesParSemaine: seancesUsed }
     )
+
     if (result) {
       setTdeeData({
         ...result,
         poids,
-        pasJournaliersMoy: Math.round(pasJournaliersMoy),
-        seancesParSemaine: parseFloat(seancesParSemaine.toFixed(1)),
-        lastPoidsDate: poidsData[0].date,
+        pasJournaliersMoy:  Math.round(pasUsed),
+        seancesParSemaine:  parseFloat(seancesUsed.toFixed(1)),
+        lastPoidsDate:      poidsData[0].date,
+        sourceActivite:     hasSufficientTracking ? 'tracking' : 'onboarding',
       })
     }
     setLoadingTdee(false)
@@ -446,7 +467,7 @@ function ObjectifsBloc({ bloc, athlete, onSave }) {
     }))
   }
 
-  const missingMorpho = !athlete?.taille || !athlete?.age
+  const missingMorpho = !athlete?.taille || !athlete?.date_naissance
 
   return (
     <div className="bg-white border border-gray-100 rounded-xl p-5">
@@ -468,7 +489,7 @@ function ObjectifsBloc({ bloc, athlete, onSave }) {
       {/* ── Encart TDEE ── */}
       {missingMorpho ? (
         <div className="mb-4 bg-gray-50 border border-gray-100 rounded-lg px-4 py-3 text-xs text-gray-500">
-          💡 Ajoute la <strong>taille</strong> et l'<strong>âge</strong> de l'athlète pour calculer son maintien calorique.
+          💡 Ajoute la <strong>taille</strong> et la <strong>date de naissance</strong> de l'athlète pour calculer son maintien calorique.
         </div>
       ) : loadingTdee ? (
         <div className="mb-4 h-16 bg-gray-50 rounded-lg animate-pulse" />
@@ -482,7 +503,8 @@ function ObjectifsBloc({ bloc, athlete, onSave }) {
                 BMR {tdeeData.bmr} kcal · ×{tdeeData.multiplier} ({tdeeData.activityLabel})
               </p>
               <p className="text-xs text-blue-400 mt-0.5">
-                Basé sur {tdeeData.poids}kg · {tdeeData.pasJournaliersMoy.toLocaleString('fr')} pas/j · {tdeeData.seancesParSemaine} séances/sem (30j)
+                Basé sur {tdeeData.poids}kg · {tdeeData.pasJournaliersMoy.toLocaleString('fr')} pas/j · {tdeeData.seancesParSemaine} séances/sem
+                {tdeeData.sourceActivite === 'onboarding' ? ' (données onboarding)' : ' (30j tracking)'}
               </p>
             </div>
             {editing && (
@@ -503,7 +525,7 @@ function ObjectifsBloc({ bloc, athlete, onSave }) {
           </div>
           {editing && (
             <p className="text-xs text-blue-400 mt-2">
-              Sèche : {tdeeData.tdee - 200} kcal · Maintien : {tdeeData.tdee} kcal · Prise : {tdeeData.tdee + 250} kcal
+              Sèche : {tdeeData.tdee - 350} kcal · Maintien : {tdeeData.tdee} kcal · Prise : {tdeeData.tdee + 250} kcal
             </p>
           )}
         </div>

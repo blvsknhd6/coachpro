@@ -1,6 +1,7 @@
 import { Routes, Route, Navigate } from 'react-router-dom'
 import { useAuth } from './hooks/useAuth'
 import LoginPage from './pages/LoginPage'
+import OnboardingPage from './pages/OnboardingPage'
 import CoachHome from './pages/coach/CoachHome'
 import CoachAthletes from './pages/coach/CoachAthletes'
 import CoachAthlete from './pages/coach/CoachAthlete'
@@ -28,6 +29,10 @@ export default function App() {
   return (
     <Routes>
       <Route path="/login" element={<LoginPage />} />
+
+      {/* Route publique — accessible sans être connecté (lien d'invitation) */}
+      <Route path="/onboarding" element={<OnboardingPage />} />
+
       <Route path="/coach" element={<PrivateRoute role="coach"><CoachHome /></PrivateRoute>} />
       <Route path="/coach/athletes" element={<PrivateRoute role="coach"><CoachAthletes /></PrivateRoute>} />
       <Route path="/coach/mon-programme" element={<PrivateRoute role="coach"><CoachMyTraining /></PrivateRoute>} />
@@ -37,13 +42,15 @@ export default function App() {
       <Route path="/coach/bloc/:blocId/edit" element={<PrivateRoute role="coach"><CoachBlocEditor /></PrivateRoute>} />
       <Route path="/coach/my-training/seance/:seanceId/semaine/:semaineId" element={<PrivateRoute role="coach"><AthleteSeance /></PrivateRoute>} />
       <Route path="/coach/tracking" element={<PrivateRoute role="coach"><AthleteDataTracking /></PrivateRoute>} />
+
       <Route path="/athlete" element={<PrivateRoute role="athlete"><AthleteHome /></PrivateRoute>} />
       <Route path="/athlete/entrainement" element={<PrivateRoute role="athlete"><AthleteEntrainement /></PrivateRoute>} />
       <Route path="/athlete/tracking" element={<PrivateRoute role="athlete"><AthleteDataTracking /></PrivateRoute>} />
       <Route path="/athlete/progression" element={<PrivateRoute role="athlete"><AthleteProgression /></PrivateRoute>} />
       <Route path="/athlete/seance/:seanceId/semaine/:semaineId" element={<PrivateRoute><AthleteSeance /></PrivateRoute>} />
+
       <Route path="/" element={
-        profile?.role === 'coach' ? <Navigate to="/coach" replace />
+        profile?.role === 'coach'   ? <Navigate to="/coach"   replace />
         : profile?.role === 'athlete' ? <Navigate to="/athlete" replace />
         : <Navigate to="/login" replace />
       } />
