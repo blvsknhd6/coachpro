@@ -3,7 +3,6 @@ export const MUSCLES = [
   'quads',
   'ischios',
   'adducteurs',
-  'abducteurs',
   'dos',
   'épaules',
   'pecs',
@@ -19,10 +18,13 @@ export const EXERCICES_PAR_MUSCLE = {
     'Hipthrust 4CT',
     'RDL',
     'RDL 3.1.0',
+    'One leg RDL',
     'Fentes bulgares',
     'Step Up',
     'Kickback',
     'Extensions de buste',
+    'Abducteurs machine',
+    'Abducteurs debout poulie',
   ],
   quads: [
     'Squat',
@@ -42,10 +44,6 @@ export const EXERCICES_PAR_MUSCLE = {
   ],
   adducteurs: [
     'Adducteurs',
-  ],
-  abducteurs: [
-    'Abducteurs',
-    'Abducteurs debout poulie',
   ],
   dos: [
     'Tirage vertical',
@@ -83,7 +81,6 @@ export const EXERCICES_PAR_MUSCLE = {
     'Curl marteau',
     'Curl poulie',
     'Curl incliné',
-
   ],
   triceps: [
     'Extensions triceps poulie',
@@ -95,6 +92,7 @@ export const EXERCICES_PAR_MUSCLE = {
     'Gainage',
     'Crunch',
     'Relevé de jambes',
+    'Circuit abdos',
   ],
   mollets : ['Extensions mollets assis','Extensions mollets debout']
 }
