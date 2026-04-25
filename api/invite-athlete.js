@@ -17,7 +17,7 @@ export default async function handler(req, res) {
     return res.status(500).json({ error: 'Variables d\'environnement manquantes (SUPABASE_SERVICE_ROLE_KEY)' })
   }
 
-  const { email, full_name, coach_id, redirect_to } = req.body
+  const { email, full_name, coach_id, genre, redirect_to } = req.body
 
   if (!email || !coach_id) {
     return res.status(400).json({ error: 'email et coach_id sont requis' })
@@ -25,7 +25,6 @@ export default async function handler(req, res) {
 
   try {
     // 1. Inviter l'utilisateur via l'API admin Supabase
-    //    Supabase envoie un email avec un lien magique qui pointe vers redirect_to
     const inviteRes = await fetch(`${supabaseUrl}/auth/v1/admin/invite`, {
       method: 'POST',
       headers: {
@@ -35,28 +34,31 @@ export default async function handler(req, res) {
       },
       body: JSON.stringify({
         email,
-        data: {
-          // Ces données seront accessibles dans raw_user_meta_data
-          full_name,
-          coach_id,
-          role: 'athlete',
-        },
+        data: { full_name, coach_id, role: 'athlete' },
         redirect_to: redirect_to || `${process.env.VITE_APP_URL || ''}/onboarding`,
       }),
     })
 
-    const inviteData = await inviteRes.json()
-
-    if (!inviteRes.ok) {
-      // Si l'utilisateur existe déjà, Supabase renvoie une erreur
-      return res.status(400).json({
-        error: inviteData.message || inviteData.error || 'Erreur lors de l\'invitation',
-        detail: inviteData,
+    // ── Parse robuste : Supabase peut renvoyer du HTML sur certaines erreurs ──
+    const rawText = await inviteRes.text()
+    let inviteData
+    try {
+      inviteData = JSON.parse(rawText)
+    } catch {
+      console.error('Supabase invite response non-JSON:', rawText.slice(0, 300))
+      return res.status(502).json({
+        error: 'Réponse inattendue de Supabase',
+        detail: rawText.slice(0, 300),
       })
     }
 
-    // 2. Créer le profil en base avec les infos de base
-    //    L'athlète complétera le reste lors de l'onboarding
+    if (!inviteRes.ok) {
+      // Cas fréquent : email déjà invité ou déjà inscrit
+      const msg = inviteData?.msg || inviteData?.message || inviteData?.error || 'Erreur lors de l\'invitation'
+      return res.status(400).json({ error: msg, detail: inviteData })
+    }
+
+    // 2. Créer le profil
     const profileRes = await fetch(`${supabaseUrl}/rest/v1/profiles`, {
       method: 'POST',
       headers: {
@@ -71,14 +73,14 @@ export default async function handler(req, res) {
         full_name: full_name || email.split('@')[0],
         email,
         coach_id,
+        genre:     genre || 'femme',
         is_self:   false,
       }),
     })
 
     if (!profileRes.ok) {
-      const profileErr = await profileRes.json()
-      // Le profil existe peut-être déjà — pas bloquant
-      console.warn('Profil déjà existant ou erreur:', profileErr)
+      const profileErr = await profileRes.text()
+      console.warn('Profil déjà existant ou erreur:', profileErr.slice(0, 200))
     }
 
     return res.status(200).json({
@@ -89,6 +91,7 @@ export default async function handler(req, res) {
     })
 
   } catch (error) {
+    console.error('invite-athlete error:', error)
     return res.status(500).json({ error: error.message })
   }
 }

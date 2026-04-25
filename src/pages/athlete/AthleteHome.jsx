@@ -8,6 +8,7 @@ import Layout from '../../components/shared/Layout'
 import WidgetConfig from '../../components/shared/WidgetConfig'
 import { findActiveSemaine } from '../../lib/semaine'
 import { metricColor, computeAverages } from '../../lib/tracking'
+import { calcTDEE } from '../../lib/tdee'
 
 // ── Utilitaire : convertit un File en base64 ──────────────────────────
 function fileToBase64(file) {
@@ -94,6 +95,7 @@ export default function AthleteHome() {
   const [favoris, setFavoris]               = useState([])
   const [totalMacros, setTotalMacros]       = useState({ kcal: 0, proteines: 0, glucides: 0, lipides: 0 })
   const [suiviSemaine, setSuiviSemaine]     = useState(null)
+  const [tdeeData, setTdeeData]             = useState(null)
 
   // Panneau d'ajustement des macros : { source: 'text'|'photo'|'favori', data, description }
   const [pendingMacros, setPendingMacros] = useState(null)
@@ -122,6 +124,7 @@ export default function AthleteHome() {
       setObjectifs(obj)
       fetchSemaines(blocs[0].id)
       fetchSuiviSemaine(blocs[0].id)
+      fetchTdee(blocs[0].id)
     } else {
       setLoading(false)
     }
@@ -173,6 +176,55 @@ export default function AthleteHome() {
     if (!data?.length) return
     const avgs = computeAverages(data, ['kcal', 'proteines', 'glucides', 'lipides', 'sommeil', 'pas', 'stress'])
     setSuiviSemaine({ avgs, sportJours: data.filter(d => d.sport_fait).length, nbJours: data.length })
+  }
+
+  async function fetchTdee(blocId) {
+    if (!profile?.taille || !profile?.date_naissance) return
+
+    // Dernier poids connu
+    const { data: poidsData } = await supabase
+      .from('data_tracking')
+      .select('poids, date')
+      .eq('athlete_id', profile.id)
+      .not('poids', 'is', null)
+      .order('date', { ascending: false })
+      .limit(1)
+    const poids = poidsData?.[0]?.poids
+    if (!poids) return
+
+    // Activité sur 30 jours
+    const thirtyAgo = new Date()
+    thirtyAgo.setDate(thirtyAgo.getDate() - 30)
+    const { data: tracking } = await supabase
+      .from('data_tracking')
+      .select('pas_journaliers, sport_fait')
+      .eq('athlete_id', profile.id)
+      .gte('date', thirtyAgo.toISOString().split('T')[0])
+
+    const entries    = tracking || []
+    const pasVals    = entries.map(e => e.pas_journaliers).filter(v => v != null)
+    const pasMoy     = pasVals.length ? pasVals.reduce((a, b) => a + b, 0) / pasVals.length : 0
+    const sportJours = entries.filter(e => e.sport_fait).length
+    const nbSemaines = Math.max(1, entries.length / 7)
+    const seancesMoy = sportJours / nbSemaines
+
+    // Fallback sur les objectifs du bloc si pas assez de tracking
+    let pasUsed = pasMoy, seancesUsed = seancesMoy
+    if (entries.length < 7 && blocId) {
+      const { data: obj } = await supabase
+        .from('objectifs_bloc')
+        .select('pas_journaliers, seances_par_semaine')
+        .eq('bloc_id', blocId)
+        .single()
+      if (obj?.pas_journaliers)     pasUsed     = obj.pas_journaliers
+      if (obj?.seances_par_semaine) seancesUsed = obj.seances_par_semaine
+    }
+
+    const result = calcTDEE(
+      { poids, taille: profile.taille, date_naissance: profile.date_naissance, genre: profile.genre },
+      { pasJournaliersMoy: pasUsed, seancesParSemaine: seancesUsed }
+    )
+    if (result) setTdeeData({ ...result, poids, lastPoidsDate: poidsData[0].date })
   }
 
   async function fetchRepasJour() {
@@ -372,6 +424,7 @@ export default function AthleteHome() {
       ) : (
         <div className="space-y-3">
 
+          {/* ── Prochaine séance ── */}
           {isWidgetEnabled('next_seance') && nextSeance && (
             <div className={`${accentBg} text-white rounded-2xl p-4`}>
               <p className="text-xs font-medium opacity-70 mb-0.5">Prochaine séance</p>
@@ -384,6 +437,7 @@ export default function AthleteHome() {
             </div>
           )}
 
+          {/* ── Streak ── */}
           {isWidgetEnabled('streak') && (
             <div className="grid grid-cols-3 gap-2">
               <div className="bg-white border border-gray-100 rounded-xl p-3 text-center">
@@ -403,6 +457,7 @@ export default function AthleteHome() {
             </div>
           )}
 
+          {/* ── Suivi 7 derniers jours ── */}
           {isWidgetEnabled('suivi_bloc') && suiviSemaine && (
             <div className="bg-white border border-gray-100 rounded-xl p-4">
               <div className="flex items-center justify-between mb-3">
@@ -427,6 +482,75 @@ export default function AthleteHome() {
               <p className="text-xs text-gray-300 mt-2 text-right">
                 moyennes sur {suiviSemaine.nbJours} entrée{suiviSemaine.nbJours > 1 ? 's' : ''}
               </p>
+            </div>
+          )}
+
+          {/* ── Maintien calorique estimé (TDEE) ── */}
+          {isWidgetEnabled('suivi_bloc') && tdeeData && (
+            <div className="bg-white border border-gray-100 rounded-xl p-4">
+              <div className="flex items-center justify-between mb-3">
+                <p className="text-sm font-medium text-gray-700">Mon maintien estimé</p>
+                <Link to="/athlete/tracking" className={`text-xs ${accentText} font-medium`}>
+                  Mon suivi →
+                </Link>
+              </div>
+              <div className="flex items-start gap-4">
+                {/* Valeur principale */}
+                <div className="flex-shrink-0">
+                  <p className={`text-3xl font-bold ${accentText} leading-none`}>
+                    {tdeeData.tdee}
+                  </p>
+                  <p className="text-xs text-gray-400 mt-1">kcal / jour</p>
+                  <p className="text-xs text-gray-300 mt-0.5">
+                    BMR {tdeeData.bmr} · {tdeeData.activityLabel}
+                  </p>
+                  <p className="text-xs text-gray-300 mt-0.5">
+                    {tdeeData.poids}kg · {tdeeData.age} ans
+                  </p>
+                </div>
+
+                {/* 3 scénarios */}
+                <div className="flex-1 grid grid-cols-3 gap-2">
+                  <div className="bg-orange-50 border border-orange-100 rounded-xl p-2.5 text-center">
+                    <p className="text-base font-bold text-orange-600">{tdeeData.tdee - 350}</p>
+                    <p className="text-xs text-orange-500 font-medium mt-0.5">🔥 Sèche</p>
+                    <p className="text-xs text-gray-400 mt-0.5">−350 kcal</p>
+                  </div>
+                  <div className={`border rounded-xl p-2.5 text-center ${theme.isFemme ? 'bg-pink-50 border-pink-100' : 'bg-brand-50 border-brand-100'}`}>
+                    <p className={`text-base font-bold ${accentText}`}>{tdeeData.tdee}</p>
+                    <p className={`text-xs font-medium mt-0.5 ${accentText}`}>⚖️ Maintien</p>
+                    <p className="text-xs text-gray-400 mt-0.5">équilibre</p>
+                  </div>
+                  <div className="bg-green-50 border border-green-100 rounded-xl p-2.5 text-center">
+                    <p className="text-base font-bold text-green-600">{tdeeData.tdee + 250}</p>
+                    <p className="text-xs text-green-500 font-medium mt-0.5">💪 Prise</p>
+                    <p className="text-xs text-gray-400 mt-0.5">+250 kcal</p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Indication si objectif coach défini */}
+              {objectifs?.kcal && (
+                <div className={`mt-3 flex items-center gap-2 text-xs px-3 py-2 rounded-lg ${theme.isFemme ? 'bg-pink-50 text-pink-700' : 'bg-brand-50 text-brand-700'}`}>
+                  <span>🎯</span>
+                  <span>
+                    Objectif fixé par ton coach : <strong>{objectifs.kcal} kcal/j</strong>
+                    {objectifs.plan_nutritionnel && (
+                      <span className="ml-1 text-gray-500">
+                        ({{'prise_de_masse': 'prise de masse', 'maintien': 'maintien', 'seche': 'sèche'}[objectifs.plan_nutritionnel]})
+                      </span>
+                    )}
+                  </span>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ── CTA si pas de TDEE calculable (profil incomplet) ── */}
+          {isWidgetEnabled('suivi_bloc') && !tdeeData && !loading && (!profile?.taille || !profile?.date_naissance) && (
+            <div className="bg-gray-50 border border-dashed border-gray-200 rounded-xl p-4 text-center">
+              <p className="text-sm text-gray-500 mb-1">Maintien calorique non disponible</p>
+              <p className="text-xs text-gray-400">Ton coach doit compléter ta taille et date de naissance pour activer ce calcul.</p>
             </div>
           )}
 
@@ -542,6 +666,7 @@ export default function AthleteHome() {
             </div>
           )}
 
+          {/* ── Objectifs nutritionnels ── */}
           {isWidgetEnabled('macros_jour') && objectifs && (
             <div className="bg-white border border-gray-100 rounded-xl p-4">
               <div className="flex items-center justify-between mb-3">
@@ -557,6 +682,7 @@ export default function AthleteHome() {
             </div>
           )}
 
+          {/* ── Séances de la semaine ── */}
           {isWidgetEnabled('semaine_seances') && seances.length > 0 && (
             <div className="bg-white border border-gray-100 rounded-xl p-4">
               <div className="flex items-center justify-between mb-2">
