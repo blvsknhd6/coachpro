@@ -1,4 +1,9 @@
 // api/invite-athlete.js
+// Utilise le SDK @supabase/supabase-js avec la service role key
+// pour inviter un athlète via la méthode officielle auth.admin.inviteUserByEmail
+
+import { createClient } from '@supabase/supabase-js'
+
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*')
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS')
@@ -10,12 +15,11 @@ export default async function handler(req, res) {
   const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY
   const supabaseUrl    = process.env.VITE_SUPABASE_URL
 
-  // ── Vérification des variables d'environnement ──────────────────────
   if (!serviceRoleKey) {
-    return res.status(500).json({ error: 'SUPABASE_SERVICE_ROLE_KEY manquante dans les variables d\'environnement Vercel' })
+    return res.status(500).json({ error: 'SUPABASE_SERVICE_ROLE_KEY manquante dans les variables Vercel' })
   }
   if (!supabaseUrl) {
-    return res.status(500).json({ error: 'VITE_SUPABASE_URL manquante dans les variables d\'environnement Vercel' })
+    return res.status(500).json({ error: 'VITE_SUPABASE_URL manquante dans les variables Vercel' })
   }
 
   const { email, full_name, coach_id, genre, redirect_to } = req.body
@@ -24,87 +28,76 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: 'email et coach_id sont requis' })
   }
 
-  // ── Nettoyage de l'URL Supabase (pas de slash final) ────────────────
-  const baseUrl = supabaseUrl.replace(/\/$/, '')
-  const inviteUrl = `${baseUrl}/auth/v1/admin/invite`
+  // ── Client admin (service role — jamais exposé côté client) ─────────
+  const supabaseAdmin = createClient(
+    supabaseUrl.replace(/\/$/, ''),
+    serviceRoleKey,
+    {
+      auth: {
+        autoRefreshToken: false,
+        persistSession:   false,
+      },
+    }
+  )
 
   try {
-    const inviteRes = await fetch(inviteUrl, {
-      method: 'POST',
-      headers: {
-        'Content-Type':  'application/json',
-        'apikey':        serviceRoleKey,
-        'Authorization': `Bearer ${serviceRoleKey}`,
-      },
-      body: JSON.stringify({
-        email,
-        data: { full_name, coach_id, role: 'athlete' },
-        redirect_to: redirect_to || `${process.env.VITE_APP_URL || ''}/onboarding`,
-      }),
-    })
+    // ── 1. Inviter l'utilisateur ─────────────────────────────────────
+    const redirectTo = redirect_to ||
+      `${process.env.VITE_APP_URL || ''}/onboarding`
 
-    // ── Parse robuste ────────────────────────────────────────────────
-    const rawText = await inviteRes.text()
-    let inviteData
-    try {
-      inviteData = JSON.parse(rawText)
-    } catch {
-      // Supabase a renvoyé du HTML ou autre chose — on expose le détail
-      console.error('Supabase non-JSON response:', rawText.slice(0, 500))
-      return res.status(502).json({
-        error: `Réponse inattendue de Supabase (HTTP ${inviteRes.status})`,
-        // On expose les 200 premiers caractères pour aider au debug
-        hint: rawText.slice(0, 200),
-        inviteUrl,
-        // Ne jamais logger la service role key complète, juste les 8 premiers caractères
-        keyPrefix: serviceRoleKey.slice(0, 8) + '...',
+    const { data: inviteData, error: inviteError } =
+      await supabaseAdmin.auth.admin.inviteUserByEmail(email, {
+        redirectTo,
+        data: {
+          full_name,
+          coach_id,
+          role: 'athlete',
+        },
       })
+
+    if (inviteError) {
+      console.error('inviteUserByEmail error:', inviteError)
+
+      // Messages d'erreur lisibles selon le code
+      let friendlyMsg = inviteError.message
+      if (inviteError.message?.includes('already been registered') ||
+          inviteError.message?.includes('already registered')) {
+        friendlyMsg = 'Cet email est déjà enregistré. L\'athlète peut se connecter directement.'
+      } else if (inviteError.message?.includes('rate limit')) {
+        friendlyMsg = 'Trop d\'invitations envoyées. Réessaie dans quelques minutes.'
+      }
+
+      return res.status(400).json({ error: friendlyMsg, detail: inviteError })
     }
 
-    if (!inviteRes.ok) {
-      // Cas fréquents :
-      // - "User already registered" → email déjà utilisé
-      // - "Email rate limit exceeded" → trop d'invitations
-      const msg =
-        inviteData?.msg ||
-        inviteData?.message ||
-        inviteData?.error_description ||
-        inviteData?.error ||
-        `Erreur Supabase (HTTP ${inviteRes.status})`
-
-      console.error('Supabase invite error:', inviteData)
-      return res.status(400).json({ error: msg, detail: inviteData })
+    const userId = inviteData?.user?.id
+    if (!userId) {
+      return res.status(500).json({ error: 'Invitation envoyée mais ID utilisateur non retourné' })
     }
 
-    // ── Création du profil ───────────────────────────────────────────
-    const profileRes = await fetch(`${baseUrl}/rest/v1/profiles`, {
-      method: 'POST',
-      headers: {
-        'Content-Type':  'application/json',
-        'apikey':        serviceRoleKey,
-        'Authorization': `Bearer ${serviceRoleKey}`,
-        'Prefer':        'return=representation',
-      },
-      body: JSON.stringify({
-        id:        inviteData.id,
+    // ── 2. Créer le profil en base ───────────────────────────────────
+    const { error: profileError } = await supabaseAdmin
+      .from('profiles')
+      .insert({
+        id:        userId,
         role:      'athlete',
         full_name: full_name || email.split('@')[0],
         email,
         coach_id,
         genre:     genre || 'femme',
         is_self:   false,
-      }),
-    })
+      })
 
-    if (!profileRes.ok) {
-      const profileText = await profileRes.text()
-      // Non bloquant : le profil existe peut-être déjà
-      console.warn('Profile creation warning:', profileText.slice(0, 200))
+    if (profileError) {
+      // Non bloquant si le profil existe déjà (code 23505 = unique violation)
+      if (profileError.code !== '23505') {
+        console.warn('Profile creation warning:', profileError)
+      }
     }
 
     return res.status(200).json({
       success: true,
-      user_id: inviteData.id,
+      user_id: userId,
       email,
       message: `Invitation envoyée à ${email}`,
     })
