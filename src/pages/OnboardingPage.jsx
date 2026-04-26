@@ -1,9 +1,4 @@
 // src/pages/OnboardingPage.jsx
-// Page de complétion du profil pour les athlètes invités via email.
-// Gère les deux formats de token Supabase :
-//   - Hash flow  : /onboarding#access_token=...&type=invite
-//   - PKCE flow  : /onboarding?code=...
-
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
@@ -24,19 +19,17 @@ export default function OnboardingPage() {
     poids:               '',
     pas_journaliers_moy: '',
     seances_semaine:     '',
+    travail_physique:    false,
     password:            '',
     password2:           '',
   })
 
-  useEffect(() => {
-    init()
-  }, [])
+  useEffect(() => { init() }, [])
 
   async function init() {
     const hash   = window.location.hash
     const search = window.location.search
 
-    // ── Cas 1 : PKCE flow → ?code= dans l'URL ──────────────────────
     const urlParams = new URLSearchParams(search)
     const code = urlParams.get('code')
 
@@ -52,7 +45,6 @@ export default function OnboardingPage() {
       }
     }
 
-    // ── Cas 2 : Hash flow → #access_token= dans l'URL ──────────────
     if (hash && hash.includes('access_token')) {
       const hashParams   = new URLSearchParams(hash.slice(1))
       const accessToken  = hashParams.get('access_token')
@@ -72,11 +64,9 @@ export default function OnboardingPage() {
       }
     }
 
-    // ── Cas 3 : Supabase a déjà traité le token automatiquement ────
     const { data: { session: existingSession } } = await supabase.auth.getSession()
     if (existingSession) { handleSession(existingSession); return }
 
-    // ── Cas 4 : Attente de l'événement auth (dernier recours) ───────
     let handled = false
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, sess) => {
       if (!handled && (event === 'SIGNED_IN' || event === 'USER_UPDATED') && sess) {
@@ -118,13 +108,9 @@ export default function OnboardingPage() {
     setSaving(true)
 
     try {
-      // 1. Mettre à jour le mot de passe
       const { error: pwErr } = await supabase.auth.updateUser({ password: form.password })
       if (pwErr) throw pwErr
 
-      // 2. Mettre à jour le profil — inclut les nouvelles colonnes d'activité
-      //    poids, pas_journaliers_moy et seances_semaine sont stockés sur le profil
-      //    pour permettre le calcul TDEE dès le premier accès, avant tout tracking.
       const { error: profileErr } = await supabase.from('profiles').update({
         full_name:           form.full_name.trim(),
         genre:               form.genre,
@@ -133,10 +119,10 @@ export default function OnboardingPage() {
         poids:               form.poids               ? Number(form.poids)               : null,
         pas_journaliers_moy: form.pas_journaliers_moy ? Number(form.pas_journaliers_moy) : null,
         seances_semaine:     form.seances_semaine      ? Number(form.seances_semaine)     : null,
+        travail_physique:    form.travail_physique,
       }).eq('id', session.user.id)
       if (profileErr) throw profileErr
 
-      // 3. Poids de départ + données d'activité initiales dans le premier bloc
       const { data: blocs } = await supabase
         .from('blocs')
         .select('id')
@@ -177,8 +163,6 @@ export default function OnboardingPage() {
     setSaving(false)
   }
 
-  // ── Écrans ─────────────────────────────────────────────────────────
-
   if (step === 'loading') {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gray-50">
@@ -199,8 +183,7 @@ export default function OnboardingPage() {
           <p className="text-sm text-gray-500 mb-5">
             Le lien d'invitation a peut-être expiré (valable 24h). Demande à ton coach de t'en envoyer un nouveau.
           </p>
-          <button onClick={() => navigate('/login')}
-            className="text-sm text-brand-600 font-medium hover:text-brand-800">
+          <button onClick={() => navigate('/login')} className="text-sm text-brand-600 font-medium hover:text-brand-800">
             Retour à la connexion →
           </button>
         </div>
@@ -220,16 +203,12 @@ export default function OnboardingPage() {
     )
   }
 
-  // ── Formulaire ─────────────────────────────────────────────────────
-
   return (
     <div className="min-h-screen flex items-center justify-center bg-gray-50 p-4">
       <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-8 w-full max-w-sm">
         <div className="mb-6">
           <h1 className="text-2xl font-semibold text-gray-900">Bienvenue 👋</h1>
-          <p className="text-sm text-gray-500 mt-1">
-            Complète ton profil pour accéder à ton espace.
-          </p>
+          <p className="text-sm text-gray-500 mt-1">Complète ton profil pour accéder à ton espace.</p>
         </div>
 
         <div className="space-y-4">
@@ -276,9 +255,7 @@ export default function OnboardingPage() {
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">Taille</label>
               <div className="flex items-center gap-1">
-                <input
-                  type="number"
-                  value={form.taille}
+                <input type="number" value={form.taille}
                   onChange={e => setForm(f => ({ ...f, taille: e.target.value }))}
                   placeholder="165"
                   className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500"
@@ -289,10 +266,7 @@ export default function OnboardingPage() {
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">Poids actuel</label>
               <div className="flex items-center gap-1">
-                <input
-                  type="number"
-                  step="0.1"
-                  value={form.poids}
+                <input type="number" step="0.1" value={form.poids}
                   onChange={e => setForm(f => ({ ...f, poids: e.target.value }))}
                   placeholder="60"
                   className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500"
@@ -314,18 +288,14 @@ export default function OnboardingPage() {
                 Moyenne de pas journaliers (sur le dernier mois)
               </label>
               <div className="flex items-center gap-2">
-                <input
-                  type="number"
-                  value={form.pas_journaliers_moy}
+                <input type="number" value={form.pas_journaliers_moy}
                   onChange={e => setForm(f => ({ ...f, pas_journaliers_moy: e.target.value }))}
                   placeholder="7500"
                   className="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500"
                 />
                 <span className="text-xs text-gray-400 flex-shrink-0">pas/jour</span>
               </div>
-              <p className="text-xs text-gray-400 mt-1">
-                Consulte ton téléphone ou ta montre connectée pour estimer.
-              </p>
+              <p className="text-xs text-gray-400 mt-1">Consulte ton téléphone ou ta montre connectée.</p>
             </div>
 
             <div>
@@ -334,9 +304,7 @@ export default function OnboardingPage() {
               </label>
               <div className="flex gap-2 flex-wrap">
                 {[1, 2, 3, 4, 5, 6].map(n => (
-                  <button
-                    key={n}
-                    type="button"
+                  <button key={n} type="button"
                     onClick={() => setForm(f => ({ ...f, seances_semaine: String(n) }))}
                     className={`w-10 h-10 rounded-lg text-sm font-medium border transition-colors ${
                       form.seances_semaine === String(n)
@@ -348,14 +316,43 @@ export default function OnboardingPage() {
                 ))}
               </div>
             </div>
+
+            {/* Travail physique */}
+            <div>
+              <button
+                type="button"
+                onClick={() => setForm(f => ({ ...f, travail_physique: !f.travail_physique }))}
+                className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl border transition-all text-sm ${
+                  form.travail_physique
+                    ? 'bg-brand-50 border-brand-200 text-brand-800'
+                    : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'
+                }`}>
+                <div className={`w-5 h-5 rounded border-2 flex items-center justify-center flex-shrink-0 transition-colors ${
+                  form.travail_physique ? 'bg-brand-600 border-brand-600' : 'border-gray-300'
+                }`}>
+                  {form.travail_physique && (
+                    <svg className="w-3 h-3 text-white" fill="none" viewBox="0 0 12 12">
+                      <path d="M2 6l3 3 5-5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                    </svg>
+                  )}
+                </div>
+                <div className="text-left">
+                  <p className="font-medium text-sm">Travail physique</p>
+                  <p className="text-xs text-gray-400 mt-0.5">Maçon, infirmière, serveur, déménageur, agriculteur…</p>
+                </div>
+              </button>
+              {form.travail_physique && (
+                <p className="text-xs text-brand-600 mt-1.5 px-1">
+                  ✓ Le multiplicateur d'activité sera augmenté d'une catégorie dans le calcul de ton maintien.
+                </p>
+              )}
+            </div>
           </div>
 
           {/* Mot de passe */}
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Créer un mot de passe</label>
-            <input
-              type="password"
-              value={form.password}
+            <input type="password" value={form.password}
               onChange={e => setForm(f => ({ ...f, password: e.target.value }))}
               placeholder="8 caractères minimum"
               className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500"
@@ -363,22 +360,16 @@ export default function OnboardingPage() {
           </div>
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Confirmer le mot de passe</label>
-            <input
-              type="password"
-              value={form.password2}
+            <input type="password" value={form.password2}
               onChange={e => setForm(f => ({ ...f, password2: e.target.value }))}
               placeholder="Répète ton mot de passe"
               className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500"
             />
           </div>
 
-          {error && (
-            <p className="text-sm text-red-500 bg-red-50 rounded-lg px-3 py-2">{error}</p>
-          )}
+          {error && <p className="text-sm text-red-500 bg-red-50 rounded-lg px-3 py-2">{error}</p>}
 
-          <button
-            onClick={handleSubmit}
-            disabled={saving}
+          <button onClick={handleSubmit} disabled={saving}
             className="w-full bg-brand-600 text-white rounded-lg py-2.5 text-sm font-medium hover:bg-brand-700 disabled:opacity-50 transition-colors">
             {saving ? 'Enregistrement…' : 'Accéder à mon espace →'}
           </button>
