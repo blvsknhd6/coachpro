@@ -101,7 +101,7 @@ export function calcTDEE(profile, activity) {
 export function nutritionSuggestions(tdee, poids, plan) {
   const adjustments = { prise_de_masse: +250, maintien: 0, seche: -350 }
   const kcal      = tdee + (adjustments[plan] ?? 0)
-  const proteines = Math.round(poids * 2)
+  const proteines = Math.round(poids * 2.4)
   const lipides   = Math.round((kcal * 0.25) / 9)
   const glucides  = Math.round((kcal - proteines * 4 - lipides * 9) / 4)
   return { kcal: Math.round(kcal), proteines, glucides, lipides }
