@@ -1,6 +1,8 @@
 // src/pages/OnboardingPage.jsx
 // Page de complétion du profil pour les athlètes invités via email.
-// Supabase redirige ici avec un token dans l'URL après clic sur le lien d'invitation.
+// Gère les deux formats de token Supabase :
+//   - Hash flow  : /onboarding#access_token=...&type=invite
+//   - PKCE flow  : /onboarding?code=...
 
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
@@ -9,10 +11,11 @@ import { supabase } from '../lib/supabase'
 export default function OnboardingPage() {
   const navigate = useNavigate()
 
-  const [step, setStep]       = useState('loading') // loading | form | done | error
+  const [step, setStep]       = useState('loading')
   const [session, setSession] = useState(null)
   const [error, setError]     = useState('')
   const [saving, setSaving]   = useState(false)
+  const [debugInfo, setDebugInfo] = useState('')
 
   const [form, setForm] = useState({
     full_name:           '',
@@ -27,35 +30,88 @@ export default function OnboardingPage() {
   })
 
   useEffect(() => {
-    // Supabase intercepte automatiquement le token dans l'URL hash (#access_token=...)
-    // et crée une session. On écoute le changement.
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, sess) => {
-      if (event === 'SIGNED_IN' && sess) {
-        setSession(sess)
+    init()
+  }, [])
 
-        // Pré-remplir le nom si disponible dans les métadonnées
-        const meta = sess.user?.user_metadata || {}
-        setForm(f => ({
-          ...f,
-          full_name: meta.full_name || '',
-        }))
+  async function init() {
+    const fullUrl = window.location.href
+    const hash    = window.location.hash
+    const search  = window.location.search
 
-        setStep('form')
-      } else if (event === 'USER_UPDATED') {
-        // Mot de passe mis à jour avec succès
+    setDebugInfo(`URL: ${fullUrl.slice(0, 100)}`)
+
+    // ── Cas 1 : PKCE flow → ?code= dans l'URL ──────────────────────
+    const urlParams = new URLSearchParams(search)
+    const code = urlParams.get('code')
+
+    if (code) {
+      try {
+        const { data, error: exchangeError } = await supabase.auth.exchangeCodeForSession(code)
+        if (exchangeError) throw exchangeError
+        if (data?.session) { handleSession(data.session); return }
+      } catch (e) {
+        console.error('PKCE exchange error:', e)
+        setStep('error')
+        return
+      }
+    }
+
+    // ── Cas 2 : Hash flow → #access_token= dans l'URL ──────────────
+    // Supabase JS intercepte automatiquement le hash au démarrage.
+    // On parse manuellement pour s'assurer de ne rien rater.
+    if (hash && hash.includes('access_token')) {
+      const hashParams = new URLSearchParams(hash.slice(1)) // retire le #
+      const accessToken  = hashParams.get('access_token')
+      const refreshToken = hashParams.get('refresh_token')
+      const type         = hashParams.get('type') // 'invite' ou 'recovery'
+
+      if (accessToken) {
+        try {
+          const { data, error: sessionError } = await supabase.auth.setSession({
+            access_token:  accessToken,
+            refresh_token: refreshToken || '',
+          })
+          if (sessionError) throw sessionError
+          if (data?.session) { handleSession(data.session); return }
+        } catch (e) {
+          console.error('Hash token error:', e)
+          // Continue vers getSession au cas où Supabase l'a déjà traité
+        }
+      }
+    }
+
+    // ── Cas 3 : Supabase a déjà traité le token automatiquement ────
+    const { data: { session: existingSession } } = await supabase.auth.getSession()
+    if (existingSession) { handleSession(existingSession); return }
+
+    // ── Cas 4 : Attente de l'événement auth (dernier recours) ───────
+    let handled = false
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, sess) => {
+      if (!handled && (event === 'SIGNED_IN' || event === 'USER_UPDATED') && sess) {
+        handled = true
+        subscription.unsubscribe()
+        clearTimeout(timeoutId)
+        handleSession(sess)
       }
     })
 
-    // Timeout : si après 5s pas de session, afficher erreur
-    const timeout = setTimeout(() => {
-      setStep(s => s === 'loading' ? 'error' : s)
-    }, 5000)
-
-    return () => {
+    // Timeout 15s
+    const timeoutId = setTimeout(async () => {
+      if (handled) return
       subscription.unsubscribe()
-      clearTimeout(timeout)
-    }
-  }, [])
+      // Ultime vérification
+      const { data: { session: last } } = await supabase.auth.getSession()
+      if (last) { handleSession(last) }
+      else { setStep('error') }
+    }, 15000)
+  }
+
+  function handleSession(sess) {
+    setSession(sess)
+    const meta = sess.user?.user_metadata || {}
+    setForm(f => ({ ...f, full_name: meta.full_name || '' }))
+    setStep('form')
+  }
 
   async function handleSubmit() {
     setError('')
@@ -66,16 +122,14 @@ export default function OnboardingPage() {
     if (!form.pas_journaliers_moy)        return setError('Les pas journaliers sont requis.')
     if (!form.seances_semaine)            return setError('Le nombre de séances par semaine est requis.')
     if (!form.password)                   return setError('Le mot de passe est requis.')
-    if (form.password.length < 8)        return setError('Le mot de passe doit faire au moins 8 caractères.')
+    if (form.password.length < 8)         return setError('Le mot de passe doit faire au moins 8 caractères.')
     if (form.password !== form.password2) return setError('Les mots de passe ne correspondent pas.')
 
     setSaving(true)
 
     try {
       // 1. Mettre à jour le mot de passe
-      const { error: pwErr } = await supabase.auth.updateUser({
-        password: form.password,
-      })
+      const { error: pwErr } = await supabase.auth.updateUser({ password: form.password })
       if (pwErr) throw pwErr
 
       // 2. Mettre à jour le profil
@@ -89,29 +143,24 @@ export default function OnboardingPage() {
 
       // 3. Poids de départ + données d'activité initiales
       const { data: blocs } = await supabase.from('blocs')
-        .select('id').eq('athlete_id', session.user.id).order('created_at', { ascending: false }).limit(1)
+        .select('id').eq('athlete_id', session.user.id)
+        .order('created_at', { ascending: false }).limit(1)
 
       const today = new Date().toISOString().split('T')[0]
 
       if (blocs?.[0]) {
         const blocId = blocs[0].id
-
         await Promise.all([
-          // Poids de départ sur le bloc
           form.poids
             ? supabase.from('blocs').update({ poids_depart: Number(form.poids) }).eq('id', blocId)
             : null,
-
-          // Entrée data_tracking avec poids + pas du jour
           supabase.from('data_tracking').upsert({
             athlete_id:      session.user.id,
             bloc_id:         blocId,
             date:            today,
-            poids:           form.poids           ? Number(form.poids)                        : null,
+            poids:           form.poids           ? Number(form.poids)               : null,
             pas_journaliers: form.pas_journaliers_moy ? Number(form.pas_journaliers_moy) : null,
           }, { onConflict: 'athlete_id,date' }),
-
-          // Objectifs du bloc : séances/semaine + pas journaliers comme objectif de référence
           supabase.from('objectifs_bloc').upsert({
             bloc_id:             blocId,
             seances_par_semaine: form.seances_semaine     ? Number(form.seances_semaine)     : null,
@@ -129,6 +178,8 @@ export default function OnboardingPage() {
 
     setSaving(false)
   }
+
+  // ── Écrans ─────────────────────────────────────────────────────────
 
   if (step === 'loading') {
     return (
@@ -171,11 +222,13 @@ export default function OnboardingPage() {
     )
   }
 
+  // ── Formulaire ─────────────────────────────────────────────────────
+
   return (
     <div className="min-h-screen flex items-center justify-center bg-gray-50 p-4">
       <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-8 w-full max-w-sm">
         <div className="mb-6">
-          <h1 className="text-2xl font-semibold text-gray-900">Bienvenue</h1>
+          <h1 className="text-2xl font-semibold text-gray-900">Bienvenue 👋</h1>
           <p className="text-sm text-gray-500 mt-1">
             Complète ton profil pour accéder à ton espace.
           </p>
@@ -202,7 +255,7 @@ export default function OnboardingPage() {
                 <button key={g} type="button"
                   onClick={() => setForm(f => ({ ...f, genre: g }))}
                   className={`flex-1 py-2 rounded-lg text-sm font-medium border transition-colors ${form.genre === g ? 'bg-brand-600 text-white border-brand-600' : 'border-gray-200 text-gray-600'}`}>
-                  {g === 'femme' ? 'Femme' : 'Homme'}
+                  {g === 'femme' ? '♀ Femme' : '♂ Homme'}
                 </button>
               ))}
             </div>
