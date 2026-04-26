@@ -255,7 +255,7 @@ export default function OnboardingPage() {
                 <button key={g} type="button"
                   onClick={() => setForm(f => ({ ...f, genre: g }))}
                   className={`flex-1 py-2 rounded-lg text-sm font-medium border transition-colors ${form.genre === g ? 'bg-brand-600 text-white border-brand-600' : 'border-gray-200 text-gray-600'}`}>
-                  {g === 'femme' ? '♀ Femme' : '♂ Homme'}
+                  {g === 'femme' ? 'Femme' : 'Homme'}
                 </button>
               ))}
             </div>
