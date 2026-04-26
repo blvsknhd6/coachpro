@@ -79,13 +79,13 @@ export default function AthleteHome() {
   const [showConfig, setShowConfig] = useState(false)
   const photoInputRef = useRef(null)
 
-  const [nextSeance, setNextSeance]       = useState(null)
-  const [streak, setStreak]               = useState(0)
-  const [objectifs, setObjectifs]         = useState(null)
-  const [activeSemaine, setActiveSemaine] = useState(null)
-  const [seances, setSeances]             = useState([])
-  const [loading, setLoading]             = useState(true)
-  const [activeBlocId, setActiveBlocId]   = useState(null)
+  const [nextSeance, setNextSeance]         = useState(null)
+  const [objectifs, setObjectifs]           = useState(null)
+  const [activeSemaine, setActiveSemaine]   = useState(null)
+  const [seances, setSeances]               = useState([])
+  const [loading, setLoading]               = useState(true)
+  const [loadingTdee, setLoadingTdee]       = useState(false)
+  const [activeBlocId, setActiveBlocId]     = useState(null)
 
   const [repasInput, setRepasInput]         = useState('')
   const [repasJour, setRepasJour]           = useState([])
@@ -97,7 +97,7 @@ export default function AthleteHome() {
   const [suiviSemaine, setSuiviSemaine]     = useState(null)
   const [tdeeData, setTdeeData]             = useState(null)
 
-  // Panneau d'ajustement des macros : { source: 'text'|'photo'|'favori', data, description }
+  // Panneau d'ajustement des macros
   const [pendingMacros, setPendingMacros] = useState(null)
 
   const today      = new Date().toISOString().split('T')[0]
@@ -109,15 +109,13 @@ export default function AthleteHome() {
   useEffect(() => { if (profile) fetchAll() }, [profile])
 
   async function fetchAll() {
-    const [blocsRes, streakRes] = await Promise.all([
-      supabase.from('blocs').select('id, name, objectifs_bloc(*)')
-        .eq('athlete_id', profile.id).order('created_at', { ascending: false }).limit(1),
-      supabase.from('data_tracking').select('date')
-        .eq('athlete_id', profile.id).eq('sport_fait', true)
-        .order('date', { ascending: false }).limit(30),
-    ])
+    const { data: blocs } = await supabase
+      .from('blocs')
+      .select('id, name, objectifs_bloc(*)')
+      .eq('athlete_id', profile.id)
+      .order('created_at', { ascending: false })
+      .limit(1)
 
-    const blocs = blocsRes.data
     if (blocs?.[0]) {
       setActiveBlocId(blocs[0].id)
       const obj = Array.isArray(blocs[0].objectifs_bloc) ? blocs[0].objectifs_bloc[0] : blocs[0].objectifs_bloc
@@ -129,13 +127,6 @@ export default function AthleteHome() {
       setLoading(false)
     }
 
-    let s = 0
-    const dates = (streakRes.data || []).map(t => t.date).sort().reverse()
-    for (let i = 0; i < dates.length; i++) {
-      const expected = new Date(); expected.setDate(expected.getDate() - i)
-      if (dates[i] === expected.toISOString().split('T')[0]) s++; else break
-    }
-    setStreak(s)
     fetchRepasJour()
     fetchFavoris()
   }
@@ -151,7 +142,8 @@ export default function AthleteHome() {
     const { data: sc } = await supabase
       .from('seances')
       .select('id, nom, ordre, exercices(id, series_realisees(id))')
-      .eq('semaine_id', activeSem.id).order('ordre')
+      .eq('semaine_id', activeSem.id)
+      .order('ordre')
     setSeances(sc || [])
 
     const seancesNormales = (sc || []).filter(s =>
@@ -170,29 +162,38 @@ export default function AthleteHome() {
   }
 
   async function fetchSuiviSemaine(blocId) {
-    const { data } = await supabase.from('data_tracking').select('*')
-      .eq('athlete_id', profile.id).eq('bloc_id', blocId)
-      .order('date', { ascending: false }).limit(7)
+    const { data } = await supabase
+      .from('data_tracking')
+      .select('*')
+      .eq('athlete_id', profile.id)
+      .eq('bloc_id', blocId)
+      .order('date', { ascending: false })
+      .limit(7)
     if (!data?.length) return
     const avgs = computeAverages(data, ['kcal', 'proteines', 'glucides', 'lipides', 'sommeil', 'pas', 'stress'])
     setSuiviSemaine({ avgs, sportJours: data.filter(d => d.sport_fait).length, nbJours: data.length })
   }
 
-async function fetchTdee() {
-    if (!athlete?.taille || !athlete?.date_naissance) return
+  /**
+   * Calcule le TDEE de l'athlète.
+   * Sources de données par ordre de priorité :
+   *   Poids    → data_tracking (dernier enregistré) > profile.poids (onboarding)
+   *   Activité → data_tracking 30j (si ≥7 entrées)  > objectifs_bloc > profile (onboarding)
+   */
+  async function fetchTdee(blocId) {
+    if (!profile?.taille || !profile?.date_naissance) return
     setLoadingTdee(true)
 
-    // 1. Chercher le poids dans le tracking
+    // 1. Poids : tracking d'abord, profil (onboarding) en fallback
     const { data: poidsData } = await supabase
       .from('data_tracking')
       .select('poids, date')
-      .eq('athlete_id', athlete.id)
+      .eq('athlete_id', profile.id)
       .not('poids', 'is', null)
       .order('date', { ascending: false })
       .limit(1)
 
-    // NOUVEAU : On prend le poids du tracking, SINON on prend le poids renseigné à l'onboarding (profil)
-    const poids = poidsData?.[0]?.poids || athlete.poids
+    const poids = poidsData?.[0]?.poids || profile.poids
     if (!poids) { setLoadingTdee(false); return }
 
     // 2. Moyennes d'activité sur les 30 derniers jours de tracking
@@ -201,38 +202,44 @@ async function fetchTdee() {
     const { data: tracking } = await supabase
       .from('data_tracking')
       .select('pas_journaliers, sport_fait, date')
-      .eq('athlete_id', athlete.id)
+      .eq('athlete_id', profile.id)
       .gte('date', thirtyAgo.toISOString().split('T')[0])
       .order('date')
 
-    const entries          = tracking || []
-    const pasVals          = entries.map(e => e.pas_journaliers).filter(v => v != null)
+    const entries = tracking || []
+    const pasVals = entries.map(e => e.pas_journaliers).filter(v => v != null)
     const pasJournaliersMoy = pasVals.length
       ? pasVals.reduce((a, b) => a + b, 0) / pasVals.length
       : 0
-    const sportJours        = entries.filter(e => e.sport_fait).length
-    const nbSemaines        = Math.max(1, entries.length / 7)
-    const seancesTracking   = sportJours / nbSemaines
+    const sportJours      = entries.filter(e => e.sport_fait).length
+    const nbSemaines      = Math.max(1, entries.length / 7)
+    const seancesTracking = sportJours / nbSemaines
 
-    // Objectifs du bloc pour le fallback d'activité
+    // 3. Objectifs du bloc (fallback niveau 2)
     const { data: objBloc } = await supabase
       .from('objectifs_bloc')
       .select('pas_journaliers, seances_par_semaine')
-      .eq('bloc_id', bloc.id)
+      .eq('bloc_id', blocId)
       .single()
 
     const hasSufficientTracking = entries.length >= 7
-    
-    // NOUVEAU : Fallback intelligent -> 1. Tracking > 2. Objectif Bloc > 3. Profil (onboarding) > 4. Zéro
+
+    // Priorité : tracking 30j > objectifs_bloc > profil onboarding
     const pasUsed = hasSufficientTracking
       ? pasJournaliersMoy
-      : (objBloc?.pas_journaliers || pasJournaliersMoy || athlete.pas_journaliers_moy || 0)
+      : (objBloc?.pas_journaliers || profile.pas_journaliers_moy || 0)
+
     const seancesUsed = hasSufficientTracking
       ? seancesTracking
-      : (objBloc?.seances_par_semaine || seancesTracking || athlete.seances_semaine || 0)
+      : (objBloc?.seances_par_semaine || profile.seances_semaine || 0)
 
     const result = calcTDEE(
-      { poids, taille: athlete.taille, date_naissance: athlete.date_naissance, genre: athlete.genre },
+      {
+        poids,
+        taille:         profile.taille,
+        date_naissance: profile.date_naissance,
+        genre:          profile.genre,
+      },
       { pasJournaliersMoy: pasUsed, seancesParSemaine: seancesUsed }
     )
 
@@ -240,18 +247,22 @@ async function fetchTdee() {
       setTdeeData({
         ...result,
         poids,
-        pasJournaliersMoy:  Math.round(pasUsed),
-        seancesParSemaine:  parseFloat(seancesUsed.toFixed(1)),
-        lastPoidsDate:      poidsData?.[0]?.date || 'Onboarding', // Indique si ça vient du profil initial
-        sourceActivite:     hasSufficientTracking ? 'tracking' : 'onboarding',
+        pasJournaliersMoy: Math.round(pasUsed),
+        seancesParSemaine: parseFloat(seancesUsed.toFixed(1)),
+        lastPoidsDate:     poidsData?.[0]?.date || 'Onboarding',
+        sourceActivite:    hasSufficientTracking ? 'tracking' : 'onboarding',
       })
     }
     setLoadingTdee(false)
   }
 
   async function fetchRepasJour() {
-    const { data } = await supabase.from('repas').select('*')
-      .eq('athlete_id', profile.id).eq('date', today).order('created_at')
+    const { data } = await supabase
+      .from('repas')
+      .select('*')
+      .eq('athlete_id', profile.id)
+      .eq('date', today)
+      .order('created_at')
     const list = data || []
     setRepasJour(list)
     recalcTotals(list)
@@ -269,12 +280,15 @@ async function fetchTdee() {
   }
 
   async function fetchFavoris() {
-    const { data } = await supabase.from('repas_favoris').select('*')
-      .eq('athlete_id', profile.id).order('nom')
+    const { data } = await supabase
+      .from('repas_favoris')
+      .select('*')
+      .eq('athlete_id', profile.id)
+      .order('nom')
     setFavoris(data || [])
   }
 
-  // ── Analyse texte → ouvre le panneau d'ajustement ────────────────────
+  // ── Analyse texte → ouvre le panneau d'ajustement ───────────────────
   async function analyzeRepas() {
     if (!repasInput.trim()) return
     setAnalyzeLoading(true)
@@ -291,7 +305,7 @@ async function fetchTdee() {
     setAnalyzeLoading(false)
   }
 
-  // ── Photo étiquette → ouvre le panneau d'ajustement ──────────────────
+  // ── Photo étiquette → ouvre le panneau d'ajustement ─────────────────
   async function handlePhoto(e) {
     const file = e.target.files?.[0]
     if (!file) return
@@ -310,12 +324,11 @@ async function fetchTdee() {
       const macros = await response.json()
       setPendingMacros({ source: 'photo', data: macros, description: '📷 Photo étiquette' })
     } catch (e) { console.error('handlePhoto:', e) }
-    // Reset input pour permettre de reprendre la même photo
     e.target.value = ''
     setPhotoLoading(false)
   }
 
-  // ── Ajout depuis un favori → ouvre le panneau d'ajustement ───────────
+  // ── Ajout depuis un favori → ouvre le panneau d'ajustement ──────────
   function addFavoriWithAdjust(f) {
     setPendingMacros({
       source:      'favori',
@@ -326,10 +339,10 @@ async function fetchTdee() {
     setShowFavoris(false)
   }
 
-  // ── Validation après ajustement ───────────────────────────────────────
+  // ── Validation après ajustement ─────────────────────────────────────
   async function confirmMacros(adjustedMacros) {
     if (!pendingMacros) return
-    const description = pendingMacros.source === 'text' ? pendingMacros.description
+    const description = pendingMacros.source === 'text'   ? pendingMacros.description
       : pendingMacros.source === 'favori' ? (pendingMacros.favori.description || pendingMacros.favori.nom)
       : pendingMacros.description
 
@@ -346,19 +359,25 @@ async function fetchTdee() {
     if (pendingMacros.source === 'text') setRepasInput('')
     setPendingMacros(null)
 
-    const { data: allRepas } = await supabase.from('repas').select('*')
-      .eq('athlete_id', profile.id).eq('date', today).order('created_at')
+    const { data: allRepas } = await supabase
+      .from('repas')
+      .select('*')
+      .eq('athlete_id', profile.id)
+      .eq('date', today)
+      .order('created_at')
     const list = allRepas || []
     setRepasJour(list)
     const newTotals = recalcTotals(list)
 
     if (activeBlocId) {
       await supabase.from('data_tracking').upsert({
-        athlete_id: profile.id, date: today, bloc_id: activeBlocId,
-        kcal:      Math.round(newTotals.kcal),
-        proteines: Math.round(newTotals.proteines * 10) / 10,
-        glucides:  Math.round(newTotals.glucides  * 10) / 10,
-        lipides:   Math.round(newTotals.lipides   * 10) / 10,
+        athlete_id: profile.id,
+        date:        today,
+        bloc_id:     activeBlocId,
+        kcal:        Math.round(newTotals.kcal),
+        proteines:   Math.round(newTotals.proteines * 10) / 10,
+        glucides:    Math.round(newTotals.glucides  * 10) / 10,
+        lipides:     Math.round(newTotals.lipides   * 10) / 10,
       }, { onConflict: 'athlete_id,date' })
     }
   }
@@ -367,8 +386,13 @@ async function fetchTdee() {
     const nom = window.prompt('Nom ?', repas.description.slice(0, 40))
     if (!nom) return
     await supabase.from('repas_favoris').insert({
-      athlete_id: profile.id, nom, description: repas.description,
-      kcal: repas.kcal, proteines: repas.proteines, glucides: repas.glucides, lipides: repas.lipides
+      athlete_id:  profile.id,
+      nom,
+      description: repas.description,
+      kcal:        repas.kcal,
+      proteines:   repas.proteines,
+      glucides:    repas.glucides,
+      lipides:     repas.lipides,
     })
     await fetchFavoris()
   }
@@ -451,7 +475,8 @@ async function fetchTdee() {
             <div className={`${accentBg} text-white rounded-2xl p-4`}>
               <p className="text-xs font-medium opacity-70 mb-0.5">Prochaine séance</p>
               <p className="text-base font-semibold mb-2">{nextSeance.seance.nom}</p>
-              <button onClick={() => navigate(`/athlete/seance/${nextSeance.seance.id}/semaine/${nextSeance.semaineId}`)}
+              <button
+                onClick={() => navigate(`/athlete/seance/${nextSeance.seance.id}/semaine/${nextSeance.semaineId}`)}
                 className="bg-white px-3 py-1.5 rounded-xl text-xs font-medium hover:opacity-90"
                 style={{ color: theme.isFemme ? '#db2777' : '#4f46e5' }}>
                 Commencer
@@ -488,45 +513,54 @@ async function fetchTdee() {
           )}
 
           {/* ── Maintien calorique estimé (TDEE) ── */}
-          {isWidgetEnabled('suivi_bloc') && tdeeData && (
-            <div className="bg-white border border-gray-100 rounded-xl p-4">
-              <div className="flex items-center justify-between mb-3">
-                <p className="text-sm font-medium text-gray-700">Mon maintien estimé</p>
-                <Link to="/athlete/tracking" className={`text-xs ${accentText} font-medium`}>
-                  Mon suivi →
-                </Link>
-              </div>
-              <div className="flex items-start gap-4">
-                {/* Valeur principale */}
-                <div className="flex-shrink-0">
-                  <p className={`text-xl font-bold ${accentText} leading-none`}>
-                    {tdeeData.tdee} kcal / jour</p>
-                </div>                
-              </div>
-
-              {/* Indication si objectif coach défini */}
-              {objectifs?.kcal && (
-                <div className={`mt-3 flex items-center gap-2 text-xs px-3 py-2 rounded-lg ${theme.isFemme ? 'bg-pink-50 text-pink-700' : 'bg-brand-50 text-brand-700'}`}>
-                  <span>🎯</span>
-                  <span>
-                    Objectif fixé par ton coach : <strong>{objectifs.kcal} kcal/j</strong>
-                    {objectifs.plan_nutritionnel && (
-                      <span className="ml-1 text-gray-500">
-                        ({{'prise_de_masse': 'prise de masse', 'maintien': 'maintien', 'seche': 'sèche'}[objectifs.plan_nutritionnel]})
-                      </span>
-                    )}
-                  </span>
+          {isWidgetEnabled('suivi_bloc') && (
+            loadingTdee ? (
+              <div className="h-20 bg-gray-100 rounded-xl animate-pulse" />
+            ) : tdeeData ? (
+              <div className="bg-white border border-gray-100 rounded-xl p-4">
+                <div className="flex items-center justify-between mb-3">
+                  <p className="text-sm font-medium text-gray-700">Mon maintien estimé</p>
+                  <Link to="/athlete/tracking" className={`text-xs ${accentText} font-medium`}>
+                    Mon suivi →
+                  </Link>
                 </div>
-              )}
-            </div>
-          )}
+                <div className="flex items-start gap-4">
+                  <div className="flex-shrink-0">
+                    <p className={`text-xl font-bold ${accentText} leading-none`}>
+                      {tdeeData.tdee} kcal / jour
+                    </p>
+                    <p className="text-xs text-gray-400 mt-1">
+                      BMR {tdeeData.bmr} kcal · ×{tdeeData.multiplier} ({tdeeData.activityLabel})
+                    </p>
+                    <p className="text-xs text-gray-300 mt-0.5">
+                      {tdeeData.poids}kg · {tdeeData.pasJournaliersMoy.toLocaleString('fr')} pas/j · {tdeeData.seancesParSemaine} séances/sem
+                      {tdeeData.sourceActivite === 'onboarding' ? ' · données onboarding' : ' · 30j tracking'}
+                    </p>
+                  </div>
+                </div>
 
-          {/* ── CTA si pas de TDEE calculable (profil incomplet) ── */}
-          {isWidgetEnabled('suivi_bloc') && !tdeeData && !loading && (!profile?.taille || !profile?.date_naissance) && (
-            <div className="bg-gray-50 border border-dashed border-gray-200 rounded-xl p-4 text-center">
-              <p className="text-sm text-gray-500 mb-1">Maintien calorique non disponible</p>
-              <p className="text-xs text-gray-400">Ton coach doit compléter ta taille et date de naissance pour activer ce calcul.</p>
-            </div>
+                {/* Indication si objectif coach défini */}
+                {objectifs?.kcal && (
+                  <div className={`mt-3 flex items-center gap-2 text-xs px-3 py-2 rounded-lg ${theme.isFemme ? 'bg-pink-50 text-pink-700' : 'bg-brand-50 text-brand-700'}`}>
+                    <span>🎯</span>
+                    <span>
+                      Objectif fixé par ton coach : <strong>{objectifs.kcal} kcal/j</strong>
+                      {objectifs.plan_nutritionnel && (
+                        <span className="ml-1 text-gray-500">
+                          ({{'prise_de_masse': 'prise de masse', 'maintien': 'maintien', 'seche': 'sèche'}[objectifs.plan_nutritionnel]})
+                        </span>
+                      )}
+                    </span>
+                  </div>
+                )}
+              </div>
+            ) : !profile?.taille || !profile?.date_naissance ? (
+              // CTA si profil incomplet
+              <div className="bg-gray-50 border border-dashed border-gray-200 rounded-xl p-4 text-center">
+                <p className="text-sm text-gray-500 mb-1">Maintien calorique non disponible</p>
+                <p className="text-xs text-gray-400">Ton coach doit compléter ta taille et date de naissance pour activer ce calcul.</p>
+              </div>
+            ) : null
           )}
 
           {/* ── Widget saisie repas ── */}
@@ -585,7 +619,6 @@ async function fetchTdee() {
                   placeholder="Ex: 2 oeufs, 80g flocons, 200ml lait…"
                   className="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-gray-300"
                 />
-                {/* Bouton photo étiquette */}
                 <button
                   onClick={() => photoInputRef.current?.click()}
                   disabled={photoLoading}
@@ -670,7 +703,9 @@ async function fetchTdee() {
                   const done     = sc.exercices?.filter(e => (e.series_realisees?.length || 0) > 0).length || 0
                   const complete = done >= total && total > 0
                   return (
-                    <Link key={sc.id} to={`/athlete/seance/${sc.id}/semaine/${activeSemaine?.id}`}
+                    <Link
+                      key={sc.id}
+                      to={`/athlete/seance/${sc.id}/semaine/${activeSemaine?.id}`}
                       className={`flex items-center justify-between py-1.5 px-2 rounded-lg ${complete ? 'bg-green-50' : 'hover:bg-gray-50'}`}>
                       <span className={`text-sm ${complete ? 'text-green-700' : 'text-gray-700'}`}>{sc.nom}</span>
                       <span className={`text-xs ${complete ? 'text-green-600 font-medium' : 'text-gray-400'}`}>

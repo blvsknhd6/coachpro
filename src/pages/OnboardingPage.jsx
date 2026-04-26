@@ -15,7 +15,6 @@ export default function OnboardingPage() {
   const [session, setSession] = useState(null)
   const [error, setError]     = useState('')
   const [saving, setSaving]   = useState(false)
-  const [debugInfo, setDebugInfo] = useState('')
 
   const [form, setForm] = useState({
     full_name:           '',
@@ -34,11 +33,8 @@ export default function OnboardingPage() {
   }, [])
 
   async function init() {
-    const fullUrl = window.location.href
-    const hash    = window.location.hash
-    const search  = window.location.search
-
-    setDebugInfo(`URL: ${fullUrl.slice(0, 100)}`)
+    const hash   = window.location.hash
+    const search = window.location.search
 
     // ── Cas 1 : PKCE flow → ?code= dans l'URL ──────────────────────
     const urlParams = new URLSearchParams(search)
@@ -57,13 +53,10 @@ export default function OnboardingPage() {
     }
 
     // ── Cas 2 : Hash flow → #access_token= dans l'URL ──────────────
-    // Supabase JS intercepte automatiquement le hash au démarrage.
-    // On parse manuellement pour s'assurer de ne rien rater.
     if (hash && hash.includes('access_token')) {
-      const hashParams = new URLSearchParams(hash.slice(1)) // retire le #
+      const hashParams   = new URLSearchParams(hash.slice(1))
       const accessToken  = hashParams.get('access_token')
       const refreshToken = hashParams.get('refresh_token')
-      const type         = hashParams.get('type') // 'invite' ou 'recovery'
 
       if (accessToken) {
         try {
@@ -75,7 +68,6 @@ export default function OnboardingPage() {
           if (data?.session) { handleSession(data.session); return }
         } catch (e) {
           console.error('Hash token error:', e)
-          // Continue vers getSession au cas où Supabase l'a déjà traité
         }
       }
     }
@@ -95,11 +87,9 @@ export default function OnboardingPage() {
       }
     })
 
-    // Timeout 15s
     const timeoutId = setTimeout(async () => {
       if (handled) return
       subscription.unsubscribe()
-      // Ultime vérification
       const { data: { session: last } } = await supabase.auth.getSession()
       if (last) { handleSession(last) }
       else { setStep('error') }
@@ -132,19 +122,27 @@ export default function OnboardingPage() {
       const { error: pwErr } = await supabase.auth.updateUser({ password: form.password })
       if (pwErr) throw pwErr
 
-      // 2. Mettre à jour le profil
+      // 2. Mettre à jour le profil — inclut les nouvelles colonnes d'activité
+      //    poids, pas_journaliers_moy et seances_semaine sont stockés sur le profil
+      //    pour permettre le calcul TDEE dès le premier accès, avant tout tracking.
       const { error: profileErr } = await supabase.from('profiles').update({
-        full_name:      form.full_name.trim(),
-        genre:          form.genre,
-        date_naissance: form.date_naissance,
-        taille:         form.taille ? Number(form.taille) : null,
+        full_name:           form.full_name.trim(),
+        genre:               form.genre,
+        date_naissance:      form.date_naissance,
+        taille:              form.taille              ? Number(form.taille)              : null,
+        poids:               form.poids               ? Number(form.poids)               : null,
+        pas_journaliers_moy: form.pas_journaliers_moy ? Number(form.pas_journaliers_moy) : null,
+        seances_semaine:     form.seances_semaine      ? Number(form.seances_semaine)     : null,
       }).eq('id', session.user.id)
       if (profileErr) throw profileErr
 
-      // 3. Poids de départ + données d'activité initiales
-      const { data: blocs } = await supabase.from('blocs')
-        .select('id').eq('athlete_id', session.user.id)
-        .order('created_at', { ascending: false }).limit(1)
+      // 3. Poids de départ + données d'activité initiales dans le premier bloc
+      const { data: blocs } = await supabase
+        .from('blocs')
+        .select('id')
+        .eq('athlete_id', session.user.id)
+        .order('created_at', { ascending: false })
+        .limit(1)
 
       const today = new Date().toISOString().split('T')[0]
 
@@ -158,13 +156,13 @@ export default function OnboardingPage() {
             athlete_id:      session.user.id,
             bloc_id:         blocId,
             date:            today,
-            poids:           form.poids           ? Number(form.poids)               : null,
+            poids:           form.poids               ? Number(form.poids)               : null,
             pas_journaliers: form.pas_journaliers_moy ? Number(form.pas_journaliers_moy) : null,
           }, { onConflict: 'athlete_id,date' }),
           supabase.from('objectifs_bloc').upsert({
             bloc_id:             blocId,
-            seances_par_semaine: form.seances_semaine     ? Number(form.seances_semaine)     : null,
-            pas_journaliers:     form.pas_journaliers_moy ? Number(form.pas_journaliers_moy) : null,
+            seances_par_semaine: form.seances_semaine      ? Number(form.seances_semaine)     : null,
+            pas_journaliers:     form.pas_journaliers_moy  ? Number(form.pas_journaliers_moy) : null,
           }, { onConflict: 'bloc_id' }),
         ].filter(Boolean))
       }
@@ -278,7 +276,9 @@ export default function OnboardingPage() {
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">Taille</label>
               <div className="flex items-center gap-1">
-                <input type="number" value={form.taille}
+                <input
+                  type="number"
+                  value={form.taille}
                   onChange={e => setForm(f => ({ ...f, taille: e.target.value }))}
                   placeholder="165"
                   className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500"
@@ -289,7 +289,10 @@ export default function OnboardingPage() {
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">Poids actuel</label>
               <div className="flex items-center gap-1">
-                <input type="number" step="0.1" value={form.poids}
+                <input
+                  type="number"
+                  step="0.1"
+                  value={form.poids}
                   onChange={e => setForm(f => ({ ...f, poids: e.target.value }))}
                   placeholder="60"
                   className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500"
@@ -302,14 +305,18 @@ export default function OnboardingPage() {
           {/* Activité */}
           <div className="bg-blue-50 border border-blue-100 rounded-xl p-4 space-y-3">
             <p className="text-xs font-semibold text-blue-700">Niveau d'activité</p>
-            <p className="text-xs text-blue-500">Ces infos permettront à ton coach de calculer tes besoins caloriques.</p>
+            <p className="text-xs text-blue-500">
+              Ces infos permettront à ton coach de calculer tes besoins caloriques dès maintenant.
+            </p>
 
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">
                 Moyenne de pas journaliers (sur le dernier mois)
               </label>
               <div className="flex items-center gap-2">
-                <input type="number" value={form.pas_journaliers_moy}
+                <input
+                  type="number"
+                  value={form.pas_journaliers_moy}
                   onChange={e => setForm(f => ({ ...f, pas_journaliers_moy: e.target.value }))}
                   placeholder="7500"
                   className="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500"
@@ -327,9 +334,15 @@ export default function OnboardingPage() {
               </label>
               <div className="flex gap-2 flex-wrap">
                 {[1, 2, 3, 4, 5, 6].map(n => (
-                  <button key={n} type="button"
+                  <button
+                    key={n}
+                    type="button"
                     onClick={() => setForm(f => ({ ...f, seances_semaine: String(n) }))}
-                    className={`w-10 h-10 rounded-lg text-sm font-medium border transition-colors ${form.seances_semaine === String(n) ? 'bg-brand-600 text-white border-brand-600' : 'bg-white border-gray-200 text-gray-600 hover:border-brand-300'}`}>
+                    className={`w-10 h-10 rounded-lg text-sm font-medium border transition-colors ${
+                      form.seances_semaine === String(n)
+                        ? 'bg-brand-600 text-white border-brand-600'
+                        : 'bg-white border-gray-200 text-gray-600 hover:border-brand-300'
+                    }`}>
                     {n}
                   </button>
                 ))}
