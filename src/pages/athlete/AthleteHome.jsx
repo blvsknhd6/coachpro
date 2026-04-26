@@ -178,53 +178,75 @@ export default function AthleteHome() {
     setSuiviSemaine({ avgs, sportJours: data.filter(d => d.sport_fait).length, nbJours: data.length })
   }
 
-  async function fetchTdee(blocId) {
-    if (!profile?.taille || !profile?.date_naissance) return
+async function fetchTdee() {
+    if (!athlete?.taille || !athlete?.date_naissance) return
+    setLoadingTdee(true)
 
-    // Dernier poids connu
+    // 1. Chercher le poids dans le tracking
     const { data: poidsData } = await supabase
       .from('data_tracking')
       .select('poids, date')
-      .eq('athlete_id', profile.id)
+      .eq('athlete_id', athlete.id)
       .not('poids', 'is', null)
       .order('date', { ascending: false })
       .limit(1)
-    const poids = poidsData?.[0]?.poids
-    if (!poids) return
 
-    // Activité sur 30 jours
+    // NOUVEAU : On prend le poids du tracking, SINON on prend le poids renseigné à l'onboarding (profil)
+    const poids = poidsData?.[0]?.poids || athlete.poids
+    if (!poids) { setLoadingTdee(false); return }
+
+    // 2. Moyennes d'activité sur les 30 derniers jours de tracking
     const thirtyAgo = new Date()
     thirtyAgo.setDate(thirtyAgo.getDate() - 30)
     const { data: tracking } = await supabase
       .from('data_tracking')
-      .select('pas_journaliers, sport_fait')
-      .eq('athlete_id', profile.id)
+      .select('pas_journaliers, sport_fait, date')
+      .eq('athlete_id', athlete.id)
       .gte('date', thirtyAgo.toISOString().split('T')[0])
+      .order('date')
 
-    const entries    = tracking || []
-    const pasVals    = entries.map(e => e.pas_journaliers).filter(v => v != null)
-    const pasMoy     = pasVals.length ? pasVals.reduce((a, b) => a + b, 0) / pasVals.length : 0
-    const sportJours = entries.filter(e => e.sport_fait).length
-    const nbSemaines = Math.max(1, entries.length / 7)
-    const seancesMoy = sportJours / nbSemaines
+    const entries          = tracking || []
+    const pasVals          = entries.map(e => e.pas_journaliers).filter(v => v != null)
+    const pasJournaliersMoy = pasVals.length
+      ? pasVals.reduce((a, b) => a + b, 0) / pasVals.length
+      : 0
+    const sportJours        = entries.filter(e => e.sport_fait).length
+    const nbSemaines        = Math.max(1, entries.length / 7)
+    const seancesTracking   = sportJours / nbSemaines
 
-    // Fallback sur les objectifs du bloc si pas assez de tracking
-    let pasUsed = pasMoy, seancesUsed = seancesMoy
-    if (entries.length < 7 && blocId) {
-      const { data: obj } = await supabase
-        .from('objectifs_bloc')
-        .select('pas_journaliers, seances_par_semaine')
-        .eq('bloc_id', blocId)
-        .single()
-      if (obj?.pas_journaliers)     pasUsed     = obj.pas_journaliers
-      if (obj?.seances_par_semaine) seancesUsed = obj.seances_par_semaine
-    }
+    // Objectifs du bloc pour le fallback d'activité
+    const { data: objBloc } = await supabase
+      .from('objectifs_bloc')
+      .select('pas_journaliers, seances_par_semaine')
+      .eq('bloc_id', bloc.id)
+      .single()
+
+    const hasSufficientTracking = entries.length >= 7
+    
+    // NOUVEAU : Fallback intelligent -> 1. Tracking > 2. Objectif Bloc > 3. Profil (onboarding) > 4. Zéro
+    const pasUsed = hasSufficientTracking
+      ? pasJournaliersMoy
+      : (objBloc?.pas_journaliers || pasJournaliersMoy || athlete.pas_journaliers_moy || 0)
+    const seancesUsed = hasSufficientTracking
+      ? seancesTracking
+      : (objBloc?.seances_par_semaine || seancesTracking || athlete.seances_semaine || 0)
 
     const result = calcTDEE(
-      { poids, taille: profile.taille, date_naissance: profile.date_naissance, genre: profile.genre },
+      { poids, taille: athlete.taille, date_naissance: athlete.date_naissance, genre: athlete.genre },
       { pasJournaliersMoy: pasUsed, seancesParSemaine: seancesUsed }
     )
-    if (result) setTdeeData({ ...result, poids, lastPoidsDate: poidsData[0].date })
+
+    if (result) {
+      setTdeeData({
+        ...result,
+        poids,
+        pasJournaliersMoy:  Math.round(pasUsed),
+        seancesParSemaine:  parseFloat(seancesUsed.toFixed(1)),
+        lastPoidsDate:      poidsData?.[0]?.date || 'Onboarding', // Indique si ça vient du profil initial
+        sourceActivite:     hasSufficientTracking ? 'tracking' : 'onboarding',
+      })
+    }
+    setLoadingTdee(false)
   }
 
   async function fetchRepasJour() {
