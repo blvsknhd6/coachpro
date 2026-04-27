@@ -4,25 +4,31 @@ import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianG
 import { metricColor } from '../../lib/tracking'
 
 export default function RecapTracking({ athleteId, blocId, coachMode = false }) {
-  const [data, setData]               = useState([])
-  const [objectifs, setObjectifs]     = useState(null)
-  const [historique, setHistorique]   = useState([]) // liste triée par date_debut desc
-  const [semaines, setSemaines]       = useState([])
-  const [loading, setLoading]         = useState(true)
+  const [data, setData]             = useState([])
+  const [objectifs, setObjectifs]   = useState(null)
+  const [historique, setHistorique] = useState([])
+  const [semaines, setSemaines]     = useState([])
+  const [loading, setLoading]       = useState(true)
   const [editingEntry, setEditingEntry] = useState(null)
-  const [editForm, setEditForm]       = useState({})
-  const [saving, setSaving]           = useState(false)
+  const [editForm, setEditForm]         = useState({})
+  const [saving, setSaving]             = useState(false)
 
   useEffect(() => { fetchData() }, [blocId])
 
   async function fetchData() {
     setLoading(true)
-    const [{ data: tracking }, { data: obj }, { data: sems }, { data: hist }] = await Promise.all([
-      supabase.from('data_tracking').select('*').eq('athlete_id', athleteId).eq('bloc_id', blocId).order('date'),
+    const [
+      { data: tracking },
+      { data: obj },
+      { data: sems },
+      { data: hist },
+    ] = await Promise.all([
+      supabase.from('data_tracking').select('*')
+        .eq('athlete_id', athleteId).eq('bloc_id', blocId).order('date'),
       supabase.from('objectifs_bloc').select('*').eq('bloc_id', blocId).single(),
       supabase.from('semaines').select('*').eq('bloc_id', blocId).order('numero'),
       supabase.from('objectifs_bloc_historique')
-        .select('*').eq('bloc_id', blocId).order('date_debut', { ascending: false }),
+        .select('*').eq('bloc_id', blocId).order('date_debut', { ascending: true }),
     ])
     setData(tracking || [])
     setObjectifs(obj)
@@ -33,14 +39,119 @@ export default function RecapTracking({ athleteId, blocId, coachMode = false }) 
 
   /**
    * Retourne les objectifs en vigueur à une date donnée.
-   * Cherche dans l'historique le dernier enregistrement dont date_debut <= dateStr.
-   * Fallback sur objectifs_bloc courants si aucun historique antérieur.
+   *
+   * Stratégie :
+   *   1. Cherche dans l'historique la dernière entrée dont date_debut <= dateStr
+   *   2. Fallback sur objectifs_bloc courants
+   *
+   * L'historique est trié par date_debut ASC : on cherche le dernier
+   * dont date_debut <= dateStr (donc on itère en sens inverse).
    */
   function getObjectifsAt(dateStr) {
-    if (!historique.length) return objectifs
-    // historique trié desc, on cherche le premier dont date_debut <= dateStr
-    const applicable = historique.find(h => h.date_debut <= dateStr)
+    if (!dateStr) return objectifs
+    // historique trié ASC → on cherche le dernier applicable
+    let applicable = null
+    for (const h of historique) {
+      if (h.date_debut <= dateStr) applicable = h
+      else break
+    }
     return applicable || objectifs
+  }
+
+  /**
+   * Calcule le bilan par semaine.
+   *
+   * Stratégie de correspondance date ↔ semaine :
+   *   A. Si la semaine a date_debut renseignée : on utilise les 7 jours
+   *      à partir de date_debut (jusqu'à date_debut + 6 jours).
+   *   B. Sinon (fallback) : offset en jours depuis la première entrée de tracking.
+   *
+   * Pour chaque semaine, on retient la date médiane pour aller chercher
+   * les objectifs historiques corrects.
+   */
+  function bilanSemaines() {
+    if (!semaines.length || !data.length) return []
+    const sorted = [...data].sort((a, b) => new Date(a.date) - new Date(b.date))
+
+    // Cas A : semaines avec date_debut
+    const semainesAvecDates = semaines.filter(s => s.date_debut)
+
+    if (semainesAvecDates.length > 0) {
+      return semaines.map((sem, i) => {
+        let jours
+        if (sem.date_debut) {
+          const debut = new Date(sem.date_debut + 'T12:00:00')
+          const fin   = new Date(sem.date_debut + 'T12:00:00')
+          fin.setDate(fin.getDate() + 6)
+          const debutStr = sem.date_debut
+          const finStr   = fin.toISOString().split('T')[0]
+          jours = sorted.filter(d => d.date >= debutStr && d.date <= finStr)
+        } else {
+          // semaine sans date : on l'ignore dans le bilan
+          return null
+        }
+
+        if (!jours.length) return null
+
+        const avg = (key) => {
+          const srcKey = key === 'pas' ? 'pas_journaliers' : key
+          const vals = jours.map(j => j[srcKey]).filter(v => v != null)
+          return vals.length ? (vals.reduce((a, b) => a + parseFloat(b), 0) / vals.length).toFixed(1) : null
+        }
+
+        // Date médiane pour les objectifs historiques
+        const midDate = jours[Math.floor(jours.length / 2)]?.date
+
+        return {
+          name:      `S${sem.numero}`,
+          midDate,
+          dateDebut: sem.date_debut,
+          kcal:      avg('kcal'),
+          proteines: avg('proteines'),
+          glucides:  avg('glucides'),
+          lipides:   avg('lipides'),
+          sommeil:   avg('sommeil'),
+          pas:       avg('pas'),
+          stress:    avg('stress'),
+          sport:     jours.filter(j => j.sport_fait).length,
+        }
+      }).filter(Boolean)
+    }
+
+    // Cas B : fallback offset depuis firstDate
+    const firstDate = sorted[0] ? new Date(sorted[0].date) : null
+    if (!firstDate) return []
+
+    return semaines.map((sem, i) => {
+      const startDay = i * 7
+      const endDay   = startDay + 6
+      const jours = sorted.filter(d => {
+        const dayNum = Math.floor((new Date(d.date) - firstDate) / 86400000)
+        return dayNum >= startDay && dayNum <= endDay
+      })
+
+      const avg = (key) => {
+        const srcKey = key === 'pas' ? 'pas_journaliers' : key
+        const vals = jours.map(j => j[srcKey]).filter(v => v != null)
+        return vals.length ? (vals.reduce((a, b) => a + parseFloat(b), 0) / vals.length).toFixed(1) : null
+      }
+
+      const midDate = jours.length ? jours[Math.floor(jours.length / 2)]?.date : null
+
+      return {
+        name:      `S${sem.numero}`,
+        midDate,
+        dateDebut: null,
+        kcal:      avg('kcal'),
+        proteines: avg('proteines'),
+        glucides:  avg('glucides'),
+        lipides:   avg('lipides'),
+        sommeil:   avg('sommeil'),
+        pas:       avg('pas'),
+        stress:    avg('stress'),
+        sport:     jours.filter(j => j.sport_fait).length,
+      }
+    }).filter(s => s.kcal !== null || s.sport > 0)
   }
 
   async function saveEntry() {
@@ -61,56 +172,32 @@ export default function RecapTracking({ athleteId, blocId, coachMode = false }) 
     setSaving(false)
   }
 
-  function bilanSemaines() {
-    if (!semaines.length || !data.length) return []
-    const sorted = [...data].sort((a, b) => new Date(a.date) - new Date(b.date))
-    const firstDate = sorted[0] ? new Date(sorted[0].date) : null
-    if (!firstDate) return []
-
-    return semaines.map((sem, i) => {
-      const startDay = i * 7, endDay = startDay + 6
-      const jours = sorted.filter(d => {
-        const dayNum = Math.floor((new Date(d.date) - firstDate) / 86400000)
-        return dayNum >= startDay && dayNum <= endDay
-      })
-      const avg = (key) => {
-        const vals = jours.map(j => j[key]).filter(v => v != null)
-        return vals.length ? (vals.reduce((a, b) => a + Number(b), 0) / vals.length).toFixed(1) : null
-      }
-
-      // Date représentative de la semaine (milieu) pour aller chercher les bons objectifs
-      const midDate = jours.length
-        ? jours[Math.floor(jours.length / 2)]?.date
-        : null
-
-      return {
-        name:       `S${sem.numero}`,
-        midDate,
-        kcal:       avg('kcal'),
-        proteines:  avg('proteines'),
-        glucides:   avg('glucides'),
-        lipides:    avg('lipides'),
-        sommeil:    avg('sommeil'),
-        pas:        avg('pas_journaliers'),
-        stress:     avg('stress'),
-        sport:      jours.filter(j => j.sport_fait).length,
-      }
-    }).filter(s => s.kcal !== null || s.sport > 0)
-  }
-
   const bilans    = bilanSemaines()
   const poidsData = data.filter(d => d.poids).map(d => ({ date: d.date, poids: d.poids }))
-  const bornes    = objectifs?.bornes || {}
 
   // Couleur d'une cellule : utilise les objectifs en vigueur à la date de la semaine
   function cc(value, key, midDate) {
-    const obj = midDate ? getObjectifsAt(midDate) : objectifs
+    const obj = getObjectifsAt(midDate)
     const b   = obj?.bornes || {}
     return metricColor(value, key, obj, b)
   }
 
   const fmt = (v, isInt = false) =>
     v == null ? '—' : isInt ? Math.round(v) : parseFloat(v).toFixed(1).replace(/\.0$/, '')
+
+  // Détecte si les objectifs changent entre deux semaines (pour afficher un indicateur)
+  function getChangeLabel(midDate) {
+    if (!midDate || historique.length <= 1) return null
+    // On cherche si une entrée historique tombe dans la semaine courante
+    const semDebut = bilans.find(b => b.midDate === midDate)?.dateDebut
+    if (!semDebut) return null
+    const semFin = (() => {
+      const d = new Date(semDebut + 'T12:00:00'); d.setDate(d.getDate() + 6)
+      return d.toISOString().split('T')[0]
+    })()
+    const changeDansSemaine = historique.find(h => h.date_debut >= semDebut && h.date_debut <= semFin)
+    return changeDansSemaine ? { date: changeDansSemaine.date_debut, obj: changeDansSemaine } : null
+  }
 
   if (loading) return <p className="text-sm text-gray-400">Chargement du suivi…</p>
 
@@ -162,7 +249,7 @@ export default function RecapTracking({ athleteId, blocId, coachMode = false }) 
         <p className="text-sm text-gray-400">Aucune donnée saisie pour l'instant.</p>
       ) : (
         <>
-          {/* ── Tableau résumé par semaine ── */}
+          {/* Tableau résumé par semaine */}
           <div className="bg-white border border-gray-100 rounded-xl overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
@@ -177,76 +264,84 @@ export default function RecapTracking({ athleteId, blocId, coachMode = false }) 
                   <th className="px-3 py-3 font-medium text-right">Pas</th>
                   <th className="px-3 py-3 font-medium text-right">Stress</th>
                 </tr>
-                {/* Ligne objectifs courants */}
-                {objectifs && (
-                  <tr className="border-b border-gray-100 text-xs text-brand-600 bg-brand-50/50">
-                    <td className="px-4 py-2 font-medium">Objectifs actuels</td>
-                    <td className="px-3 py-2 text-right">
-                      {objectifs.seances_par_semaine != null ? `${objectifs.seances_par_semaine}j` : '—'}
-                    </td>
-                    <td className="px-3 py-2 text-right">{objectifs.kcal           ?? '—'}</td>
-                    <td className="px-3 py-2 text-right">{objectifs.proteines       ?? '—'}</td>
-                    <td className="px-3 py-2 text-right">{objectifs.glucides        ?? '—'}</td>
-                    <td className="px-3 py-2 text-right">{objectifs.lipides         ?? '—'}</td>
-                    <td className="px-3 py-2 text-right">{objectifs.sommeil         != null ? `${objectifs.sommeil}h` : '—'}</td>
-                    <td className="px-3 py-2 text-right">{objectifs.pas_journaliers ?? '—'}</td>
-                    <td className="px-3 py-2 text-right">{objectifs.stress_cible    != null ? `${objectifs.stress_cible}/10` : '—'}</td>
-                  </tr>
-                )}
-                {/* Ligne bornes si elles existent */}
-                {objectifs && Object.keys(bornes).length > 0 && (
-                  <tr className="border-b border-gray-100 text-xs text-gray-400 bg-gray-50/50">
-                    <td className="px-4 py-2 italic">Bornes</td>
-                    <td className="px-3 py-2 text-right">
-                      {bornes.seances ? `${bornes.seances.min}–${bornes.seances.max}j` : ''}
-                    </td>
-                    {['kcal','proteines','glucides','lipides'].map(k => (
-                      <td key={k} className="px-3 py-2 text-right">
-                        {bornes[k] ? `${bornes[k].min}–${bornes[k].max}` : ''}
-                      </td>
-                    ))}
-                    <td className="px-3 py-2 text-right">
-                      {bornes.sommeil ? `${bornes.sommeil.min}–${bornes.sommeil.max}h` : ''}
-                    </td>
-                    <td className="px-3 py-2 text-right">
-                      {bornes.pas ? `${bornes.pas.min}–${bornes.pas.max}` : ''}
-                    </td>
-                    <td className="px-3 py-2 text-right">
-                      {bornes.stress ? `${bornes.stress.min}–${bornes.stress.max}/10` : ''}
-                    </td>
-                  </tr>
-                )}
               </thead>
               <tbody>
-                {bilans.map(b => (
-                  <tr key={b.name} className="border-b border-gray-50 hover:bg-gray-50">
-                    <td className="px-4 py-3 font-medium text-gray-800">
-                      {b.name}
-                      {historique.length > 0 && b.midDate && (() => {
-                        const h = historique.find(h => h.date_debut <= b.midDate)
-                        const isOld = h && h.date_debut < (historique[0]?.date_debut || '')
-                        return isOld
-                          ? <span className="ml-1.5 text-xs text-gray-300" title={`Objectifs du ${h.date_debut}`}>📅</span>
-                          : null
-                      })()}
-                    </td>
-                    <td className={`px-3 py-3 text-right ${cc(b.sport, 'seances', b.midDate)}`}>{b.sport}j</td>
-                    <td className={`px-3 py-3 text-right ${cc(b.kcal, 'kcal', b.midDate)}`}>{fmt(b.kcal, true)}</td>
-                    <td className={`px-3 py-3 text-right ${cc(b.proteines, 'proteines', b.midDate)}`}>{fmt(b.proteines)}</td>
-                    <td className={`px-3 py-3 text-right ${cc(b.glucides, 'glucides', b.midDate)}`}>{fmt(b.glucides)}</td>
-                    <td className={`px-3 py-3 text-right ${cc(b.lipides, 'lipides', b.midDate)}`}>{fmt(b.lipides)}</td>
-                    <td className={`px-3 py-3 text-right ${cc(b.sommeil, 'sommeil', b.midDate)}`}>{fmt(b.sommeil)}h</td>
-                    <td className={`px-3 py-3 text-right ${cc(b.pas, 'pas', b.midDate)}`}>
-                      {b.pas ? Math.round(b.pas).toLocaleString('fr') : '—'}
-                    </td>
-                    <td className={`px-3 py-3 text-right ${cc(b.stress, 'stress', b.midDate)}`}>{fmt(b.stress)}/10</td>
-                  </tr>
-                ))}
+                {bilans.map((b, idx) => {
+                  const objSemaine = getObjectifsAt(b.midDate)
+                  const bornes     = objSemaine?.bornes || {}
+                  const change     = getChangeLabel(b.midDate)
+
+                  // Ligne d'objectifs si changement détecté dans cette semaine
+                  const showObjRow = change !== null
+
+                  return (
+                    <>
+                      {showObjRow && (
+                        <tr key={`obj-${b.name}`} className="border-b border-gray-50 bg-amber-50/60">
+                          <td className="px-4 py-1.5 text-xs text-amber-600 font-medium" colSpan={9}>
+                            📋 Objectifs modifiés le {new Date(change.date + 'T12:00:00').toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' })}
+                            {change.obj.plan_nutritionnel && (
+                              <span className="ml-2">
+                                {{'prise_de_masse':'💪 Prise de masse','maintien':'⚖️ Maintien','seche':'🔥 Sèche'}[change.obj.plan_nutritionnel]}
+                              </span>
+                            )}
+                            {change.obj.kcal && <span className="ml-2 text-gray-500">{change.obj.kcal} kcal/j</span>}
+                          </td>
+                        </tr>
+                      )}
+                      <tr key={b.name} className="border-b border-gray-50 hover:bg-gray-50">
+                        <td className="px-4 py-3 font-medium text-gray-800">
+                          {b.name}
+                          {b.dateDebut && (
+                            <span className="ml-1.5 text-xs text-gray-300">
+                              {new Date(b.dateDebut + 'T12:00:00').toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' })}
+                            </span>
+                          )}
+                        </td>
+                        <td className={`px-3 py-3 text-right ${cc(b.sport, 'seances', b.midDate)}`}>{b.sport}j</td>
+                        <td className={`px-3 py-3 text-right ${cc(b.kcal, 'kcal', b.midDate)}`}>{fmt(b.kcal, true)}</td>
+                        <td className={`px-3 py-3 text-right ${cc(b.proteines, 'proteines', b.midDate)}`}>{fmt(b.proteines)}</td>
+                        <td className={`px-3 py-3 text-right ${cc(b.glucides, 'glucides', b.midDate)}`}>{fmt(b.glucides)}</td>
+                        <td className={`px-3 py-3 text-right ${cc(b.lipides, 'lipides', b.midDate)}`}>{fmt(b.lipides)}</td>
+                        <td className={`px-3 py-3 text-right ${cc(b.sommeil, 'sommeil', b.midDate)}`}>{fmt(b.sommeil)}h</td>
+                        <td className={`px-3 py-3 text-right ${cc(b.pas, 'pas', b.midDate)}`}>
+                          {b.pas ? Math.round(b.pas).toLocaleString('fr') : '—'}
+                        </td>
+                        <td className={`px-3 py-3 text-right ${cc(b.stress, 'stress', b.midDate)}`}>{fmt(b.stress)}/10</td>
+                      </tr>
+                    </>
+                  )
+                })}
               </tbody>
             </table>
           </div>
 
-          {/* ── Entrées journalières modifiables (mode coach) ── */}
+          {/* Légende historique si plusieurs phases */}
+          {historique.length > 1 && (
+            <div className="bg-amber-50 border border-amber-100 rounded-xl px-4 py-3">
+              <p className="text-xs font-semibold text-amber-700 mb-2">Historique des objectifs</p>
+              <div className="space-y-1">
+                {[...historique].reverse().map((h, i) => (
+                  <div key={h.id} className="flex items-center gap-3 text-xs text-gray-600">
+                    <span className="text-gray-400 w-24 flex-shrink-0">
+                      {new Date(h.date_debut + 'T12:00:00').toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', year: '2-digit' })}
+                    </span>
+                    {h.plan_nutritionnel && (
+                      <span className="font-medium">
+                        {{'prise_de_masse':'💪 Prise','maintien':'⚖️ Maintien','seche':'🔥 Sèche'}[h.plan_nutritionnel]}
+                      </span>
+                    )}
+                    {h.kcal && <span>{h.kcal} kcal</span>}
+                    {h.proteines && <span>P{h.proteines}g</span>}
+                    {h.glucides  && <span>G{h.glucides}g</span>}
+                    {h.lipides   && <span>L{h.lipides}g</span>}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Entrées journalières modifiables (mode coach) */}
           {coachMode && data.length > 0 && (
             <div className="bg-white border border-gray-100 rounded-xl overflow-hidden">
               <div className="px-4 py-3 border-b border-gray-50 flex items-center justify-between">
@@ -270,31 +365,35 @@ export default function RecapTracking({ athleteId, blocId, coachMode = false }) 
                     </tr>
                   </thead>
                   <tbody>
-                    {[...data].sort((a, b) => new Date(b.date) - new Date(a.date)).map(e => (
-                      <tr key={e.id}
-                        onClick={() => { setEditingEntry(e.id); setEditForm({ ...e }) }}
-                        className="border-b border-gray-50 hover:bg-brand-50 cursor-pointer transition-colors">
-                        <td className="px-4 py-2 text-gray-600 whitespace-nowrap">
-                          {new Date(e.date + 'T12:00:00').toLocaleDateString('fr-FR', { weekday: 'short', day: 'numeric', month: 'short' })}
-                        </td>
-                        <td className="px-3 py-2 text-center">{e.sport_fait ? '✓' : '—'}</td>
-                        <td className={`px-3 py-2 text-center ${cc(e.kcal, 'kcal', e.date)}`}>{e.kcal ?? '—'}</td>
-                        <td className={`px-3 py-2 text-center ${cc(e.proteines, 'proteines', e.date)}`}>{e.proteines ?? '—'}</td>
-                        <td className={`px-3 py-2 text-center ${cc(e.glucides, 'glucides', e.date)}`}>{e.glucides ?? '—'}</td>
-                        <td className={`px-3 py-2 text-center ${cc(e.lipides, 'lipides', e.date)}`}>{e.lipides ?? '—'}</td>
-                        <td className={`px-3 py-2 text-center ${cc(e.sommeil, 'sommeil', e.date)}`}>{e.sommeil ?? '—'}</td>
-                        <td className={`px-3 py-2 text-center ${cc(e.pas_journaliers, 'pas', e.date)}`}>{e.pas_journaliers ?? '—'}</td>
-                        <td className={`px-3 py-2 text-center ${cc(e.stress, 'stress', e.date)}`}>{e.stress ?? '—'}</td>
-                        <td className="px-3 py-2 text-center text-gray-600">{e.poids ? `${e.poids}kg` : '—'}</td>
-                      </tr>
-                    ))}
+                    {[...data].sort((a, b) => new Date(b.date) - new Date(a.date)).map(e => {
+                      const objE = getObjectifsAt(e.date)
+                      const bE   = objE?.bornes || {}
+                      return (
+                        <tr key={e.id}
+                          onClick={() => { setEditingEntry(e.id); setEditForm({ ...e }) }}
+                          className="border-b border-gray-50 hover:bg-brand-50 cursor-pointer transition-colors">
+                          <td className="px-4 py-2 text-gray-600 whitespace-nowrap">
+                            {new Date(e.date + 'T12:00:00').toLocaleDateString('fr-FR', { weekday: 'short', day: 'numeric', month: 'short' })}
+                          </td>
+                          <td className="px-3 py-2 text-center">{e.sport_fait ? '✓' : '—'}</td>
+                          <td className={`px-3 py-2 text-center ${metricColor(e.kcal,            'kcal',      objE, bE)}`}>{e.kcal ?? '—'}</td>
+                          <td className={`px-3 py-2 text-center ${metricColor(e.proteines,       'proteines', objE, bE)}`}>{e.proteines ?? '—'}</td>
+                          <td className={`px-3 py-2 text-center ${metricColor(e.glucides,        'glucides',  objE, bE)}`}>{e.glucides ?? '—'}</td>
+                          <td className={`px-3 py-2 text-center ${metricColor(e.lipides,         'lipides',   objE, bE)}`}>{e.lipides ?? '—'}</td>
+                          <td className={`px-3 py-2 text-center ${metricColor(e.sommeil,         'sommeil',   objE, bE)}`}>{e.sommeil ?? '—'}</td>
+                          <td className={`px-3 py-2 text-center ${metricColor(e.pas_journaliers, 'pas',       objE, bE)}`}>{e.pas_journaliers ?? '—'}</td>
+                          <td className={`px-3 py-2 text-center ${metricColor(e.stress,          'stress',    objE, bE)}`}>{e.stress ?? '—'}</td>
+                          <td className="px-3 py-2 text-center text-gray-600">{e.poids ? `${e.poids}kg` : '—'}</td>
+                        </tr>
+                      )
+                    })}
                   </tbody>
                 </table>
               </div>
             </div>
           )}
 
-          {/* ── Graphe Kcal ── */}
+          {/* Graphe Kcal */}
           {bilans.some(b => b.kcal) && (
             <div className="bg-white border border-gray-100 rounded-xl p-5">
               <p className="text-xs font-medium text-gray-500 mb-3">Kcal moyennes par semaine</p>
@@ -306,14 +405,15 @@ export default function RecapTracking({ athleteId, blocId, coachMode = false }) 
                   <Tooltip contentStyle={{ fontSize: 12 }} />
                   <Line type="monotone" dataKey="kcal" stroke="#6366f1" strokeWidth={2} dot={{ r: 3 }} name="Kcal" />
                   {objectifs?.kcal && (
-                    <Line type="monotone" dataKey={() => objectifs.kcal} stroke="#a5b4fc" strokeWidth={1} strokeDasharray="4 4" dot={false} name="Objectif actuel" />
+                    <Line type="monotone" dataKey={() => objectifs.kcal}
+                      stroke="#a5b4fc" strokeWidth={1} strokeDasharray="4 4" dot={false} name="Objectif actuel" />
                   )}
                 </LineChart>
               </ResponsiveContainer>
             </div>
           )}
 
-          {/* ── Graphe Poids ── */}
+          {/* Graphe Poids */}
           {poidsData.length > 0 && (
             <div className="bg-white border border-gray-100 rounded-xl p-5">
               <p className="text-xs font-medium text-gray-500 mb-3">Évolution du poids</p>
