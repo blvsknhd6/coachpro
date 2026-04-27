@@ -4,7 +4,12 @@ import { useAuth } from '../../hooks/useAuth'
 import { useTheme } from '../../hooks/useTheme'
 import { usePreferences } from '../../hooks/usePreferences'
 import Layout from '../../components/shared/Layout'
-import { LineChart, Line, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts'
+import {
+  LineChart, Line, BarChart, Bar, XAxis, YAxis, Tooltip,
+  ResponsiveContainer, CartesianGrid, Legend,
+} from 'recharts'
+
+const BLOC_PALETTE = ['#6366f1','#10b981','#f59e0b','#ef4444','#ec4899','#8b5cf6','#06b6d4','#f97316']
 
 export default function CoachProgression() {
   const { profile } = useAuth()
@@ -12,33 +17,75 @@ export default function CoachProgression() {
   const { prefs, updateProgression } = usePreferences()
   const color = theme.isFemme ? '#ec4899' : '#6366f1'
 
-  const [allExercices, setAllExercices] = useState([])
-  const [allMuscles, setAllMuscles]     = useState([])
-  const [tonnageData, setTonnageData]   = useState([])
-  const [volumeData, setVolumeData]     = useState([])
-  const [favData, setFavData]           = useState({})
-  const [loading, setLoading]           = useState(true)
-  const [showConfig, setShowConfig]     = useState(false)
+  // ── Blocs ──────────────────────────────────────────────────────────
+  const [blocs, setBlocs]           = useState([])
+  const [activeBloc, setActiveBloc] = useState(null)
+
+  // ── Données du bloc actif ──────────────────────────────────────────
+  const [allExercices, setAllExercices]               = useState([])
+  const [allMuscles, setAllMuscles]                   = useState([])
+  const [tonnageData, setTonnageData]                 = useState([])
+  const [volumeData, setVolumeData]                   = useState([])
+  const [favData, setFavData]                         = useState({})
+
+  // ── Historique cross-blocs ─────────────────────────────────────────
+  const [historiqueData, setHistoriqueData]         = useState([])
+  const [historiqueFavData, setHistoriqueFavData]   = useState({})
+
+  const [loading, setLoading]             = useState(true)
+  const [loadingHistory, setLoadingHistory] = useState(false)
+  const [showConfig, setShowConfig]       = useState(false)
 
   const config        = prefs?.progression_config || {}
-  const mode          = config.mode || 'graphe'
-  const metric        = config.metric || 'tonnage'
+  const mode          = config.mode          || 'graphe'
+  const metric        = config.metric        || 'tonnage'
   const favExos       = config.fav_exercices || []
   const musclesExclus = config.muscles_exclus || []
 
-  useEffect(() => { if (profile) loadInitialData() }, [profile])
+  // ── Init ───────────────────────────────────────────────────────────
+  useEffect(() => { if (profile) loadBlocs() }, [profile])
+
   useEffect(() => {
-    if (favExos.length && allExercices.length) loadFavData(favExos)
+    if (!activeBloc) return
+    loadBlocData(activeBloc.id)
+  }, [activeBloc?.id, JSON.stringify(musclesExclus)])
+
+  useEffect(() => {
+    if (favExos.length && allExercices.length) loadFavData(favExos, activeBloc?.id)
     else if (!favExos.length) setFavData({})
   }, [JSON.stringify(favExos), allExercices.length])
 
-  async function loadInitialData() {
-    setLoading(true)
-    const { data: sr } = await supabase.from('series_realisees').select('exercice_id').eq('athlete_id', profile.id)
-    if (!sr?.length) { setLoading(false); return }
+  useEffect(() => {
+    if (blocs.length > 1) loadHistorique()
+  }, [blocs.length, JSON.stringify(favExos)])
 
-    const ids = [...new Set(sr.map(s => s.exercice_id))]
-    const { data: exs } = await supabase.from('exercices').select('id, nom, muscle').in('id', ids)
+  // ── Chargement blocs ───────────────────────────────────────────────
+  async function loadBlocs() {
+    const { data } = await supabase
+      .from('blocs').select('id, name, created_at')
+      .eq('athlete_id', profile.id).order('created_at', { ascending: false })
+    setBlocs(data || [])
+    if (data?.length) setActiveBloc(data[0])
+    else setLoading(false)
+  }
+
+  // ── Données du bloc actif ─────────────────────────────────────────
+  async function loadBlocData(blocId) {
+    setLoading(true)
+    setAllExercices([]); setTonnageData([]); setVolumeData([]); setFavData({})
+
+    const { data: semainesBloc } = await supabase
+      .from('semaines').select('id').eq('bloc_id', blocId)
+    if (!semainesBloc?.length) { setLoading(false); return }
+
+    const semIds = semainesBloc.map(s => s.id)
+    const { data: scBloc } = await supabase.from('seances').select('id').in('semaine_id', semIds)
+    if (!scBloc?.length) { setLoading(false); return }
+
+    const scIds = scBloc.map(s => s.id)
+    const { data: exs } = await supabase
+      .from('exercices').select('id, nom, muscle').in('seance_id', scIds)
+
     const unique = [], seen = new Set(), muscles = new Set()
     ;(exs || []).forEach(e => {
       if (!seen.has(e.nom)) { seen.add(e.nom); unique.push(e) }
@@ -46,52 +93,98 @@ export default function CoachProgression() {
     })
     setAllExercices(unique.sort((a, b) => a.nom.localeCompare(b.nom)))
     setAllMuscles([...muscles].sort())
-    await loadTonnageAndVolume()
+
+    await loadTonnageAndVolume(blocId)
+    if (favExos.length) await loadFavData(favExos, blocId)
     setLoading(false)
   }
 
-  async function loadFavData(exoNoms) {
-    if (!exoNoms.length) return
+  async function loadTonnageAndVolume(blocId) {
+    const { data: semaines } = await supabase
+      .from('semaines').select('id, numero').eq('bloc_id', blocId).order('numero')
+    if (!semaines?.length) return
+
+    const semIds = semaines.map(s => s.id)
+    const { data: scAll } = await supabase.from('seances').select('id, semaine_id').in('semaine_id', semIds)
+    const scIds = (scAll || []).map(s => s.id); if (!scIds.length) return
+
+    const [{ data: exAll }, { data: srAll }] = await Promise.all([
+      supabase.from('exercices').select('id, muscle, seance_id, unilateral').in('seance_id', scIds),
+      supabase.from('series_realisees')
+        .select('charge, reps, exercice_id, semaine_id')
+        .eq('athlete_id', profile.id).in('semaine_id', semIds)
+        .not('charge', 'is', null).not('reps', 'is', null),
+    ])
+
+    const scToSemaine = {}
+    ;(scAll || []).forEach(sc => { scToSemaine[sc.id] = sc.semaine_id })
+    const exById = {}
+    ;(exAll || []).forEach(ex => {
+      exById[ex.id] = { muscle: ex.muscle || 'autre', semaine_id: scToSemaine[ex.seance_id], unilateral: ex.unilateral }
+    })
+
+    const tonnageMap = {}, muscleVolMap = {}
+    ;(srAll || []).forEach(s => {
+      const ex = exById[s.exercice_id]; if (!ex) return
+      const { muscle, unilateral } = ex
+      if (musclesExclus.includes(muscle)) return
+      const vol   = Number(s.charge) * Number(s.reps) * (unilateral ? 2 : 1)
+      const semId = s.semaine_id
+      if (!tonnageMap[semId]) tonnageMap[semId] = { tonnage: 0, series: 0 }
+      tonnageMap[semId].tonnage += vol; tonnageMap[semId].series++
+      muscleVolMap[muscle] = (muscleVolMap[muscle] || 0) + vol
+    })
+
+    setTonnageData(semaines.filter(s => tonnageMap[s.id]).map(s => ({
+      semaine: `S${s.numero}`,
+      tonnage: Math.round(tonnageMap[s.id].tonnage),
+      series:  tonnageMap[s.id].series,
+    })))
+    setVolumeData(
+      Object.entries(muscleVolMap)
+        .map(([m, v]) => ({ muscle: m, volume: Math.round(v) }))
+        .sort((a, b) => b.volume - a.volume).slice(0, 8)
+    )
+  }
+
+  async function loadFavData(exoNoms, blocId) {
+    if (!exoNoms.length || !blocId) return
+    const { data: semainesBloc } = await supabase.from('semaines').select('id').eq('bloc_id', blocId)
+    if (!semainesBloc?.length) return
+    const semIds = semainesBloc.map(s => s.id)
 
     const { data: exs } = await supabase
       .from('exercices').select('id, nom, seance_id').in('nom', exoNoms)
     if (!exs?.length) return
-
     const scIds = [...new Set(exs.map(e => e.seance_id))]
+
     const [{ data: seances }, { data: srAll }] = await Promise.all([
-      supabase.from('seances').select('id, semaine_id').in('id', scIds),
+      supabase.from('seances').select('id, semaine_id').in('id', scIds).in('semaine_id', semIds),
       supabase.from('series_realisees')
         .select('charge, reps, exercice_id, semaine_id')
-        .eq('athlete_id', profile.id)
-        .in('exercice_id', exs.map(e => e.id))
+        .eq('athlete_id', profile.id).in('exercice_id', exs.map(e => e.id)).in('semaine_id', semIds)
         .not('charge', 'is', null),
     ])
 
-    const semaineIds = [...new Set((seances || []).map(s => s.semaine_id))]
     const { data: semaines } = await supabase
-      .from('semaines').select('id, numero').in('id', semaineIds).order('numero')
+      .from('semaines').select('id, numero').in('id', semIds).order('numero')
 
-    const seanceToSemaine = {}
-    ;(seances || []).forEach(sc => { seanceToSemaine[sc.id] = sc.semaine_id })
-    const exToNom = {}, exToSemaine = {}
+    const seanceToSemaine = {}; (seances || []).forEach(sc => { seanceToSemaine[sc.id] = sc.semaine_id })
+    const exToNom = {}; const exToSemaine = {}
     ;(exs || []).forEach(ex => {
       exToNom[ex.id] = ex.nom
-      const semId = seanceToSemaine[ex.seance_id]
-      if (semId) exToSemaine[ex.id] = semId
+      const sid = seanceToSemaine[ex.seance_id]; if (sid) exToSemaine[ex.id] = sid
     })
-    const semaineNumero = {}
-    ;(semaines || []).forEach(s => { semaineNumero[s.id] = s.numero })
+    const semaineNumero = {}; (semaines || []).forEach(s => { semaineNumero[s.id] = s.numero })
 
     const aggr = {}
     ;(srAll || []).forEach(s => {
-      const nom = exToNom[s.exercice_id]
-      const semId = exToSemaine[s.exercice_id]
+      const nom = exToNom[s.exercice_id]; const semId = exToSemaine[s.exercice_id]
       if (!nom || !semId) return
       if (!aggr[nom]) aggr[nom] = {}
       if (!aggr[nom][semId]) aggr[nom][semId] = { maxCharge: 0, series: 0, tonnage: 0 }
       const d = aggr[nom][semId]
-      d.maxCharge = Math.max(d.maxCharge, Number(s.charge))
-      d.series++
+      d.maxCharge = Math.max(d.maxCharge, Number(s.charge)); d.series++
       d.tonnage += Number(s.charge) * (Number(s.reps) || 0)
     })
 
@@ -101,65 +194,97 @@ export default function CoachProgression() {
       result[nom] = Object.entries(aggr[nom])
         .sort((a, b) => (semaineNumero[a[0]] || 0) - (semaineNumero[b[0]] || 0))
         .map(([semId, d]) => ({
-          semaine: `S${semaineNumero[semId]}`,
-          charge:  d.maxCharge,
-          series:  d.series,
-          tonnage: Math.round(d.tonnage),
+          semaine: `S${semaineNumero[semId]}`, charge: d.maxCharge,
+          series:  d.series, tonnage: Math.round(d.tonnage),
         }))
     }
     setFavData(result)
   }
 
-  async function loadTonnageAndVolume() {
-    const { data: blocs } = await supabase.from('blocs').select('id').eq('athlete_id', profile.id)
-    if (!blocs?.length) return
+  // ── Historique cross-blocs ─────────────────────────────────────────
+  async function loadHistorique() {
+    if (blocs.length <= 1) return
+    setLoadingHistory(true)
 
-    const { data: semaines } = await supabase.from('semaines')
-      .select('id, numero').in('bloc_id', blocs.map(b => b.id)).order('numero').limit(16)
-    if (!semaines?.length) return
-
-    const semIds = semaines.map(s => s.id)
-    const { data: scAll } = await supabase.from('seances').select('id, semaine_id').in('semaine_id', semIds)
-    const scIds = (scAll || []).map(s => s.id); if (!scIds.length) return
-
-    const [{ data: exAll }, { data: srAll }] = await Promise.all([
-      supabase.from('exercices').select('id, muscle, seance_id').in('seance_id', scIds),
-      supabase.from('series_realisees')
+    const result = []
+    await Promise.all(blocs.map(async (bloc, blocIdx) => {
+      const { data: semaines } = await supabase
+        .from('semaines').select('id, numero').eq('bloc_id', bloc.id).order('numero')
+      if (!semaines?.length) return
+      const semIds = semaines.map(s => s.id)
+      const { data: scAll } = await supabase.from('seances').select('id, semaine_id').in('semaine_id', semIds)
+      const scIds = (scAll || []).map(s => s.id); if (!scIds.length) return
+      const { data: exAll } = await supabase.from('exercices').select('id, seance_id, unilateral').in('seance_id', scIds)
+      const { data: srAll } = await supabase.from('series_realisees')
         .select('charge, reps, exercice_id, semaine_id')
-        .eq('athlete_id', profile.id)
-        .in('semaine_id', semIds)
-        .not('charge', 'is', null).not('reps', 'is', null),
-    ])
+        .eq('athlete_id', profile.id).in('semaine_id', semIds)
+        .not('charge', 'is', null).not('reps', 'is', null)
 
-    const scToSemaine = {}
-    ;(scAll || []).forEach(sc => { scToSemaine[sc.id] = sc.semaine_id })
-    const exById = {}
-    ;(exAll || []).forEach(ex => {
-      exById[ex.id] = { muscle: ex.muscle || 'autre', semaine_id: scToSemaine[ex.seance_id] }
-    })
+      const scToSemaine = {}; (scAll || []).forEach(sc => { scToSemaine[sc.id] = sc.semaine_id })
+      const exById = {}; (exAll || []).forEach(ex => {
+        exById[ex.id] = { semaine_id: scToSemaine[ex.seance_id], unilateral: ex.unilateral }
+      })
+      const tonnageMap = {}
+      ;(srAll || []).forEach(s => {
+        const ex = exById[s.exercice_id]; if (!ex) return
+        const vol = Number(s.charge) * Number(s.reps) * (ex.unilateral ? 2 : 1)
+        if (!tonnageMap[s.semaine_id]) tonnageMap[s.semaine_id] = { tonnage: 0, series: 0 }
+        tonnageMap[s.semaine_id].tonnage += vol; tonnageMap[s.semaine_id].series++
+      })
+      semaines.filter(s => tonnageMap[s.id]).forEach(s => {
+        result.push({
+          semaine:  `S${s.numero}`, blocName: bloc.name, blocIdx,
+          tonnage:  Math.round(tonnageMap[s.id].tonnage),
+          series:   tonnageMap[s.id].series,
+        })
+      })
+    }))
+    setHistoriqueData(result)
 
-    const tonnageMap = {}, muscleVolMap = {}
-    ;(srAll || []).forEach(s => {
-      const ex = exById[s.exercice_id]; if (!ex) return
-      const muscle = ex.muscle
-      if (musclesExclus.includes(muscle)) return
-      const vol = Number(s.charge) * Number(s.reps)
-      const semId = s.semaine_id
-      if (!tonnageMap[semId]) tonnageMap[semId] = { tonnage: 0, series: 0 }
-      tonnageMap[semId].tonnage += vol; tonnageMap[semId].series++
-      muscleVolMap[muscle] = (muscleVolMap[muscle] || 0) + vol
-    })
+    // Cross-blocs pour les favoris
+    if (favExos.length) {
+      const favResult = {}
+      await Promise.all(blocs.map(async (bloc, blocIdx) => {
+        const { data: semainesBloc } = await supabase
+          .from('semaines').select('id, numero').eq('bloc_id', bloc.id).order('numero')
+        if (!semainesBloc?.length) return
+        const semIds = semainesBloc.map(s => s.id)
+        const { data: exs } = await supabase
+          .from('exercices').select('id, nom, seance_id').in('nom', favExos)
+        if (!exs?.length) return
+        const scIds = [...new Set(exs.map(e => e.seance_id))]
+        const [{ data: seances }, { data: srAll }] = await Promise.all([
+          supabase.from('seances').select('id, semaine_id').in('id', scIds).in('semaine_id', semIds),
+          supabase.from('series_realisees')
+            .select('charge, reps, exercice_id, semaine_id')
+            .eq('athlete_id', profile.id).in('exercice_id', exs.map(e => e.id)).in('semaine_id', semIds)
+            .not('charge', 'is', null),
+        ])
+        const seanceToSemaine = {}; (seances || []).forEach(sc => { seanceToSemaine[sc.id] = sc.semaine_id })
+        const exToNom = {}; const exToSemaine = {}
+        ;(exs || []).forEach(ex => {
+          exToNom[ex.id] = ex.nom
+          const sid = seanceToSemaine[ex.seance_id]; if (sid) exToSemaine[ex.id] = sid
+        })
+        const semaineNumero = {}; (semainesBloc || []).forEach(s => { semaineNumero[s.id] = s.numero })
+        ;(srAll || []).forEach(s => {
+          const nom = exToNom[s.exercice_id]; const semId = exToSemaine[s.exercice_id]
+          if (!nom || !semId) return
+          if (!favResult[nom]) favResult[nom] = []
+          const key = `${bloc.name} S${semaineNumero[semId]}`
+          const existing = favResult[nom].find(d => d.semaine === key)
+          const charge = Number(s.charge)
+          if (existing) { existing.charge = Math.max(existing.charge, charge) }
+          else favResult[nom].push({ semaine: key, charge, blocIdx, blocName: bloc.name })
+        })
+      }))
+      setHistoriqueFavData(favResult)
+    }
 
-    setTonnageData(semaines.filter(s => tonnageMap[s.id]).map(s => ({
-      semaine: `S${s.numero}`, tonnage: Math.round(tonnageMap[s.id].tonnage), series: tonnageMap[s.id].series,
-    })))
-    setVolumeData(
-      Object.entries(muscleVolMap)
-        .map(([m, v]) => ({ muscle: m, volume: Math.round(v) }))
-        .sort((a, b) => b.volume - a.volume).slice(0, 8)
-    )
+    setLoadingHistory(false)
   }
 
+  // ── Composants graphes ─────────────────────────────────────────────
   const DataChart = ({ data, dataKey, name, color: c }) => (
     <ResponsiveContainer width="100%" height={160}>
       <LineChart data={data}>
@@ -197,7 +322,11 @@ export default function CoachProgression() {
           {data.map((row, i) => (
             <tr key={i} className="border-b border-gray-50 hover:bg-gray-50">
               <td className="py-1.5 text-gray-700 font-medium">{row.semaine}</td>
-              {dataKeys.map(k => <td key={k.key} className="py-1.5 text-right text-gray-600">{row[k.key] ? row[k.key].toLocaleString('fr') : '—'}</td>)}
+              {dataKeys.map(k => (
+                <td key={k.key} className="py-1.5 text-right text-gray-600">
+                  {row[k.key] ? row[k.key].toLocaleString('fr') : '—'}
+                </td>
+              ))}
             </tr>
           ))}
         </tbody>
@@ -215,6 +344,24 @@ export default function CoachProgression() {
         </button>
       </div>
 
+      {/* Sélecteur de bloc */}
+      {blocs.length > 1 && (
+        <div className="flex gap-2 mb-5 flex-wrap">
+          {blocs.map((b, i) => (
+            <button key={b.id} onClick={() => setActiveBloc(b)}
+              className={`px-3 py-1.5 rounded-lg text-sm transition-colors border ${
+                activeBloc?.id === b.id
+                  ? 'text-white border-transparent'
+                  : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'
+              }`}
+              style={activeBloc?.id === b.id ? { backgroundColor: BLOC_PALETTE[i % BLOC_PALETTE.length] } : {}}>
+              {b.name}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* Config */}
       {showConfig && (
         <div className="bg-white border border-gray-100 rounded-xl p-4 mb-4 space-y-4">
           <div>
@@ -276,16 +423,17 @@ export default function CoachProgression() {
       ) : (
         <div className="space-y-4">
 
-          {/* Exercices favoris */}
+          {/* Exercices favoris — bloc actif */}
           {favExos.length > 0 && favExos.map(exoNom => {
             const data = favData[exoNom] || []
             return (
               <div key={exoNom} className="bg-white border border-gray-100 rounded-xl p-4">
-                <p className="text-sm font-medium text-gray-700 mb-3">{exoNom}</p>
+                <p className="text-sm font-medium text-gray-700 mb-1">{exoNom}</p>
+                <p className="text-xs text-gray-400 mb-3">{activeBloc?.name}</p>
                 {!favData[exoNom] ? (
                   <div className="h-36 bg-gray-50 rounded-lg animate-pulse" />
                 ) : data.length === 0 ? (
-                  <p className="text-xs text-gray-400">Pas encore de données</p>
+                  <p className="text-xs text-gray-400">Pas encore de données sur ce bloc</p>
                 ) : (
                   <>
                     {(mode === 'graphe' || mode === 'les_deux') && (
@@ -295,8 +443,8 @@ export default function CoachProgression() {
                           <XAxis dataKey="semaine" tick={{ fontSize: 10 }} />
                           <YAxis tick={{ fontSize: 10 }} width={35} />
                           <Tooltip contentStyle={{ fontSize: 11 }} />
-                          {metric !== 'series'  && <Line type="monotone" dataKey="tonnage" stroke={color}   strokeWidth={2} dot={{ r: 3 }} name="Tonnage" />}
-                          {metric !== 'tonnage' && <Line type="monotone" dataKey="series"  stroke="#10b981" strokeWidth={2} dot={{ r: 3 }} name="Séries" />}
+                          {metric !== 'series'  && <Line type="monotone" dataKey="tonnage" stroke={color}   strokeWidth={2} dot={{ r: 3 }} name="Tonnage" connectNulls />}
+                          {metric !== 'tonnage' && <Line type="monotone" dataKey="series"  stroke="#10b981" strokeWidth={2} dot={{ r: 3 }} name="Séries"  connectNulls />}
                         </LineChart>
                       </ResponsiveContainer>
                     )}
@@ -326,10 +474,10 @@ export default function CoachProgression() {
             )
           })}
 
-          {/* Volume total */}
+          {/* Volume total — bloc actif */}
           {tonnageData.length > 0 && (
             <div className="bg-white border border-gray-100 rounded-xl p-4">
-              <p className="text-sm font-medium text-gray-700 mb-3">Volume total par semaine</p>
+              <p className="text-sm font-medium text-gray-700 mb-1">Volume total — {activeBloc?.name}</p>
               {metric !== 'series' && (
                 <>
                   {(mode === 'graphe' || mode === 'les_deux') && <DataBar data={tonnageData} dataKey="tonnage" name="Tonnage (kg)" />}
@@ -345,10 +493,10 @@ export default function CoachProgression() {
             </div>
           )}
 
-          {/* Volume par groupe musculaire */}
+          {/* Volume par muscle — bloc actif */}
           {volumeData.length > 0 && (
             <div className="bg-white border border-gray-100 rounded-xl p-4">
-              <p className="text-sm font-medium text-gray-700 mb-3">Volume par groupe musculaire</p>
+              <p className="text-sm font-medium text-gray-700 mb-1">Volume par groupe musculaire — {activeBloc?.name}</p>
               {(mode === 'graphe' || mode === 'les_deux') && (
                 <ResponsiveContainer width="100%" height={200}>
                   <BarChart data={volumeData} layout="vertical">
@@ -366,6 +514,64 @@ export default function CoachProgression() {
                     dataKeys={[{ key: 'tonnage', label: 'Volume total' }]}
                   />
                 </div>
+              )}
+            </div>
+          )}
+
+          {/* ── HISTORIQUE CROSS-BLOCS ── */}
+          {blocs.length > 1 && (
+            <div className="border-t border-gray-100 pt-4 space-y-4">
+              <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">Historique tous blocs</p>
+
+              {loadingHistory ? (
+                <div className="h-40 bg-gray-100 rounded-xl animate-pulse" />
+              ) : (
+                <>
+                  {historiqueData.length > 0 && (
+                    <div className="bg-white border border-gray-100 rounded-xl p-4">
+                      <p className="text-sm font-medium text-gray-700 mb-3">Volume comparatif — tous blocs</p>
+                      <ResponsiveContainer width="100%" height={200}>
+                        <LineChart margin={{ top: 4, right: 8, bottom: 0, left: -10 }}>
+                          <CartesianGrid strokeDasharray="3 3" stroke="#f3f4f6" />
+                          <XAxis dataKey="semaine" type="category" allowDuplicatedCategory={false} tick={{ fontSize: 10 }} />
+                          <YAxis tick={{ fontSize: 10 }} width={42} />
+                          <Tooltip contentStyle={{ fontSize: 11 }} formatter={v => [v?.toLocaleString('fr') + ' kg']} />
+                          <Legend iconType="circle" wrapperStyle={{ fontSize: 11 }} />
+                          {blocs.map((bloc, i) => {
+                            const d = historiqueData.filter(r => r.blocName === bloc.name)
+                            if (!d.length) return null
+                            return (
+                              <Line key={bloc.id} data={d} type="monotone"
+                                dataKey={metric === 'series' ? 'series' : 'tonnage'}
+                                stroke={BLOC_PALETTE[i % BLOC_PALETTE.length]}
+                                strokeWidth={2} dot={{ r: 3 }} connectNulls name={bloc.name} />
+                            )
+                          })}
+                        </LineChart>
+                      </ResponsiveContainer>
+                    </div>
+                  )}
+
+                  {favExos.length > 0 && Object.keys(historiqueFavData).length > 0 && favExos.map(exoNom => {
+                    const d = historiqueFavData[exoNom] || []
+                    if (!d.length) return null
+                    return (
+                      <div key={`hist-${exoNom}`} className="bg-white border border-gray-100 rounded-xl p-4">
+                        <p className="text-sm font-medium text-gray-700 mb-1">{exoNom} — charge max historique</p>
+                        <p className="text-xs text-gray-400 mb-3">Tous blocs confondus</p>
+                        <ResponsiveContainer width="100%" height={140}>
+                          <LineChart data={d} margin={{ top: 4, right: 8, bottom: 0, left: -10 }}>
+                            <CartesianGrid strokeDasharray="3 3" stroke="#f3f4f6" />
+                            <XAxis dataKey="semaine" tick={{ fontSize: 9 }} interval={0} angle={-30} textAnchor="end" height={40} />
+                            <YAxis tick={{ fontSize: 10 }} width={35} />
+                            <Tooltip contentStyle={{ fontSize: 11 }} formatter={v => [`${v}kg`, 'Charge max']} />
+                            <Line type="monotone" dataKey="charge" stroke={color} strokeWidth={2} dot={{ r: 3 }} connectNulls name="Charge max" />
+                          </LineChart>
+                        </ResponsiveContainer>
+                      </div>
+                    )
+                  })}
+                </>
               )}
             </div>
           )}
