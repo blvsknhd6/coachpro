@@ -241,10 +241,10 @@ export default function CoachBlocEditor() {
       exsEx.forEach(e => { byOrdre[e.ordre] = e })
 
       for (const ex of exsCour) {
+        // CORRECTION : On retire charge_indicative et rpe_cible de la propagation
         const payload = {
           muscle: ex.muscle, nom: ex.nom, sets: ex.sets,
           rep_range: ex.rep_range, repos: ex.repos,
-          charge_indicative: ex.charge_indicative, rpe_cible: ex.rpe_cible,
           unilateral: ex.unilateral, main_lift: ex.main_lift,
         }
         const cible = byOrdre[ex.ordre]
@@ -273,7 +273,9 @@ export default function CoachBlocEditor() {
 
   async function updateExercice(id, field, value, seanceNom) {
     await supabase.from('exercices').update({ [field]: value }).eq('id', id)
-    if (field !== 'indications') {
+    
+    // CORRECTION : On ne propage pas non plus charge_indicative ni rpe_cible
+    if (!['indications', 'charge_indicative', 'rpe_cible'].includes(field)) {
       setSeances(prev => prev.map(sc => ({
         ...sc,
         exercices: (sc.exercices || []).map(ex => ex.id === id ? { ...ex, [field]: value } : ex),
@@ -374,7 +376,7 @@ export default function CoachBlocEditor() {
 
       {hasSuiv && (
         <div className="mb-4 bg-amber-50 border border-amber-200 rounded-lg px-4 py-2 text-xs text-amber-700">
-          ✏️ Modifications en S{activeSemaine?.numero} propagées sur S{activeSemaine?.numero + 1}→S{semaines[semaines.length - 1]?.numero} (sauf indications)
+          ✏️ Modifications en S{activeSemaine?.numero} propagées sur S{activeSemaine?.numero + 1}→S{semaines[semaines.length - 1]?.numero} (sauf indications, RPE et charge)
         </div>
       )}
 
