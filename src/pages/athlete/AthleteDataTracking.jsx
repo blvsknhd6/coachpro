@@ -253,54 +253,87 @@ export default function AthleteDataTracking() {
             {saving ? 'Enregistrement…' : saved ? '✓ Enregistré !' : 'Enregistrer'}
           </button>
 
-          {/* Historique avec couleurs */}
-          {recentEntries.length > 0 && (
-            <div className="bg-white border border-gray-100 rounded-xl overflow-hidden">
-              <div className="px-5 py-3 border-b border-gray-50">
-                <h3 className="text-sm font-medium text-gray-700">Historique</h3>
-              </div>
-              <div className="overflow-x-auto">
-                <table className="w-full text-xs">
-                  <thead>
-                    <tr className="text-gray-400 border-b border-gray-50">
-                      <th className="text-left px-4 py-2 font-medium">Date</th>
-                      <th className="px-3 py-2 font-medium">Sport</th>
-                      <th className="px-3 py-2 font-medium">Kcal</th>
-                      <th className="px-3 py-2 font-medium">P</th>
-                      <th className="px-3 py-2 font-medium">G</th>
-                      <th className="px-3 py-2 font-medium">L</th>
-                      <th className="px-3 py-2 font-medium">Sommeil</th>
-                      <th className="px-3 py-2 font-medium">Pas</th>
-                      <th className="px-3 py-2 font-medium">Stress</th>
-                      <th className="px-3 py-2 font-medium">Poids</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {recentEntries.map(e => (
-                      <tr key={e.id}
-                        className={`border-b border-gray-50 hover:bg-gray-50 cursor-pointer transition-colors ${e.date === selectedDate ? 'bg-brand-50/50' : ''}`}
-                        onClick={() => setSelectedDate(e.date)}>
-                        <td className="px-4 py-2 text-gray-600 whitespace-nowrap">{formatDate(e.date)}</td>
-                        <td className="px-3 py-2 text-center text-gray-600">{e.sport_fait ? '✓' : '—'}</td>
-                        <td className={`px-3 py-2 text-center ${hc(e.kcal, 'kcal')}`}>{e.kcal ?? '—'}</td>
-                        <td className={`px-3 py-2 text-center ${hc(e.proteines, 'proteines')}`}>{e.proteines ?? '—'}</td>
-                        <td className={`px-3 py-2 text-center ${hc(e.glucides, 'glucides')}`}>{e.glucides ?? '—'}</td>
-                        <td className={`px-3 py-2 text-center ${hc(e.lipides, 'lipides')}`}>{e.lipides ?? '—'}</td>
-                        <td className={`px-3 py-2 text-center ${hc(e.sommeil, 'sommeil')}`}>{e.sommeil ?? '—'}h</td>
-                        <td className={`px-3 py-2 text-center ${hc(e.pas_journaliers, 'pas')}`}>
-                          {e.pas_journaliers ? Number(e.pas_journaliers).toLocaleString('fr') : '—'}
-                        </td>
-                        <td className={`px-3 py-2 text-center ${hc(e.stress, 'stress')}`}>{e.stress ?? '—'}</td>
-                        <td className="px-3 py-2 text-center text-gray-600">{e.poids ? `${e.poids}kg` : '—'}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
-        </div>
-      )}
-    </Layout>
-  )
-}
+{/* Historique avec couleurs (mode athlète corrigé) */}
+{recentEntries.length > 0 && (
+  <div className="bg-white border border-gray-100 rounded-xl overflow-hidden">
+    <div className="px-5 py-3 border-b border-gray-50">
+      <h3 className="text-sm font-medium text-gray-700">Historique</h3>
+    </div>
+    <div className="overflow-x-auto">
+      <table className="w-full text-xs">
+        <thead>
+          <tr className="text-gray-400 border-b border-gray-50">
+            <th className="text-left px-4 py-2 font-medium">Date</th>
+            <th className="px-3 py-2 font-medium">Sport</th>
+            <th className="px-3 py-2 font-medium">Kcal</th>
+            <th className="px-3 py-2 font-medium">P</th>
+            <th className="px-3 py-2 font-medium">G</th>
+            <th className="px-3 py-2 font-medium">L</th>
+            <th className="px-3 py-2 font-medium">Sommeil</th>
+            <th className="px-3 py-2 font-medium">Pas</th>
+            <th className="px-3 py-2 font-medium">Stress</th>
+            <th className="px-3 py-2 font-medium">Poids</th>
+          </tr>
+        </thead>
+        <tbody>
+          {recentEntries.map(e => {
+            const objE = getObjectifsAt(e.date)
+            const bE = objE?.bornes || {}
+
+            return (
+              <tr
+                key={e.id}
+                className={`border-b border-gray-50 hover:bg-gray-50 cursor-pointer transition-colors ${
+                  e.date === selectedDate ? 'bg-brand-50/50' : ''
+                }`}
+                onClick={() => setSelectedDate(e.date)}
+              >
+                <td className="px-4 py-2 text-gray-600 whitespace-nowrap">
+                  {formatDate(e.date)}
+                </td>
+
+                <td className="px-3 py-2 text-center text-gray-600">
+                  {e.sport_fait ? '✓' : '—'}
+                </td>
+
+                <td className={`px-3 py-2 text-center ${metricColor(e.kcal, 'kcal', objE, bE)}`}>
+                  {e.kcal ?? '—'}
+                </td>
+
+                <td className={`px-3 py-2 text-center ${metricColor(e.proteines, 'proteines', objE, bE)}`}>
+                  {e.proteines ?? '—'}
+                </td>
+
+                <td className={`px-3 py-2 text-center ${metricColor(e.glucides, 'glucides', objE, bE)}`}>
+                  {e.glucides ?? '—'}
+                </td>
+
+                <td className={`px-3 py-2 text-center ${metricColor(e.lipides, 'lipides', objE, bE)}`}>
+                  {e.lipides ?? '—'}
+                </td>
+
+                <td className={`px-3 py-2 text-center ${metricColor(e.sommeil, 'sommeil', objE, bE)}`}>
+                  {e.sommeil ? `${e.sommeil}h` : '—'}
+                </td>
+
+                <td className={`px-3 py-2 text-center ${metricColor(e.pas_journaliers, 'pas', objE, bE)}`}>
+                  {e.pas_journaliers
+                    ? Number(e.pas_journaliers).toLocaleString('fr')
+                    : '—'}
+                </td>
+
+                <td className={`px-3 py-2 text-center ${metricColor(e.stress, 'stress', objE, bE)}`}>
+                  {e.stress ?? '—'}
+                </td>
+
+                <td className="px-3 py-2 text-center text-gray-600">
+                  {e.poids ? `${e.poids}kg` : '—'}
+                </td>
+              </tr>
+            )
+          })}
+        </tbody>
+      </table>
+    </div>
+  </div>
+)}
