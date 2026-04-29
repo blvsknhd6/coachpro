@@ -249,7 +249,7 @@ export default function CoachBlocEditor() {
         }
         const cible = byOrdre[ex.ordre]
         if (cible) updates.push({ id: cible.id, ...payload })
-        else inserts.push({ seance_id: scSuiv.id, ordre: ex.ordre, indications: ex.indications, ...payload })
+        else inserts.push({ seance_id: scSuiv.id, ordre: ex.ordre, indications: ex.indications, charge_indicative: null, rpe_cible: null, ...payload })
       }
       const aSup = exsEx.filter(e => !ordres.has(e.ordre))
       deleteIds.push(...aSup.map(e => e.id))
