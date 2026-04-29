@@ -24,6 +24,8 @@ export default function AthleteDataTracking() {
   const [activeBloc, setActiveBloc]     = useState(null)
   const [blocs, setBlocs]               = useState([])
   const [objectifs, setObjectifs]       = useState(null)
+  const [historique, setHistorique]     = useState([])
+  const [semaines, setSemaines]         = useState([])
   const [selectedDate, setSelectedDate] = useState(today())
   const [entry, setEntry]               = useState(null)
   const [form, setForm]                 = useState(emptyForm())
@@ -48,8 +50,29 @@ export default function AthleteDataTracking() {
   }
 
   async function fetchObjectifs() {
-    const { data } = await supabase.from('objectifs_bloc').select('*').eq('bloc_id', activeBloc.id).single()
-    setObjectifs(data)
+    const [{ data: obj }, { data: hist }, { data: sems }] = await Promise.all([
+      supabase.from('objectifs_bloc').select('*').eq('bloc_id', activeBloc.id).single(),
+      supabase.from('objectifs_bloc_historique').select('*').eq('bloc_id', activeBloc.id).order('date_debut', { ascending: true }),
+      supabase.from('semaines').select('id, numero, date_debut').eq('bloc_id', activeBloc.id).order('numero'),
+    ])
+    setObjectifs(obj)
+    setHistorique(hist || [])
+    setSemaines(sems || [])
+  }
+
+  /**
+   * Retourne les objectifs en vigueur à une date donnée.
+   * Cherche dans l'historique la dernière entrée dont date_debut <= dateStr.
+   * Fallback sur objectifs courants.
+   */
+  function getObjectifsAt(dateStr) {
+    if (!dateStr || !historique.length) return objectifs
+    let applicable = null
+    for (const h of historique) {
+      if (h.date_debut <= dateStr) applicable = h
+      else break
+    }
+    return applicable || objectifs
   }
 
   async function fetchEntry(date) {
@@ -98,30 +121,33 @@ export default function AthleteDataTracking() {
     setTimeout(() => setSaved(false), 2000)
   }
 
-  const bornes = objectifs?.bornes || {}
+  // Couleur du formulaire (objectifs courants — la date sélectionnée)
+  const bornesSelected = getObjectifsAt(selectedDate)?.bornes || {}
+  const objectifsSelected = getObjectifsAt(selectedDate)
 
-  // Couleur d'un champ du formulaire (feedback immédiat à la saisie)
   function fieldAccent(key, bilanKey) {
     const val = form[key]
     if (val === '' || val == null) return ''
-    const color = metricColor(val, bilanKey, objectifs, bornes)
+    const color = metricColor(val, bilanKey, objectifsSelected, bornesSelected)
     if (color.includes('green'))  return 'border-green-300 bg-green-50'
     if (color.includes('amber'))  return 'border-amber-300 bg-amber-50'
     if (color.includes('red'))    return 'border-red-300 bg-red-50'
     return ''
   }
 
-  // Couleur d'une cellule de l'historique
-  const hc = (value, bilanKey) => {
-    const color = metricColor(value, bilanKey, objectifs, bornes)
-    return color || 'text-gray-600'
+  // Couleur d'une cellule de l'historique — utilise les objectifs en vigueur à cette date
+  function hc(value, bilanKey, dateStr) {
+    const obj = getObjectifsAt(dateStr)
+    const b   = obj?.bornes || {}
+    return metricColor(value, bilanKey, obj, b) || 'text-gray-600'
   }
 
   function field(formKey, bilanKey, label, unit, type = 'number', opts = {}) {
     const accent = fieldAccent(formKey, bilanKey)
-    const objVal = bilanKey === 'stress' ? objectifs?.stress_cible
-                 : bilanKey === 'pas'    ? objectifs?.pas_journaliers
-                 : objectifs?.[bilanKey]
+    const objVal = bilanKey === 'stress' ? objectifsSelected?.stress_cible
+                 : bilanKey === 'pas'    ? objectifsSelected?.pas_journaliers
+                 : objectifsSelected?.[bilanKey]
+    const bornes = bornesSelected
     return (
       <div>
         <label className="block text-xs font-medium text-gray-500 mb-1">{label}</label>
@@ -240,7 +266,7 @@ export default function AthleteDataTracking() {
                     )
                   })}
                 </div>
-                {objectifs?.stress_cible && <p className="text-xs text-gray-400 mt-1">Objectif : ≤ {objectifs.stress_cible}/10</p>}
+                {objectifsSelected?.stress_cible && <p className="text-xs text-gray-400 mt-1">Objectif : ≤ {objectifsSelected.stress_cible}/10</p>}
               </div>
               {field('poids', 'poids', 'Poids (optionnel)', 'kg', 'number', { step: '0.1' })}
             </div>
@@ -253,13 +279,14 @@ export default function AthleteDataTracking() {
             {saving ? 'Enregistrement…' : saved ? '✓ Enregistré !' : 'Enregistrer'}
           </button>
 
-          
-          
-          {/* Historique avec couleurs */}
+          {/* Historique avec couleurs par objectifs de la période */}
           {recentEntries.length > 0 && (
             <div className="bg-white border border-gray-100 rounded-xl overflow-hidden">
-              <div className="px-5 py-3 border-b border-gray-50">
+              <div className="px-5 py-3 border-b border-gray-50 flex items-center justify-between">
                 <h3 className="text-sm font-medium text-gray-700">Historique</h3>
+                {historique.length > 1 && (
+                  <span className="text-xs text-gray-400">Couleurs selon objectifs de la période</span>
+                )}
               </div>
               <div className="overflow-x-auto">
                 <table className="w-full text-xs">
@@ -284,15 +311,15 @@ export default function AthleteDataTracking() {
                         onClick={() => setSelectedDate(e.date)}>
                         <td className="px-4 py-2 text-gray-600 whitespace-nowrap">{formatDate(e.date)}</td>
                         <td className="px-3 py-2 text-center text-gray-600">{e.sport_fait ? '✓' : '—'}</td>
-                        <td className={`px-3 py-2 text-center ${hc(e.kcal, 'kcal')}`}>{e.kcal ?? '—'}</td>
-                        <td className={`px-3 py-2 text-center ${hc(e.proteines, 'proteines')}`}>{e.proteines ?? '—'}</td>
-                        <td className={`px-3 py-2 text-center ${hc(e.glucides, 'glucides')}`}>{e.glucides ?? '—'}</td>
-                        <td className={`px-3 py-2 text-center ${hc(e.lipides, 'lipides')}`}>{e.lipides ?? '—'}</td>
-                        <td className={`px-3 py-2 text-center ${hc(e.sommeil, 'sommeil')}`}>{e.sommeil ?? '—'}h</td>
-                        <td className={`px-3 py-2 text-center ${hc(e.pas_journaliers, 'pas')}`}>
+                        <td className={`px-3 py-2 text-center ${hc(e.kcal, 'kcal', e.date)}`}>{e.kcal ?? '—'}</td>
+                        <td className={`px-3 py-2 text-center ${hc(e.proteines, 'proteines', e.date)}`}>{e.proteines ?? '—'}</td>
+                        <td className={`px-3 py-2 text-center ${hc(e.glucides, 'glucides', e.date)}`}>{e.glucides ?? '—'}</td>
+                        <td className={`px-3 py-2 text-center ${hc(e.lipides, 'lipides', e.date)}`}>{e.lipides ?? '—'}</td>
+                        <td className={`px-3 py-2 text-center ${hc(e.sommeil, 'sommeil', e.date)}`}>{e.sommeil ?? '—'}h</td>
+                        <td className={`px-3 py-2 text-center ${hc(e.pas_journaliers, 'pas', e.date)}`}>
                           {e.pas_journaliers ? Number(e.pas_journaliers).toLocaleString('fr') : '—'}
                         </td>
-                        <td className={`px-3 py-2 text-center ${hc(e.stress, 'stress')}`}>{e.stress ?? '—'}</td>
+                        <td className={`px-3 py-2 text-center ${hc(e.stress, 'stress', e.date)}`}>{e.stress ?? '—'}</td>
                         <td className="px-3 py-2 text-center text-gray-600">{e.poids ? `${e.poids}kg` : '—'}</td>
                       </tr>
                     ))}
