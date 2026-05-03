@@ -9,6 +9,7 @@ import WidgetConfig from '../../components/shared/WidgetConfig'
 import { findActiveSemaine } from '../../lib/semaine'
 import { metricColor, computeAverages } from '../../lib/tracking'
 import { calcTDEE } from '../../lib/tdee'
+import CycleWidget from '../../components/athlete/CycleWidget'
 
 function fileToBase64(file) {
   return new Promise((resolve, reject) => {
@@ -393,6 +394,9 @@ export default function AthleteHome() {
               </button>
             </div>
           )}
+
+          {/* Widget cycle — femmes uniquement */}
+          {theme.isFemme && <CycleWidget />}
 
           {/* Suivi 7 derniers jours */}
           {isWidgetEnabled('suivi_bloc') && suiviSemaine && (
