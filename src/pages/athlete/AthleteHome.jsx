@@ -9,7 +9,8 @@ import WidgetConfig from '../../components/shared/WidgetConfig'
 import { findActiveSemaine } from '../../lib/semaine'
 import { metricColor, computeAverages } from '../../lib/tracking'
 import { calcTDEE } from '../../lib/tdee'
-import CycleWidget from '../../components/athlete/CycleWidget'
+import { fetchPeriodLogs } from '../../lib/cycleService'
+import { getCycleStatus } from '../../lib/cycleUtils'
 
 function fileToBase64(file) {
   return new Promise((resolve, reject) => {
@@ -84,6 +85,7 @@ export default function AthleteHome() {
   const [suiviSemaine, setSuiviSemaine]     = useState(null)
   const [tdeeData, setTdeeData]             = useState(null)
   const [pendingMacros, setPendingMacros]   = useState(null)
+  const [cycleStatus, setCycleStatus]       = useState(null)
 
   const today      = new Date().toISOString().split('T')[0]
   const accentBtn  = theme.isFemme ? 'bg-pink-600 hover:bg-pink-700 text-white' : 'bg-brand-600 hover:bg-brand-700 text-white'
@@ -111,6 +113,11 @@ export default function AthleteHome() {
 
     fetchRepasJour()
     fetchFavoris()
+
+    if (profile.genre === 'femme') {
+      const { data: cycleLogs } = await fetchPeriodLogs(profile.id)
+      setCycleStatus(getCycleStatus(cycleLogs))
+    }
   }
 
   async function fetchSemaines(blocId) {
@@ -148,18 +155,10 @@ export default function AthleteHome() {
     setSuiviSemaine({ avgs, sportJours: data.filter(d => d.sport_fait).length, nbJours: data.length })
   }
 
-  /**
-   * Calcule le TDEE de l'athlète connecté.
-   * Sources par priorité :
-   *   Poids    : data_tracking > profile.poids (onboarding)
-   *   Activité : data_tracking 30j (≥7 entrées) > objectifs_bloc > profile (onboarding)
-   *   travail_physique : profile.travail_physique
-   */
   async function fetchTdee(blocId) {
     if (!profile?.taille || !profile?.date_naissance) return
     setLoadingTdee(true)
 
-    // 1. Poids
     const { data: poidsData } = await supabase
       .from('data_tracking').select('poids, date')
       .eq('athlete_id', profile.id).not('poids', 'is', null)
@@ -168,7 +167,6 @@ export default function AthleteHome() {
     const poids = poidsData?.[0]?.poids || profile.poids
     if (!poids) { setLoadingTdee(false); return }
 
-    // 2. Activité sur 30 jours
     const thirtyAgo = new Date(); thirtyAgo.setDate(thirtyAgo.getDate() - 30)
     const { data: tracking } = await supabase
       .from('data_tracking').select('pas_journaliers, sport_fait, date')
@@ -181,7 +179,6 @@ export default function AthleteHome() {
       ? pasVals.reduce((a, b) => a + b, 0) / pasVals.length : 0
     const seancesTracking   = entries.filter(e => e.sport_fait).length / Math.max(1, entries.length / 7)
 
-    // 3. Fallback objectifs_bloc
     const { data: objBloc } = await supabase
       .from('objectifs_bloc').select('pas_journaliers, seances_par_semaine')
       .eq('bloc_id', blocId).single()
@@ -396,7 +393,46 @@ export default function AthleteHome() {
           )}
 
           {/* Widget cycle — femmes uniquement */}
-          {theme.isFemme && <CycleWidget />}
+          {theme.isFemme && (
+            cycleStatus ? (
+              <div className="bg-pink-50 border border-pink-200 rounded-xl p-4">
+                <div className="flex items-start justify-between mb-2">
+                  <div>
+                    <p className="text-sm font-semibold text-pink-700">{cycleStatus.phaseLabel}</p>
+                    <p className="text-xs text-gray-500 mt-0.5">{cycleStatus.dayLabel}</p>
+                  </div>
+                  <Link to="/athlete/cycle" className="text-xs text-gray-400 hover:text-gray-600 flex-shrink-0 ml-2">
+                    Détails →
+                  </Link>
+                </div>
+                <div className="h-1.5 bg-white/60 rounded-full overflow-hidden mb-3">
+                  <div className="h-full bg-pink-400 rounded-full transition-all"
+                    style={{ width: `${Math.min(100, Math.round(((cycleStatus.dayInCycle - 1) / cycleStatus.avgCycleLength) * 100))}%` }} />
+                </div>
+                <p className="text-xs text-gray-600 italic mb-1.5">{cycleStatus.message}</p>
+                <p className="text-xs text-gray-500">{cycleStatus.trainingAdvice}</p>
+                {cycleStatus.daysUntilNextPeriod >= 0 && cycleStatus.daysUntilNextPeriod <= 30 && (
+                  <p className="text-xs text-gray-400 mt-2">
+                    Prochaines règles : {new Date(cycleStatus.predictedNextPeriodDate + 'T12:00:00')
+                      .toLocaleDateString('fr-FR', { day: 'numeric', month: 'long' })}
+                  </p>
+                )}
+                {cycleStatus.isLowData && <p className="text-xs text-amber-500 mt-1.5">⚠️ Moins de 3 entrées — estimation approximative</p>}
+                {cycleStatus.isIrregular && <p className="text-xs text-amber-500 mt-1">⚠️ Cycle irrégulier (±{cycleStatus.cycleVariability}j)</p>}
+              </div>
+            ) : (
+              <div className="bg-white border border-dashed border-pink-200 rounded-xl p-4 flex items-center justify-between">
+                <div>
+                  <p className="text-sm font-medium text-gray-700">Suivi du cycle 🌸</p>
+                  <p className="text-xs text-gray-400 mt-0.5">Suis ton cycle pour des conseils adaptés</p>
+                </div>
+                <Link to="/athlete/cycle"
+                  className="text-xs bg-pink-600 text-white px-3 py-1.5 rounded-lg font-medium hover:bg-pink-700 flex-shrink-0">
+                  Commencer →
+                </Link>
+              </div>
+            )
+          )}
 
           {/* Suivi 7 derniers jours */}
           {isWidgetEnabled('suivi_bloc') && suiviSemaine && (
