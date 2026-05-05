@@ -13,6 +13,8 @@ import AthleteEntrainement from './pages/athlete/AthleteEntrainement'
 import AthleteSeance from './pages/athlete/AthleteSeance'
 import AthleteDataTracking from './pages/athlete/AthleteDataTracking'
 import AthleteProgression from './pages/athlete/AthleteProgression'
+import CycleTrackerPage from './pages/athlete/CycleTrackerPage'
+
 
 function PrivateRoute({ children, role }) {
   const { user, profile, loading } = useAuth()
@@ -48,6 +50,7 @@ export default function App() {
       <Route path="/athlete/tracking" element={<PrivateRoute role="athlete"><AthleteDataTracking /></PrivateRoute>} />
       <Route path="/athlete/progression" element={<PrivateRoute role="athlete"><AthleteProgression /></PrivateRoute>} />
       <Route path="/athlete/seance/:seanceId/semaine/:semaineId" element={<PrivateRoute><AthleteSeance /></PrivateRoute>} />
+      <Route path="/athlete/cycle" element={<PrivateRoute role="athlete"><CycleTrackerPage /></PrivateRoute>} />
 
       <Route path="/" element={
         profile?.role === 'coach'   ? <Navigate to="/coach"   replace />
