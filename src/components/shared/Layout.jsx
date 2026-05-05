@@ -29,7 +29,7 @@ export default function Layout({ children }) {
     { to: '/athlete/entrainement', label: 'Mon entraînement' },
     { to: '/athlete/tracking',     label: 'Mon suivi' },
     { to: '/athlete/progression',  label: 'Ma Progression' },
-    ...(isFemme ? [{ to: '/athlete/cycle', label: '🌸 Cycle' }] : []),
+    ...(isFemme ? [{ to: '/athlete/cycle', label: 'Cycle 🌸' }] : []),
   ]
 
   const tabs        = isCoach ? coachTabs : athleteTabs
