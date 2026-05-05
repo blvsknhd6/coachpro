@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom'
 import { useAuth } from '../../hooks/useAuth'
 import Layout from '../../components/shared/Layout'
 import { fetchPeriodLogs, upsertPeriodLog, deletePeriodLog } from '../../lib/cycleService'
-import { getCycleStatus, PHASE_CONFIG, PHASES } from '../../lib/cycleUtils'
+import { getCycleStatus, PHASE_CONFIG } from '../../lib/cycleUtils'
 
 const PHASE_COLOR_CLASSES = {
   red:    'bg-red-100 text-red-700 border-red-200',
@@ -67,7 +67,6 @@ export default function CycleTrackerPage() {
         )}
       </div>
 
-      {/* Formulaire ajout */}
       {showForm && (
         <div className="bg-white border border-pink-200 rounded-xl p-5 mb-4">
           <h3 className="text-sm font-medium text-gray-700 mb-4">Nouvelle entrée</h3>
@@ -106,7 +105,6 @@ export default function CycleTrackerPage() {
       ) : (
         <div className="space-y-4">
 
-          {/* Statut actuel */}
           {status ? (
             <StatusCard status={status} />
           ) : (
@@ -116,7 +114,6 @@ export default function CycleTrackerPage() {
             </div>
           )}
 
-          {/* Historique */}
           {logs.length > 0 && (
             <div className="bg-white border border-gray-100 rounded-xl overflow-hidden">
               <div className="px-5 py-3 border-b border-gray-50 flex items-center justify-between">
@@ -130,10 +127,8 @@ export default function CycleTrackerPage() {
                       <>
                         <p className="text-xs text-gray-500">Supprimer cette entrée ?</p>
                         <div className="flex gap-2">
-                          <button onClick={() => handleDelete(log.id)}
-                            className="text-xs text-red-500 font-medium">Oui</button>
-                          <button onClick={() => setDeleteId(null)}
-                            className="text-xs text-gray-400">Non</button>
+                          <button onClick={() => handleDelete(log.id)} className="text-xs text-red-500 font-medium">Oui</button>
+                          <button onClick={() => setDeleteId(null)} className="text-xs text-gray-400">Non</button>
                         </div>
                       </>
                     ) : (
@@ -148,8 +143,7 @@ export default function CycleTrackerPage() {
                             {log.period_duration_days ? `${log.period_duration_days} jours` : 'durée non renseignée'}
                           </p>
                         </div>
-                        <button onClick={() => setDeleteId(log.id)}
-                          className="text-gray-300 hover:text-red-400 text-lg">×</button>
+                        <button onClick={() => setDeleteId(log.id)} className="text-gray-300 hover:text-red-400 text-lg">×</button>
                       </>
                     )}
                   </div>
@@ -158,7 +152,6 @@ export default function CycleTrackerPage() {
             </div>
           )}
 
-          {/* Infos cycle */}
           {status && (
             <div className="bg-white border border-gray-100 rounded-xl p-5">
               <p className="text-sm font-medium text-gray-700 mb-3">Statistiques</p>
@@ -188,7 +181,6 @@ export default function CycleTrackerPage() {
             </div>
           )}
 
-          {/* Toutes les phases */}
           <div className="bg-white border border-gray-100 rounded-xl p-5">
             <p className="text-sm font-medium text-gray-700 mb-3">Les phases du cycle</p>
             <div className="space-y-2">
@@ -240,7 +232,6 @@ function StatusCard({ status }) {
         </span>
       </div>
 
-      {/* Barre progression */}
       <div className="mb-4">
         <div className="flex justify-between text-xs text-gray-400 mb-1">
           <span>Début règles</span>
@@ -272,18 +263,10 @@ function StatusCard({ status }) {
 
       {(status.isLowData || status.isIrregular) && (
         <div className="mt-3 space-y-1">
-          {status.isLowData    && <p className="text-xs text-amber-600">⚠️ Moins de 3 cycles enregistrés — estimation approximative</p>}
-          {status.isIrregular  && <p className="text-xs text-amber-600">⚠️ Cycle irrégulier détecté (variation ±{status.cycleVariability}j)</p>}
+          {status.isLowData   && <p className="text-xs text-amber-600">⚠️ Moins de 3 cycles enregistrés — estimation approximative</p>}
+          {status.isIrregular && <p className="text-xs text-amber-600">⚠️ Cycle irrégulier détecté (variation ±{status.cycleVariability}j)</p>}
         </div>
       )}
     </div>
   )
-}
-
-const PHASE_COLOR_CLASSES = {
-  red:    'bg-red-100 text-red-700 border-red-200',
-  yellow: 'bg-yellow-100 text-yellow-700 border-yellow-200',
-  green:  'bg-green-100 text-green-700 border-green-200',
-  orange: 'bg-orange-100 text-orange-700 border-orange-200',
-  purple: 'bg-purple-100 text-purple-700 border-purple-200',
 }
