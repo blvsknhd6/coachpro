@@ -22,6 +22,7 @@ export default function CycleTrackerPage() {
   const [form, setForm]         = useState({ period_start_date: '', period_duration_days: '' })
   const [saving, setSaving]     = useState(false)
   const [deleteId, setDeleteId] = useState(null)
+  const [confirmToday, setConfirmToday] = useState(false)
 
   useEffect(() => { if (profile) load() }, [profile?.id])
 
@@ -33,15 +34,26 @@ export default function CycleTrackerPage() {
     setLoading(false)
   }
 
-  async function handleSave() {
-    if (!form.period_start_date) return
+  async function handleSave(overrideDate = null) {
+    const date = overrideDate || form.period_start_date
+    if (!date) return
     setSaving(true)
+
+    // Si déjà 10 entrées, supprimer la plus ancienne avant d'ajouter
+    if (logs.length >= 10) {
+      const oldest = [...logs].sort((a, b) =>
+        new Date(a.period_start_date) - new Date(b.period_start_date)
+      )[0]
+      await deletePeriodLog(oldest.id)
+    }
+
     await upsertPeriodLog(profile.id, {
-      period_start_date:    form.period_start_date,
+      period_start_date:    date,
       period_duration_days: form.period_duration_days ? Number(form.period_duration_days) : null,
     })
     setForm({ period_start_date: '', period_duration_days: '' })
     setShowForm(false)
+    setConfirmToday(false)
     setSaving(false)
     await load()
   }
@@ -59,17 +71,45 @@ export default function CycleTrackerPage() {
       <div className="flex items-center gap-3 mb-5">
         <Link to="/athlete" className="text-sm text-gray-400 hover:text-gray-700">← Accueil</Link>
         <h1 className="text-xl font-semibold flex-1">Mon cycle 🌸</h1>
-        {logs.length < 10 && (
-          <button onClick={() => setShowForm(v => !v)}
-            className="bg-pink-600 text-white px-3 py-1.5 rounded-lg text-sm font-medium hover:bg-pink-700">
-            + Ajouter
-          </button>
-        )}
+        <button onClick={() => { setShowForm(v => !v); setConfirmToday(false) }}
+          className="bg-pink-600 text-white px-3 py-1.5 rounded-lg text-sm font-medium hover:bg-pink-700">
+          + Ajouter
+        </button>
       </div>
 
+      {/* Bouton confirmation règles aujourd'hui */}
+      {!showForm && (
+        <div className="mb-4">
+          {!confirmToday ? (
+            <button
+              onClick={() => setConfirmToday(true)}
+              className="w-full bg-pink-50 border border-pink-200 text-pink-700 rounded-xl px-4 py-3 text-sm font-medium hover:bg-pink-100 transition-colors">
+              🩸 Mes règles ont commencé aujourd'hui
+            </button>
+          ) : (
+            <div className="bg-pink-50 border border-pink-200 rounded-xl p-4">
+              <p className="text-sm text-pink-700 font-medium mb-3">
+                Confirmer le début des règles aujourd'hui ({new Date(today + 'T12:00:00').toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' })}) ?
+              </p>
+              <div className="flex gap-2">
+                <button onClick={() => handleSave(today)} disabled={saving}
+                  className="flex-1 bg-pink-600 text-white rounded-lg py-2 text-sm font-medium hover:bg-pink-700 disabled:opacity-50">
+                  {saving ? 'Enregistrement…' : 'Confirmer ✓'}
+                </button>
+                <button onClick={() => setConfirmToday(false)}
+                  className="flex-1 border border-gray-200 rounded-lg py-2 text-sm text-gray-600">
+                  Annuler
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Formulaire ajout manuel */}
       {showForm && (
         <div className="bg-white border border-pink-200 rounded-xl p-5 mb-4">
-          <h3 className="text-sm font-medium text-gray-700 mb-4">Nouvelle entrée</h3>
+          <h3 className="text-sm font-medium text-gray-700 mb-4">Ajouter une date manuellement</h3>
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="block text-xs font-medium text-gray-500 mb-1">Début des règles</label>
@@ -87,8 +127,11 @@ export default function CycleTrackerPage() {
               />
             </div>
           </div>
+          {logs.length >= 10 && (
+            <p className="text-xs text-amber-500 mt-2">⚠️ La plus ancienne entrée sera supprimée automatiquement.</p>
+          )}
           <div className="flex gap-2 mt-4">
-            <button onClick={handleSave} disabled={saving || !form.period_start_date}
+            <button onClick={() => handleSave()} disabled={saving || !form.period_start_date}
               className="flex-1 bg-pink-600 text-white rounded-lg py-2 text-sm font-medium hover:bg-pink-700 disabled:opacity-50">
               {saving ? 'Enregistrement…' : 'Enregistrer'}
             </button>
