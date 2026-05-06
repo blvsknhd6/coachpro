@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { supabase } from '../../lib/supabase'
 import { useAuth } from '../../hooks/useAuth'
 import Layout from '../../components/shared/Layout'
@@ -21,21 +21,19 @@ function getLast7Days() {
 
 export default function AthleteDataTracking() {
   const { profile } = useAuth()
-  const [activeBloc, setActiveBloc]     = useState(null)
-  const [blocs, setBlocs]               = useState([])
-  const [objectifs, setObjectifs]       = useState(null)
-  const [historique, setHistorique]     = useState([])
-  const [semaines, setSemaines]         = useState([])
-  const [selectedDate, setSelectedDate] = useState(today())
-  const [entry, setEntry]               = useState(null)
-  const [form, setForm]                 = useState(emptyForm())
-  const [saving, setSaving]             = useState(false)
-  const [saved, setSaved]               = useState(false)
+  const [activeBloc, setActiveBloc]       = useState(null)
+  const [blocs, setBlocs]                 = useState([])
+  const [objectifs, setObjectifs]         = useState(null)
+  const [selectedDate, setSelectedDate]   = useState(today())
+  const [form, setForm]                   = useState(emptyForm())
+  const [saved, setSaved]                 = useState(false)
   const [recentEntries, setRecentEntries] = useState([])
+  const saveTimerRef                      = useRef(null)
+  const activeBlocIdRef                   = useRef(null)
   const days = getLast7Days()
 
   useEffect(() => { fetchBlocs() }, [profile])
-  useEffect(() => { if (activeBloc) { fetchObjectifs(); fetchRecent() } }, [activeBloc])
+  useEffect(() => { if (activeBloc) { activeBlocIdRef.current = activeBloc.id; fetchObjectifs(); fetchRecent() } }, [activeBloc])
   useEffect(() => { if (activeBloc) fetchEntry(selectedDate) }, [selectedDate, activeBloc])
 
   function emptyForm() {
@@ -50,45 +48,23 @@ export default function AthleteDataTracking() {
   }
 
   async function fetchObjectifs() {
-    const [{ data: obj }, { data: hist }, { data: sems }] = await Promise.all([
-      supabase.from('objectifs_bloc').select('*').eq('bloc_id', activeBloc.id).single(),
-      supabase.from('objectifs_bloc_historique').select('*').eq('bloc_id', activeBloc.id).order('date_debut', { ascending: true }),
-      supabase.from('semaines').select('id, numero, date_debut').eq('bloc_id', activeBloc.id).order('numero'),
-    ])
-    setObjectifs(obj)
-    setHistorique(hist || [])
-    setSemaines(sems || [])
-  }
-
-  /**
-   * Retourne les objectifs en vigueur à une date donnée.
-   * Cherche dans l'historique la dernière entrée dont date_debut <= dateStr.
-   * Fallback sur objectifs courants.
-   */
-  function getObjectifsAt(dateStr) {
-    if (!dateStr || !historique.length) return objectifs
-    let applicable = null
-    for (const h of historique) {
-      if (h.date_debut <= dateStr) applicable = h
-      else break
-    }
-    return applicable || objectifs
+    const { data } = await supabase.from('objectifs_bloc').select('*').eq('bloc_id', activeBloc.id).single()
+    setObjectifs(data)
   }
 
   async function fetchEntry(date) {
     const { data } = await supabase.from('data_tracking').select('*')
       .eq('athlete_id', profile.id).eq('date', date).single()
-    setEntry(data)
     setForm(data ? {
-      sport_fait:     data.sport_fait     || false,
-      kcal:           data.kcal           ?? '',
-      proteines:      data.proteines      ?? '',
-      glucides:       data.glucides       ?? '',
-      lipides:        data.lipides        ?? '',
-      sommeil:        data.sommeil        ?? '',
+      sport_fait:      data.sport_fait      || false,
+      kcal:            data.kcal            ?? '',
+      proteines:       data.proteines       ?? '',
+      glucides:        data.glucides        ?? '',
+      lipides:         data.lipides         ?? '',
+      sommeil:         data.sommeil         ?? '',
       pas_journaliers: data.pas_journaliers ?? '',
-      stress:         data.stress         ?? '',
-      poids:          data.poids          ?? '',
+      stress:          data.stress          ?? '',
+      poids:           data.poids           ?? '',
     } : emptyForm())
   }
 
@@ -99,67 +75,84 @@ export default function AthleteDataTracking() {
     setRecentEntries(data || [])
   }
 
-  async function handleSave() {
-    setSaving(true); setSaved(false)
+  // Sauvegarde automatique — appelée onBlur ou onChange (stress/sport)
+  const autoSave = useCallback(async (updatedForm) => {
+    if (!activeBlocIdRef.current || !profile) return
     const payload = {
-      athlete_id:     profile.id,
-      bloc_id:        activeBloc.id,
-      date:           selectedDate,
-      sport_fait:     form.sport_fait,
-      kcal:           form.kcal           === '' ? null : Number(form.kcal),
-      proteines:      form.proteines       === '' ? null : Number(form.proteines),
-      glucides:       form.glucides        === '' ? null : Number(form.glucides),
-      lipides:        form.lipides         === '' ? null : Number(form.lipides),
-      sommeil:        form.sommeil         === '' ? null : Number(form.sommeil),
-      pas_journaliers: form.pas_journaliers === '' ? null : Number(form.pas_journaliers),
-      stress:         form.stress          === '' ? null : Number(form.stress),
-      poids:          form.poids           === '' ? null : Number(form.poids),
+      athlete_id:      profile.id,
+      bloc_id:         activeBlocIdRef.current,
+      date:            selectedDate,
+      sport_fait:      updatedForm.sport_fait,
+      kcal:            updatedForm.kcal            === '' ? null : Number(updatedForm.kcal),
+      proteines:       updatedForm.proteines        === '' ? null : Number(updatedForm.proteines),
+      glucides:        updatedForm.glucides         === '' ? null : Number(updatedForm.glucides),
+      lipides:         updatedForm.lipides          === '' ? null : Number(updatedForm.lipides),
+      sommeil:         updatedForm.sommeil          === '' ? null : Number(updatedForm.sommeil),
+      pas_journaliers: updatedForm.pas_journaliers  === '' ? null : Number(updatedForm.pas_journaliers),
+      stress:          updatedForm.stress           === '' ? null : Number(updatedForm.stress),
+      poids:           updatedForm.poids            === '' ? null : Number(updatedForm.poids),
     }
     await supabase.from('data_tracking').upsert(payload, { onConflict: 'athlete_id,date' })
-    setSaving(false); setSaved(true)
+    setSaved(true)
     fetchRecent()
-    setTimeout(() => setSaved(false), 2000)
+    clearTimeout(saveTimerRef.current)
+    saveTimerRef.current = setTimeout(() => setSaved(false), 2000)
+  }, [profile, selectedDate])
+
+  function handleChange(key, value) {
+    setForm(f => ({ ...f, [key]: value }))
   }
 
-  // Couleur du formulaire (objectifs courants — la date sélectionnée)
-  const bornesSelected = getObjectifsAt(selectedDate)?.bornes || {}
-  const objectifsSelected = getObjectifsAt(selectedDate)
+  function handleBlur(key, value) {
+    const updated = { ...form, [key]: value }
+    setForm(updated)
+    autoSave(updated)
+  }
+
+  function handleSportToggle() {
+    const updated = { ...form, sport_fait: !form.sport_fait }
+    setForm(updated)
+    autoSave(updated)
+  }
+
+  function handleStressSelect(n) {
+    const updated = { ...form, stress: form.stress === n ? '' : n }
+    setForm(updated)
+    autoSave(updated)
+  }
+
+  const bornes = objectifs?.bornes || {}
 
   function fieldAccent(key, bilanKey) {
     const val = form[key]
     if (val === '' || val == null) return ''
-    const color = metricColor(val, bilanKey, objectifsSelected, bornesSelected)
-    if (color.includes('green'))  return 'border-green-300 bg-green-50'
-    if (color.includes('amber'))  return 'border-amber-300 bg-amber-50'
-    if (color.includes('red'))    return 'border-red-300 bg-red-50'
+    const color = metricColor(val, bilanKey, objectifs, bornes)
+    if (color.includes('green')) return 'border-green-300 bg-green-50'
+    if (color.includes('amber')) return 'border-amber-300 bg-amber-50'
+    if (color.includes('red'))   return 'border-red-300 bg-red-50'
     return ''
   }
 
-  // Couleur d'une cellule de l'historique — utilise les objectifs en vigueur à cette date
-  function hc(value, bilanKey, dateStr) {
-    const obj = getObjectifsAt(dateStr)
-    const b   = obj?.bornes || {}
-    return metricColor(value, bilanKey, obj, b) || 'text-gray-600'
-  }
+  const hc = (value, bilanKey) => metricColor(value, bilanKey, objectifs, bornes) || 'text-gray-600'
 
-  function field(formKey, bilanKey, label, unit, type = 'number', opts = {}) {
+  function field(formKey, bilanKey, label, unit, opts = {}) {
     const accent = fieldAccent(formKey, bilanKey)
-    const objVal = bilanKey === 'stress' ? objectifsSelected?.stress_cible
-                 : bilanKey === 'pas'    ? objectifsSelected?.pas_journaliers
-                 : objectifsSelected?.[bilanKey]
-    const bornes = bornesSelected
+    const objVal = bilanKey === 'stress' ? objectifs?.stress_cible
+                 : bilanKey === 'pas'    ? objectifs?.pas_journaliers
+                 : objectifs?.[bilanKey]
     return (
       <div>
         <label className="block text-xs font-medium text-gray-500 mb-1">{label}</label>
         <div className="flex items-center gap-1.5">
           <input
-            type={type}
-            inputMode={type === 'number' ? 'decimal' : undefined}
+            type="number"
+            inputMode="decimal"
             value={form[formKey]}
             step={opts.step}
             min={opts.min}
             max={opts.max}
-            onChange={e => setForm(f => ({ ...f, [formKey]: e.target.value }))}
+            onChange={e => handleChange(formKey, e.target.value)}
+            onBlur={e => handleBlur(formKey, e.target.value)}
             placeholder={objVal ? String(objVal) : '—'}
             className={`w-full border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400 transition-colors ${accent || 'border-gray-200 bg-white'}`}
           />
@@ -175,7 +168,10 @@ export default function AthleteDataTracking() {
 
   return (
     <Layout>
-      <h1 className="text-xl font-semibold mb-6">Mon suivi quotidien</h1>
+      <div className="flex items-center justify-between mb-6">
+        <h1 className="text-xl font-semibold">Mon suivi quotidien</h1>
+        {saved && <span className="text-xs text-green-500 font-medium">✓ Enregistré</span>}
+      </div>
 
       {blocs.length > 1 && (
         <div className="flex gap-2 mb-4 flex-wrap">
@@ -188,7 +184,7 @@ export default function AthleteDataTracking() {
         </div>
       )}
 
-      {/* Sélecteur de date — 7 derniers jours */}
+      {/* Sélecteur de date */}
       <div className="flex gap-1.5 mb-6 overflow-x-auto pb-1">
         {days.map(d => {
           const hasEntry = recentEntries.some(e => e.date === d)
@@ -211,11 +207,11 @@ export default function AthleteDataTracking() {
         <p className="text-sm text-gray-400">Aucun programme actif.</p>
       ) : (
         <div className="space-y-4">
+
           {/* Sport du jour */}
           <div className="bg-white border border-gray-100 rounded-xl p-5">
             <h3 className="text-sm font-medium text-gray-700 mb-3">Activité du jour</h3>
-            <button
-              onClick={() => setForm(f => ({ ...f, sport_fait: !f.sport_fait }))}
+            <button onClick={handleSportToggle}
               className={`flex items-center gap-3 px-4 py-3 rounded-xl border transition-all text-sm font-medium ${
                 form.sport_fait ? 'bg-brand-50 border-brand-200 text-brand-700' : 'bg-gray-50 border-gray-100 text-gray-500 hover:border-gray-200'
               }`}>
@@ -245,8 +241,8 @@ export default function AthleteDataTracking() {
           <div className="bg-white border border-gray-100 rounded-xl p-5">
             <h3 className="text-sm font-medium text-gray-700 mb-4">Bien-être</h3>
             <div className="grid grid-cols-2 gap-4">
-              {field('sommeil',       'sommeil', 'Sommeil',          'h', 'number', { step: '0.5', min: '0', max: '24' })}
-              {field('pas_journaliers','pas',    'Pas journaliers',  '')}
+              {field('sommeil',        'sommeil', 'Sommeil',         'h',  { step: '0.5', min: '0', max: '24' })}
+              {field('pas_journaliers','pas',     'Pas journaliers', '')}
               <div>
                 <label className="block text-xs font-medium text-gray-500 mb-1">Stress /10</label>
                 <div className="flex gap-1.5 flex-wrap">
@@ -258,35 +254,24 @@ export default function AthleteDataTracking() {
                       : 'bg-red-500 text-white'
                       : 'bg-gray-50 text-gray-500 border border-gray-100 hover:border-gray-300'
                     return (
-                      <button key={n}
-                        onClick={() => setForm(f => ({ ...f, stress: f.stress === n ? '' : n }))}
+                      <button key={n} onClick={() => handleStressSelect(n)}
                         className={`w-8 h-8 rounded-lg text-xs font-medium transition-all ${colorClass}`}>
                         {n}
                       </button>
                     )
                   })}
                 </div>
-                {objectifsSelected?.stress_cible && <p className="text-xs text-gray-400 mt-1">Objectif : ≤ {objectifsSelected.stress_cible}/10</p>}
+                {objectifs?.stress_cible && <p className="text-xs text-gray-400 mt-1">Objectif : ≤ {objectifs.stress_cible}/10</p>}
               </div>
-              {field('poids', 'poids', 'Poids (optionnel)', 'kg', 'number', { step: '0.1' })}
+              {field('poids', 'poids', 'Poids (optionnel)', 'kg', { step: '0.1' })}
             </div>
           </div>
 
-          <button onClick={handleSave} disabled={saving}
-            className={`w-full py-3 rounded-xl text-sm font-medium transition-all ${
-              saved ? 'bg-green-500 text-white' : 'bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50'
-            }`}>
-            {saving ? 'Enregistrement…' : saved ? '✓ Enregistré !' : 'Enregistrer'}
-          </button>
-
-          {/* Historique avec couleurs par objectifs de la période */}
+          {/* Historique */}
           {recentEntries.length > 0 && (
             <div className="bg-white border border-gray-100 rounded-xl overflow-hidden">
-              <div className="px-5 py-3 border-b border-gray-50 flex items-center justify-between">
+              <div className="px-5 py-3 border-b border-gray-50">
                 <h3 className="text-sm font-medium text-gray-700">Historique</h3>
-                {historique.length > 1 && (
-                  <span className="text-xs text-gray-400">Couleurs selon objectifs de la période</span>
-                )}
               </div>
               <div className="overflow-x-auto">
                 <table className="w-full text-xs">
@@ -311,15 +296,15 @@ export default function AthleteDataTracking() {
                         onClick={() => setSelectedDate(e.date)}>
                         <td className="px-4 py-2 text-gray-600 whitespace-nowrap">{formatDate(e.date)}</td>
                         <td className="px-3 py-2 text-center text-gray-600">{e.sport_fait ? '✓' : '—'}</td>
-                        <td className={`px-3 py-2 text-center ${hc(e.kcal, 'kcal', e.date)}`}>{e.kcal ?? '—'}</td>
-                        <td className={`px-3 py-2 text-center ${hc(e.proteines, 'proteines', e.date)}`}>{e.proteines ?? '—'}</td>
-                        <td className={`px-3 py-2 text-center ${hc(e.glucides, 'glucides', e.date)}`}>{e.glucides ?? '—'}</td>
-                        <td className={`px-3 py-2 text-center ${hc(e.lipides, 'lipides', e.date)}`}>{e.lipides ?? '—'}</td>
-                        <td className={`px-3 py-2 text-center ${hc(e.sommeil, 'sommeil', e.date)}`}>{e.sommeil ?? '—'}h</td>
-                        <td className={`px-3 py-2 text-center ${hc(e.pas_journaliers, 'pas', e.date)}`}>
+                        <td className={`px-3 py-2 text-center ${hc(e.kcal, 'kcal')}`}>{e.kcal ?? '—'}</td>
+                        <td className={`px-3 py-2 text-center ${hc(e.proteines, 'proteines')}`}>{e.proteines ?? '—'}</td>
+                        <td className={`px-3 py-2 text-center ${hc(e.glucides, 'glucides')}`}>{e.glucides ?? '—'}</td>
+                        <td className={`px-3 py-2 text-center ${hc(e.lipides, 'lipides')}`}>{e.lipides ?? '—'}</td>
+                        <td className={`px-3 py-2 text-center ${hc(e.sommeil, 'sommeil')}`}>{e.sommeil ?? '—'}h</td>
+                        <td className={`px-3 py-2 text-center ${hc(e.pas_journaliers, 'pas')}`}>
                           {e.pas_journaliers ? Number(e.pas_journaliers).toLocaleString('fr') : '—'}
                         </td>
-                        <td className={`px-3 py-2 text-center ${hc(e.stress, 'stress', e.date)}`}>{e.stress ?? '—'}</td>
+                        <td className={`px-3 py-2 text-center ${hc(e.stress, 'stress')}`}>{e.stress ?? '—'}</td>
                         <td className="px-3 py-2 text-center text-gray-600">{e.poids ? `${e.poids}kg` : '—'}</td>
                       </tr>
                     ))}
@@ -328,6 +313,7 @@ export default function AthleteDataTracking() {
               </div>
             </div>
           )}
+
         </div>
       )}
     </Layout>
