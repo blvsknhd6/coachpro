@@ -9,7 +9,7 @@ import WidgetConfig from '../../components/shared/WidgetConfig'
 import { findActiveSemaine } from '../../lib/semaine'
 import { metricColor, computeAverages } from '../../lib/tracking'
 import { calcTDEE } from '../../lib/tdee'
-import { fetchPeriodLogs } from '../../lib/cycleService'
+import { fetchPeriodLogs, upsertPeriodLog, deletePeriodLog } from '../../lib/cycleService'
 import { getCycleStatus } from '../../lib/cycleUtils'
 
 function fileToBase64(file) {
@@ -86,6 +86,8 @@ export default function AthleteHome() {
   const [tdeeData, setTdeeData]             = useState(null)
   const [pendingMacros, setPendingMacros]   = useState(null)
   const [cycleStatus, setCycleStatus]       = useState(null)
+  const [confirmCycleToday, setConfirmCycleToday] = useState(false)
+  const [savingCycle, setSavingCycle]             = useState(false)
 
   const today      = new Date().toISOString().split('T')[0]
   const accentBtn  = theme.isFemme ? 'bg-pink-600 hover:bg-pink-700 text-white' : 'bg-brand-600 hover:bg-brand-700 text-white'
@@ -175,8 +177,7 @@ export default function AthleteHome() {
 
     const entries           = tracking || []
     const pasVals           = entries.map(e => e.pas_journaliers).filter(v => v != null)
-    const pasJournaliersMoy = pasVals.length
-      ? pasVals.reduce((a, b) => a + b, 0) / pasVals.length : 0
+    const pasJournaliersMoy = pasVals.length ? pasVals.reduce((a, b) => a + b, 0) / pasVals.length : 0
     const seancesTracking   = entries.filter(e => e.sport_fait).length / Math.max(1, entries.length / 7)
 
     const { data: objBloc } = await supabase
@@ -184,8 +185,8 @@ export default function AthleteHome() {
       .eq('bloc_id', blocId).single()
 
     const hasSufficientTracking = entries.length >= 7
-    const pasUsed      = hasSufficientTracking ? pasJournaliersMoy      : (objBloc?.pas_journaliers     || profile.pas_journaliers_moy || 0)
-    const seancesUsed  = hasSufficientTracking ? seancesTracking        : (objBloc?.seances_par_semaine || profile.seances_semaine     || 0)
+    const pasUsed     = hasSufficientTracking ? pasJournaliersMoy    : (objBloc?.pas_journaliers     || profile.pas_journaliers_moy || 0)
+    const seancesUsed = hasSufficientTracking ? seancesTracking      : (objBloc?.seances_par_semaine || profile.seances_semaine     || 0)
 
     const result = calcTDEE(
       {
@@ -323,6 +324,22 @@ export default function AthleteHome() {
   async function deleteRepas(id) { await supabase.from('repas').delete().eq('id', id); await fetchRepasJour() }
   async function deleteFavori(id) { await supabase.from('repas_favoris').delete().eq('id', id); await fetchFavoris() }
 
+  async function handleConfirmCycleToday() {
+    setSavingCycle(true)
+    const { data: existingLogs } = await fetchPeriodLogs(profile.id)
+    if (existingLogs.length >= 10) {
+      const oldest = [...existingLogs].sort((a, b) =>
+        new Date(a.period_start_date) - new Date(b.period_start_date)
+      )[0]
+      await deletePeriodLog(oldest.id)
+    }
+    await upsertPeriodLog(profile.id, { period_start_date: today, period_duration_days: null })
+    const { data: newLogs } = await fetchPeriodLogs(profile.id)
+    setCycleStatus(getCycleStatus(newLogs))
+    setConfirmCycleToday(false)
+    setSavingCycle(false)
+  }
+
   const MacroBar = ({ label, val, target, color }) => {
     const pct = target && val ? Math.min(100, Math.round((val / target) * 100)) : 0
     return (
@@ -410,7 +427,31 @@ export default function AthleteHome() {
                     style={{ width: `${Math.min(100, Math.round(((cycleStatus.dayInCycle - 1) / cycleStatus.avgCycleLength) * 100))}%` }} />
                 </div>
                 <p className="text-xs text-gray-600 italic mb-1.5">{cycleStatus.message}</p>
-                <p className="text-xs text-gray-500">{cycleStatus.trainingAdvice}</p>
+                <p className="text-xs text-gray-500 mb-3">{cycleStatus.trainingAdvice}</p>
+
+                {!confirmCycleToday ? (
+                  <button onClick={() => setConfirmCycleToday(true)}
+                    className="w-full bg-white border border-pink-200 text-pink-600 rounded-lg px-3 py-2 text-xs font-medium hover:bg-pink-100 transition-colors">
+                    🩸 Mes règles ont commencé aujourd'hui
+                  </button>
+                ) : (
+                  <div className="bg-white border border-pink-200 rounded-lg p-3">
+                    <p className="text-xs text-pink-700 font-medium mb-2">
+                      Confirmer le début des règles aujourd'hui ({new Date(today + 'T12:00:00').toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' })}) ?
+                    </p>
+                    <div className="flex gap-2">
+                      <button onClick={handleConfirmCycleToday} disabled={savingCycle}
+                        className="flex-1 bg-pink-600 text-white rounded-lg py-1.5 text-xs font-medium hover:bg-pink-700 disabled:opacity-50">
+                        {savingCycle ? '…' : 'Confirmer ✓'}
+                      </button>
+                      <button onClick={() => setConfirmCycleToday(false)}
+                        className="flex-1 border border-gray-200 rounded-lg py-1.5 text-xs text-gray-600">
+                        Annuler
+                      </button>
+                    </div>
+                  </div>
+                )}
+
                 {cycleStatus.daysUntilNextPeriod >= 0 && cycleStatus.daysUntilNextPeriod <= 30 && (
                   <p className="text-xs text-gray-400 mt-2">
                     Prochaines règles : {new Date(cycleStatus.predictedNextPeriodDate + 'T12:00:00')
@@ -462,7 +503,7 @@ export default function AthleteHome() {
             </div>
           )}
 
-          {/* Maintien calorique estimé (TDEE) */}
+          {/* TDEE */}
           {isWidgetEnabled('suivi_bloc') && (
             loadingTdee ? (
               <div className="h-20 bg-gray-100 rounded-xl animate-pulse" />
@@ -473,9 +514,7 @@ export default function AthleteHome() {
                   <Link to="/athlete/tracking" className={`text-xs ${accentText} font-medium`}>Mon suivi →</Link>
                 </div>
                 <p className={`text-2xl font-bold ${accentText}`}>{tdeeData.tdee} <span className="text-sm font-normal text-gray-500">kcal/jour</span></p>
-                <p className="text-xs text-gray-400 mt-1">
-                  BMR {tdeeData.bmr} kcal · ×{tdeeData.multiplier} · {tdeeData.activityLabel}
-                </p>
+                <p className="text-xs text-gray-400 mt-1">BMR {tdeeData.bmr} kcal · ×{tdeeData.multiplier} · {tdeeData.activityLabel}</p>
                 <p className="text-xs text-gray-300 mt-0.5">
                   {tdeeData.poids}kg · {tdeeData.pasJournaliersMoy.toLocaleString('fr')} pas/j · {tdeeData.seancesParSemaine} séances/sem
                   {tdeeData.sourceActivite === 'onboarding' ? ' · données onboarding' : ' · 30j tracking'}
