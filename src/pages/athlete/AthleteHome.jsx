@@ -431,7 +431,7 @@ export default function AthleteHome() {
 
                 {!confirmCycleToday ? (
                   <button onClick={() => setConfirmCycleToday(true)}
-                    className="w-full bg-white border border-pink-200 text-pink-600 rounded-lg px-3 py-2 text-xs font-medium hover:bg-pink-100 transition-colors">
+                  className="text-xs bg-pink-600 text-white px-3 py-1.5 rounded-lg font-medium hover:bg-pink-700 flex-shrink-0">
                     🩸 Mes règles ont commencé aujourd'hui
                   </button>
                 ) : (
