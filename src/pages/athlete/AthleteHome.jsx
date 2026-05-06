@@ -547,7 +547,7 @@ export default function AthleteHome() {
               <div className="flex items-center justify-between mb-2">
                 <p className="text-sm font-medium text-gray-700">Ajouter un repas</p>
                 <button onClick={() => setShowFavoris(v => !v)}
-                  className={`text-xs px-2.5 py-1 rounded-lg border transition-colors ${showFavoris ? 'border-gray-300 text-gray-700 bg-gray-50' : 'border-gray-200 text-gray-500'}`}>
+                  className="text-xs bg-pink-600 text-white px-3 py-1.5 rounded-lg font-medium hover:bg-pink-700 flex-shrink-0">
                   Mes repas
                 </button>
               </div>
