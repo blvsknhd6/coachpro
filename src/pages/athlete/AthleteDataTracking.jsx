@@ -24,6 +24,7 @@ export default function AthleteDataTracking() {
   const [activeBloc, setActiveBloc]       = useState(null)
   const [blocs, setBlocs]                 = useState([])
   const [objectifs, setObjectifs]         = useState(null)
+  const [historique, setHistorique]       = useState([])
   const [selectedDate, setSelectedDate]   = useState(today())
   const [form, setForm]                   = useState(emptyForm())
   const [saved, setSaved]                 = useState(false)
@@ -33,7 +34,13 @@ export default function AthleteDataTracking() {
   const days = getLast7Days()
 
   useEffect(() => { fetchBlocs() }, [profile])
-  useEffect(() => { if (activeBloc) { activeBlocIdRef.current = activeBloc.id; fetchObjectifs(); fetchRecent() } }, [activeBloc])
+  useEffect(() => {
+    if (activeBloc) {
+      activeBlocIdRef.current = activeBloc.id
+      fetchObjectifs()
+      fetchRecent()
+    }
+  }, [activeBloc])
   useEffect(() => { if (activeBloc) fetchEntry(selectedDate) }, [selectedDate, activeBloc])
 
   function emptyForm() {
@@ -48,8 +55,12 @@ export default function AthleteDataTracking() {
   }
 
   async function fetchObjectifs() {
-    const { data } = await supabase.from('objectifs_bloc').select('*').eq('bloc_id', activeBloc.id).single()
-    setObjectifs(data)
+    const [{ data: obj }, { data: hist }] = await Promise.all([
+      supabase.from('objectifs_bloc').select('*').eq('bloc_id', activeBloc.id).single(),
+      supabase.from('objectifs_bloc_historique').select('*').eq('bloc_id', activeBloc.id).order('date_debut', { ascending: true }),
+    ])
+    setObjectifs(obj)
+    setHistorique(hist || [])
   }
 
   async function fetchEntry(date) {
@@ -75,7 +86,20 @@ export default function AthleteDataTracking() {
     setRecentEntries(data || [])
   }
 
-  // Sauvegarde automatique — appelée onBlur ou onChange (stress/sport)
+  /**
+   * Retourne les objectifs en vigueur à une date donnée.
+   * Cherche dans l'historique la dernière entrée dont date_debut <= dateStr.
+   */
+  function getObjectifsAt(dateStr) {
+    if (!dateStr || !historique.length) return objectifs
+    let applicable = null
+    for (const h of historique) {
+      if (h.date_debut <= dateStr) applicable = h
+      else break
+    }
+    return applicable || objectifs
+  }
+
   const autoSave = useCallback(async (updatedForm) => {
     if (!activeBlocIdRef.current || !profile) return
     const payload = {
@@ -121,25 +145,32 @@ export default function AthleteDataTracking() {
     autoSave(updated)
   }
 
-  const bornes = objectifs?.bornes || {}
+  // Objectifs en vigueur pour la date sélectionnée (formulaire)
+  const objCourants = getObjectifsAt(selectedDate)
+  const bornes      = objCourants?.bornes || {}
 
   function fieldAccent(key, bilanKey) {
     const val = form[key]
     if (val === '' || val == null) return ''
-    const color = metricColor(val, bilanKey, objectifs, bornes)
+    const color = metricColor(val, bilanKey, objCourants, bornes)
     if (color.includes('green')) return 'border-green-300 bg-green-50'
     if (color.includes('amber')) return 'border-amber-300 bg-amber-50'
     if (color.includes('red'))   return 'border-red-300 bg-red-50'
     return ''
   }
 
-  const hc = (value, bilanKey) => metricColor(value, bilanKey, objectifs, bornes) || 'text-gray-600'
+  // Couleur cellule historique — objectifs à la date de l'entrée
+  function hc(value, bilanKey, dateStr) {
+    const obj = getObjectifsAt(dateStr)
+    const b   = obj?.bornes || {}
+    return metricColor(value, bilanKey, obj, b) || 'text-gray-600'
+  }
 
   function field(formKey, bilanKey, label, unit, opts = {}) {
     const accent = fieldAccent(formKey, bilanKey)
-    const objVal = bilanKey === 'stress' ? objectifs?.stress_cible
-                 : bilanKey === 'pas'    ? objectifs?.pas_journaliers
-                 : objectifs?.[bilanKey]
+    const objVal = bilanKey === 'stress' ? objCourants?.stress_cible
+                 : bilanKey === 'pas'    ? objCourants?.pas_journaliers
+                 : objCourants?.[bilanKey]
     return (
       <div>
         <label className="block text-xs font-medium text-gray-500 mb-1">{label}</label>
@@ -261,7 +292,7 @@ export default function AthleteDataTracking() {
                     )
                   })}
                 </div>
-                {objectifs?.stress_cible && <p className="text-xs text-gray-400 mt-1">Objectif : ≤ {objectifs.stress_cible}/10</p>}
+                {objCourants?.stress_cible && <p className="text-xs text-gray-400 mt-1">Objectif : ≤ {objCourants.stress_cible}/10</p>}
               </div>
               {field('poids', 'poids', 'Poids (optionnel)', 'kg', { step: '0.1' })}
             </div>
@@ -296,15 +327,15 @@ export default function AthleteDataTracking() {
                         onClick={() => setSelectedDate(e.date)}>
                         <td className="px-4 py-2 text-gray-600 whitespace-nowrap">{formatDate(e.date)}</td>
                         <td className="px-3 py-2 text-center text-gray-600">{e.sport_fait ? '✓' : '—'}</td>
-                        <td className={`px-3 py-2 text-center ${hc(e.kcal, 'kcal')}`}>{e.kcal ?? '—'}</td>
-                        <td className={`px-3 py-2 text-center ${hc(e.proteines, 'proteines')}`}>{e.proteines ?? '—'}</td>
-                        <td className={`px-3 py-2 text-center ${hc(e.glucides, 'glucides')}`}>{e.glucides ?? '—'}</td>
-                        <td className={`px-3 py-2 text-center ${hc(e.lipides, 'lipides')}`}>{e.lipides ?? '—'}</td>
-                        <td className={`px-3 py-2 text-center ${hc(e.sommeil, 'sommeil')}`}>{e.sommeil ?? '—'}h</td>
-                        <td className={`px-3 py-2 text-center ${hc(e.pas_journaliers, 'pas')}`}>
+                        <td className={`px-3 py-2 text-center ${hc(e.kcal,            'kcal',      e.date)}`}>{e.kcal ?? '—'}</td>
+                        <td className={`px-3 py-2 text-center ${hc(e.proteines,       'proteines', e.date)}`}>{e.proteines ?? '—'}</td>
+                        <td className={`px-3 py-2 text-center ${hc(e.glucides,        'glucides',  e.date)}`}>{e.glucides ?? '—'}</td>
+                        <td className={`px-3 py-2 text-center ${hc(e.lipides,         'lipides',   e.date)}`}>{e.lipides ?? '—'}</td>
+                        <td className={`px-3 py-2 text-center ${hc(e.sommeil,         'sommeil',   e.date)}`}>{e.sommeil ?? '—'}h</td>
+                        <td className={`px-3 py-2 text-center ${hc(e.pas_journaliers, 'pas',       e.date)}`}>
                           {e.pas_journaliers ? Number(e.pas_journaliers).toLocaleString('fr') : '—'}
                         </td>
-                        <td className={`px-3 py-2 text-center ${hc(e.stress, 'stress')}`}>{e.stress ?? '—'}</td>
+                        <td className={`px-3 py-2 text-center ${hc(e.stress,          'stress',    e.date)}`}>{e.stress ?? '—'}</td>
                         <td className="px-3 py-2 text-center text-gray-600">{e.poids ? `${e.poids}kg` : '—'}</td>
                       </tr>
                     ))}
