@@ -27,12 +27,15 @@ export default function AthleteSeance() {
   const [series, setSeries]                     = useState({})
   const [seriesPrev, setSeriesPrev]             = useState({})
   const [notePrev, setNotePrev]                 = useState('')
+  const [prevSemaineId, setPrevSemaineId]       = useState(null)   // Feature 1
+  const [prevSeanceId, setPrevSeanceId]         = useState(null)   // Feature 1
   const [activitesRealisees, setActivitesRealisees] = useState({})
   const [noteSeance, setNoteSeance]             = useState('')
   const [noteSaved, setNoteSaved]               = useState(false)
   const [loading, setLoading]                   = useState(true)
   const [isCoachEditing, setIsCoachEditing]     = useState(false)
   const [targetAthleteId, setTargetAthleteId]   = useState(null)
+  const [athletePoids, setAthletePoids]         = useState(null)   // Feature 3
   const [newActiviteInput, setNewActiviteInput] = useState('')
   const [addingActivite, setAddingActivite]     = useState(false)
   const [showChargeIndicative, setShowChargeIndicative] = useState(false)
@@ -64,6 +67,16 @@ export default function AthleteSeance() {
     setShowChargeIndicative(bloc?.show_charge_indicative || false)
     setShowRpe(bloc?.show_rpe || false)
     setIsPowerlifting(bloc?.powerlifting || false)
+
+    // Feature 3 : récupérer le poids de l'athlète (dernier poids connu)
+    const { data: poidsData } = await supabase
+      .from('data_tracking').select('poids')
+      .eq('athlete_id', athId).not('poids', 'is', null)
+      .order('date', { ascending: false }).limit(1)
+    const pAthleteProfile = athId !== profile.id
+      ? (await supabase.from('profiles').select('poids').eq('id', athId).single()).data
+      : profile
+    setAthletePoids(poidsData?.[0]?.poids || pAthleteProfile?.poids || null)
 
     if (bloc?.powerlifting && semaine?.bloc_id) {
       const { data: maxData } = await supabase.from('powerlifting_maxes')
@@ -128,9 +141,13 @@ export default function AthleteSeance() {
       .single()
     if (!semPrev) return
 
+    setPrevSemaineId(semPrev.id) // Feature 1
+
     const { data: seancePrev } = await supabase
       .from('seances').select('id').eq('semaine_id', semPrev.id).eq('nom', seanceNom || '').single()
     if (!seancePrev) return
+
+    setPrevSeanceId(seancePrev.id) // Feature 1
 
     const [{ data: exsPrev }, { data: notePrevSeance }] = await Promise.all([
       supabase.from('exercices').select('*').eq('seance_id', seancePrev.id).order('ordre'),
@@ -175,9 +192,14 @@ export default function AthleteSeance() {
 
   async function addSerie(exerciceId, numeroSet) {
     if (!targetAthleteId) return
+    // Feature 3 : si l'exercice est au poids de corps, injecter poids_corps_kg
+    const ex = exercices.find(e => e.id === exerciceId)
+    const poidsCorporsKg = (ex?.poids_corps && athletePoids) ? Number(athletePoids) : null
+
     const { data } = await supabase.from('series_realisees').upsert({
       exercice_id: exerciceId, semaine_id: semaineId, athlete_id: targetAthleteId,
       numero_set: numeroSet, charge: null, reps: null, rpe: null,
+      poids_corps_kg: poidsCorporsKg,
     }, { onConflict: 'exercice_id,semaine_id,athlete_id,numero_set' }).select().single()
     setSeries(prev => ({
       ...prev,
@@ -281,12 +303,26 @@ export default function AthleteSeance() {
   const pct = totalSeries > 0 ? Math.round((doneSeries / totalSeries) * 100) : 0
   const hasSeriesPrev = Object.values(seriesPrev).some(arr => arr.some(s => s.charge || s.reps))
 
+  // Feature 2 : séances incomplètes (au moins 1 série mais pas toutes)
+  const isPartial = doneSeries > 0 && doneSeries < totalSeries
+
   return (
     <Layout>
       <div className="flex items-center gap-3 mb-2 flex-wrap">
         <button onClick={goBack} className="text-sm text-gray-400 hover:text-gray-700">← Retour</button>
         <h1 className="text-xl font-semibold">{seance?.nom}</h1>
         {isCoachEditing && <span className="text-xs bg-amber-100 text-amber-700 px-2 py-1 rounded-full font-medium">Mode édition coach</span>}
+        {/* Feature 2 : badge partiel */}
+        {isPartial && (
+          <span className="text-xs bg-amber-50 border border-amber-200 text-amber-700 px-2 py-1 rounded-full font-medium">
+            ⚠ En cours
+          </span>
+        )}
+        {pct === 100 && (
+          <span className="text-xs bg-green-50 border border-green-200 text-green-700 px-2 py-1 rounded-full font-medium">
+            ✓ Terminé
+          </span>
+        )}
       </div>
 
       <div className="mb-4">
@@ -300,7 +336,15 @@ export default function AthleteSeance() {
       </div>
 
       {(hasSeriesPrev || notePrev) && (
-        <RecapSemainePrev exercices={exercices} seriesPrev={seriesPrev} notePrev={notePrev} theme={theme} />
+        <RecapSemainePrev
+          exercices={exercices}
+          seriesPrev={seriesPrev}
+          notePrev={notePrev}
+          theme={theme}
+          prevSemaineId={prevSemaineId}
+          prevSeanceId={prevSeanceId}
+          navigate={navigate}
+        />
       )}
 
       <div className="space-y-3">
@@ -313,6 +357,7 @@ export default function AthleteSeance() {
             theme={theme}
             isPowerlifting={isPowerlifting}
             maxForLift={ex.main_lift ? powerMaxes[ex.main_lift] : null}
+            athletePoids={athletePoids}
             onAddSerie={(num) => addSerie(ex.id, num)}
             onUpdate={(serieId, field, val) => updateSerie(serieId, ex.id, field, val)}
             onDelete={(serieId) => deleteSerie(serieId, ex.id)}
@@ -347,14 +392,35 @@ export default function AthleteSeance() {
   )
 }
 
-// ── Récap semaine précédente ─────────────────────────────────────────
-function RecapSemainePrev({ exercices, seriesPrev, notePrev, theme }) {
+// ── Récap semaine précédente — Feature 1 : séries cliquables ─────────
+function RecapSemainePrev({ exercices, seriesPrev, notePrev, theme, prevSemaineId, prevSeanceId, navigate }) {
   const [open, setOpen] = useState(true)
   const exsAvecPerfs = exercices.filter(ex => (seriesPrev[ex.ordre] || []).some(s => s.charge || s.reps))
+
+  // Feature 1 : une série manquante S-1 = pas de reps ET pas de charge
+  const hasMissing = exercices.some(ex => {
+    const prev = seriesPrev[ex.ordre] || []
+    return prev.length < ex.sets
+  })
+
+  function goToPrevSeance() {
+    if (prevSeanceId && prevSemaineId) {
+      navigate(`/athlete/seance/${prevSeanceId}/semaine/${prevSemaineId}`)
+    }
+  }
+
   return (
     <div className="bg-gray-50 border border-gray-100 rounded-xl mb-4 overflow-hidden">
       <button onClick={() => setOpen(o => !o)} className="w-full flex items-center justify-between px-4 py-3">
-        <p className="text-xs font-medium text-gray-500">📊 Semaine précédente</p>
+        <div className="flex items-center gap-2">
+          <p className="text-xs font-medium text-gray-500">📊 Semaine précédente</p>
+          {/* Feature 2 : badge si S-1 incomplète */}
+          {hasMissing && (
+            <span className="text-xs bg-amber-100 text-amber-600 px-1.5 py-0.5 rounded-full">
+              incomplet
+            </span>
+          )}
+        </div>
         <span className="text-xs text-gray-400">{open ? '▲' : '▼'}</span>
       </button>
       {open && (
@@ -364,14 +430,37 @@ function RecapSemainePrev({ exercices, seriesPrev, notePrev, theme }) {
             <div key={ex.id}>
               <p className="text-xs font-medium text-gray-600 mb-1">{ex.nom}</p>
               <div className="flex flex-wrap gap-1">
-                {(seriesPrev[ex.ordre] || []).map((s, i) => (
-                  <span key={i} className={`text-xs border px-2 py-0.5 rounded-md ${theme.isFemme ? 'bg-pink-50 border-pink-100 text-pink-600' : 'bg-brand-50 border-brand-100 text-brand-600'}`}>
-                    S{i+1} : {s.charge ? `${s.charge}kg` : '—'} × {s.reps || '—'}{s.rpe ? ` @${s.rpe}` : ''}{s.notes ? ` · ${s.notes}` : ''}
-                  </span>
-                ))}
+                {(seriesPrev[ex.ordre] || []).map((s, i) => {
+                  const isComplete = (s.charge || s.reps)
+                  return (
+                    <span key={i}
+                      className={`text-xs border px-2 py-0.5 rounded-md ${theme.isFemme ? 'bg-pink-50 border-pink-100 text-pink-600' : 'bg-brand-50 border-brand-100 text-brand-600'}`}>
+                      S{i+1} : {s.charge ? `${s.charge}kg` : '—'} × {s.reps || '—'}{s.rpe ? ` @${s.rpe}` : ''}{s.notes ? ` · ${s.notes}` : ''}
+                    </span>
+                  )
+                })}
+                {/* Feature 1 : afficher les sets manquants avec bouton pour les compléter */}
+                {Array.from({ length: Math.max(0, ex.sets - (seriesPrev[ex.ordre] || []).length) }, (_, i) => {
+                  const setNum = (seriesPrev[ex.ordre] || []).length + i + 1
+                  return (
+                    <span key={`missing-${i}`}
+                      className="text-xs border border-dashed border-amber-200 bg-amber-50 text-amber-600 px-2 py-0.5 rounded-md">
+                      S{setNum} : non réalisé
+                    </span>
+                  )
+                })}
               </div>
             </div>
           ))}
+
+          {/* Feature 1 : bouton pour aller compléter la séance S-1 */}
+          {hasMissing && prevSeanceId && prevSemaineId && (
+            <button
+              onClick={goToPrevSeance}
+              className={`mt-2 w-full py-2 rounded-lg text-xs font-medium border transition-colors ${theme.isFemme ? 'border-pink-200 text-pink-600 hover:bg-pink-50' : 'border-brand-200 text-brand-600 hover:bg-brand-50'}`}>
+              ✎ Compléter la semaine précédente
+            </button>
+          )}
         </div>
       )}
     </div>
@@ -379,7 +468,7 @@ function RecapSemainePrev({ exercices, seriesPrev, notePrev, theme }) {
 }
 
 // ── ExerciceCard ─────────────────────────────────────────────────────
-function ExerciceCard({ exercice, series, prevSeries, showChargeIndicative, showRpe, onAddSerie, onUpdate, onDelete, theme, isPowerlifting, maxForLift, onOpenCalc }) {
+function ExerciceCard({ exercice, series, prevSeries, showChargeIndicative, showRpe, onAddSerie, onUpdate, onDelete, theme, isPowerlifting, maxForLift, athletePoids, onOpenCalc }) {
   const nextSet   = series.length + 1
   const canAddSet = series.length < exercice.sets
 
@@ -390,6 +479,16 @@ function ExerciceCard({ exercice, series, prevSeries, showChargeIndicative, show
       }, 0) || null
     : null
 
+  // Feature 2 : séances partiellement complétées
+  const doneCount = series.filter(s => s.reps || s.charge).length
+  const isPartial = doneCount > 0 && doneCount < exercice.sets
+  const isComplete = doneCount >= exercice.sets
+
+  // Feature 3 : si poids de corps, tonnage = (poids_corps + lest) * reps * mult
+  const tonnageLabel = exercice.poids_corps && athletePoids
+    ? `(poids corps ${athletePoids}kg)`
+    : null
+
   return (
     <div className="bg-white border border-gray-100 rounded-xl overflow-hidden">
       <div className="px-4 py-3 border-b border-gray-50 flex items-start justify-between">
@@ -397,6 +496,12 @@ function ExerciceCard({ exercice, series, prevSeries, showChargeIndicative, show
           <div className="flex items-center gap-2 flex-wrap">
             <p className="font-medium text-sm text-gray-900 truncate">{exercice.nom}</p>
             {exercice.unilateral && <span className="text-xs bg-gray-100 text-gray-500 px-1.5 py-0.5 rounded font-medium flex-shrink-0">×2</span>}
+            {/* Feature 3 : badge poids corps */}
+            {exercice.poids_corps && (
+              <span className="text-xs bg-blue-50 border border-blue-100 text-blue-600 px-1.5 py-0.5 rounded font-medium flex-shrink-0">
+                🏃 Poids corps
+              </span>
+            )}
             {isPowerlifting && exercice.main_lift && (
               <span className="text-xs bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded font-medium flex-shrink-0">
                 {exercice.main_lift === 'squat' ? '🏋️' : exercice.main_lift === 'bench' ? '💪' : '⚡'} {exercice.main_lift}
@@ -415,6 +520,8 @@ function ExerciceCard({ exercice, series, prevSeries, showChargeIndicative, show
             {showRpe && exercice.rpe_cible && (
               <span className="ml-1 text-gray-500">· @{exercice.rpe_cible} cible</span>
             )}
+            {/* Feature 3 : mention poids corps si athletePoids disponible */}
+            {tonnageLabel && <span className="ml-1 text-blue-500">{tonnageLabel}</span>}
           </p>
           {exercice.indications && (
             <p className="text-xs text-amber-600 mt-0.5 font-medium">{exercice.indications}</p>
@@ -431,8 +538,13 @@ function ExerciceCard({ exercice, series, prevSeries, showChargeIndicative, show
             </div>
           )}
         </div>
-        <span className={`text-xs px-2 py-0.5 rounded-full font-medium ml-2 flex-shrink-0 ${series.length >= exercice.sets ? 'bg-green-50 text-green-700' : series.length > 0 ? 'bg-amber-50 text-amber-700' : 'bg-gray-50 text-gray-400'}`}>
-          {series.length}/{exercice.sets}
+        {/* Feature 2 : badge état */}
+        <span className={`text-xs px-2 py-0.5 rounded-full font-medium ml-2 flex-shrink-0 ${
+          isComplete ? 'bg-green-50 text-green-700'
+          : isPartial ? 'bg-amber-50 text-amber-600'
+          : 'bg-gray-50 text-gray-400'
+        }`}>
+          {isPartial && '⚠ '}{doneCount}/{exercice.sets}
         </span>
       </div>
       <div className="px-4 py-3 space-y-2">
@@ -445,6 +557,8 @@ function ExerciceCard({ exercice, series, prevSeries, showChargeIndicative, show
             theme={theme}
             maxForLift={maxForLift}
             isPowerlifting={isPowerlifting && !!exercice.main_lift}
+            isPoidsCorp={exercice.poids_corps}
+            athletePoids={athletePoids}
             onUpdate={(field, val) => onUpdate(s.id, field, val)}
             onDelete={() => onDelete(s.id)}
           />
@@ -469,7 +583,7 @@ function ExerciceCard({ exercice, series, prevSeries, showChargeIndicative, show
 }
 
 // ── SerieRow ─────────────────────────────────────────────────────────
-function SerieRow({ serie, index, prevSerie, repRange, repos, showRpe, onUpdate, onDelete, theme, maxForLift, isPowerlifting }) {
+function SerieRow({ serie, index, prevSerie, repRange, repos, showRpe, onUpdate, onDelete, theme, maxForLift, isPowerlifting, isPoidsCorp, athletePoids }) {
   const [charge, setCharge] = useState(serie.charge ?? '')
   const [reps, setReps]     = useState(serie.reps   ?? '')
   const [rpe, setRpe]       = useState(serie.rpe    ?? '')
@@ -489,18 +603,33 @@ function SerieRow({ serie, index, prevSerie, repRange, repos, showRpe, onUpdate,
     ? epley1RM(charge, reps, rpe || null)
     : null
 
+  // Feature 3 : tonnage poids corps = (poids_corps_kg + lest) * reps * mult
+  const livePoidsCorpsTonnage = isPoidsCorp && athletePoids && reps
+    ? Math.round((Number(athletePoids) + (Number(charge) || 0)) * Number(reps))
+    : null
+
   return (
     <div className="space-y-1 pb-2 border-b border-gray-50 last:border-0 last:pb-0">
       <div className="flex items-center gap-2">
         <span className="w-5 text-xs font-medium text-gray-400 text-center flex-shrink-0">{index}</span>
         <div className="flex-1 relative">
           <input ref={chargeRef} type="number" inputMode="decimal" value={charge}
-            placeholder={prevSerie?.charge ? String(prevSerie.charge) : 'kg'}
+            placeholder={
+              isPoidsCorp
+                ? (prevSerie?.charge ? `+${prevSerie.charge}` : 'lest kg')
+                : (prevSerie?.charge ? String(prevSerie.charge) : 'kg')
+            }
             onChange={e => setCharge(e.target.value)}
             onBlur={() => onUpdate('charge', charge)}
             className={inputBase + ' w-full'}
           />
-          {pctOfMax !== null && (
+          {/* Feature 3 : afficher poids total si poids corps */}
+          {isPoidsCorp && athletePoids && (
+            <span className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-blue-500 pointer-events-none font-medium">
+              ={Number(athletePoids) + (Number(charge) || 0)}kg
+            </span>
+          )}
+          {pctOfMax !== null && !isPoidsCorp && (
             <span className={`absolute right-2 top-1/2 -translate-y-1/2 text-xs font-semibold pointer-events-none ${pctOfMax >= 90 ? 'text-red-500' : pctOfMax >= 80 ? 'text-amber-500' : 'text-green-500'}`}>
               {pctOfMax}%
             </span>
@@ -531,6 +660,10 @@ function SerieRow({ serie, index, prevSerie, repRange, repos, showRpe, onUpdate,
       </div>
       {liveEst1RM && (
         <div className="pl-7"><p className="text-xs text-amber-600 font-medium">~1RM estimé : {liveEst1RM}kg</p></div>
+      )}
+      {/* Feature 3 : tonnage live poids corps */}
+      {livePoidsCorpsTonnage && (
+        <div className="pl-7"><p className="text-xs text-blue-500 font-medium">Tonnage : {livePoidsCorpsTonnage}kg</p></div>
       )}
       {prevSerie && (prevSerie.charge || prevSerie.reps) && (
         <div className="pl-7">
