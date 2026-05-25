@@ -4,6 +4,7 @@ import { useAuth } from '../../hooks/useAuth'
 import { useTheme } from '../../hooks/useTheme'
 import { usePreferences } from '../../hooks/usePreferences'
 import Layout from '../../components/shared/Layout'
+import { calcSerieTonnage } from '../../lib/tonnage'
 import {
   LineChart, Line, BarChart, Bar, XAxis, YAxis, Tooltip,
   ResponsiveContainer, CartesianGrid, Legend,
@@ -17,24 +18,21 @@ export default function CoachProgression() {
   const { prefs, updateProgression } = usePreferences()
   const color = theme.isFemme ? '#ec4899' : '#6366f1'
 
-  // ── Blocs ──────────────────────────────────────────────────────────
   const [blocs, setBlocs]           = useState([])
   const [activeBloc, setActiveBloc] = useState(null)
 
-  // ── Données du bloc actif ──────────────────────────────────────────
-  const [allExercices, setAllExercices]               = useState([])
-  const [allMuscles, setAllMuscles]                   = useState([])
-  const [tonnageData, setTonnageData]                 = useState([])
-  const [volumeData, setVolumeData]                   = useState([])
-  const [favData, setFavData]                         = useState({})
+  const [allExercices, setAllExercices] = useState([])
+  const [allMuscles, setAllMuscles]     = useState([])
+  const [tonnageData, setTonnageData]   = useState([])
+  const [volumeData, setVolumeData]     = useState([])
+  const [favData, setFavData]           = useState({})
 
-  // ── Historique cross-blocs ─────────────────────────────────────────
-  const [historiqueData, setHistoriqueData]         = useState([])
-  const [historiqueFavData, setHistoriqueFavData]   = useState({})
+  const [historiqueData, setHistoriqueData]       = useState([])
+  const [historiqueFavData, setHistoriqueFavData] = useState({})
 
-  const [loading, setLoading]             = useState(true)
+  const [loading, setLoading]               = useState(true)
   const [loadingHistory, setLoadingHistory] = useState(false)
-  const [showConfig, setShowConfig]       = useState(false)
+  const [showConfig, setShowConfig]         = useState(false)
 
   const config        = prefs?.progression_config || {}
   const mode          = config.mode          || 'graphe'
@@ -42,7 +40,6 @@ export default function CoachProgression() {
   const favExos       = config.fav_exercices || []
   const musclesExclus = config.muscles_exclus || []
 
-  // ── Init ───────────────────────────────────────────────────────────
   useEffect(() => { if (profile) loadBlocs() }, [profile])
 
   useEffect(() => {
@@ -59,7 +56,6 @@ export default function CoachProgression() {
     if (blocs.length > 1) loadHistorique()
   }, [blocs.length, JSON.stringify(favExos)])
 
-  // ── Chargement blocs ───────────────────────────────────────────────
   async function loadBlocs() {
     const { data } = await supabase
       .from('blocs').select('id, name, created_at')
@@ -69,7 +65,6 @@ export default function CoachProgression() {
     else setLoading(false)
   }
 
-  // ── Données du bloc actif ─────────────────────────────────────────
   async function loadBlocData(blocId) {
     setLoading(true)
     setAllExercices([]); setTonnageData([]); setVolumeData([]); setFavData({})
@@ -83,8 +78,9 @@ export default function CoachProgression() {
     if (!scBloc?.length) { setLoading(false); return }
 
     const scIds = scBloc.map(s => s.id)
+    // Feature 3 : poids_corps dans la sélection
     const { data: exs } = await supabase
-      .from('exercices').select('id, nom, muscle').in('seance_id', scIds)
+      .from('exercices').select('id, nom, muscle, poids_corps').in('seance_id', scIds)
 
     const unique = [], seen = new Set(), muscles = new Set()
     ;(exs || []).forEach(e => {
@@ -108,30 +104,48 @@ export default function CoachProgression() {
     const { data: scAll } = await supabase.from('seances').select('id, semaine_id').in('semaine_id', semIds)
     const scIds = (scAll || []).map(s => s.id); if (!scIds.length) return
 
-    const [{ data: exAll }, { data: srAll }] = await Promise.all([
-      supabase.from('exercices').select('id, muscle, seance_id, unilateral').in('seance_id', scIds),
+    // Feature 3 : poids_corps dans la sélection des exercices
+    const [{ data: exAll }, { data: srAll }, poidsRes] = await Promise.all([
+      supabase.from('exercices')
+        .select('id, muscle, seance_id, unilateral, poids_corps')
+        .in('seance_id', scIds),
       supabase.from('series_realisees')
-        .select('charge, reps, exercice_id, semaine_id')
+        .select('charge, reps, exercice_id, semaine_id, poids_corps_kg')
         .eq('athlete_id', profile.id).in('semaine_id', semIds)
-        .not('charge', 'is', null).not('reps', 'is', null),
+        .not('reps', 'is', null),
+      supabase.from('data_tracking').select('poids')
+        .eq('athlete_id', profile.id).not('poids', 'is', null)
+        .order('date', { ascending: false }).limit(1),
     ])
+
+    const athletePoids = poidsRes.data?.[0]?.poids || profile.poids || null
 
     const scToSemaine = {}
     ;(scAll || []).forEach(sc => { scToSemaine[sc.id] = sc.semaine_id })
     const exById = {}
     ;(exAll || []).forEach(ex => {
-      exById[ex.id] = { muscle: ex.muscle || 'autre', semaine_id: scToSemaine[ex.seance_id], unilateral: ex.unilateral }
+      exById[ex.id] = {
+        muscle:      ex.muscle || 'autre',
+        semaine_id:  scToSemaine[ex.seance_id],
+        unilateral:  ex.unilateral,
+        poids_corps: ex.poids_corps,
+      }
     })
 
     const tonnageMap = {}, muscleVolMap = {}
     ;(srAll || []).forEach(s => {
       const ex = exById[s.exercice_id]; if (!ex) return
-      const { muscle, unilateral } = ex
+      const { muscle } = ex
       if (musclesExclus.includes(muscle)) return
-      const vol   = Number(s.charge) * Number(s.reps) * (unilateral ? 2 : 1)
+
+      // Feature 3 : calcul tonnage avec poids de corps
+      const vol = calcSerieTonnage(s, ex, athletePoids)
+      if (vol === 0 && !s.reps) return
+
       const semId = s.semaine_id
       if (!tonnageMap[semId]) tonnageMap[semId] = { tonnage: 0, series: 0 }
-      tonnageMap[semId].tonnage += vol; tonnageMap[semId].series++
+      tonnageMap[semId].tonnage += vol
+      tonnageMap[semId].series++
       muscleVolMap[muscle] = (muscleVolMap[muscle] || 0) + vol
     })
 
@@ -140,6 +154,8 @@ export default function CoachProgression() {
       tonnage: Math.round(tonnageMap[s.id].tonnage),
       series:  tonnageMap[s.id].series,
     })))
+
+    // Bar chart horizontal muscles (CoachProgression)
     setVolumeData(
       Object.entries(muscleVolMap)
         .map(([m, v]) => ({ muscle: m, volume: Math.round(v) }))
@@ -153,26 +169,33 @@ export default function CoachProgression() {
     if (!semainesBloc?.length) return
     const semIds = semainesBloc.map(s => s.id)
 
+    // Feature 3 : poids_corps dans la sélection
     const { data: exs } = await supabase
-      .from('exercices').select('id, nom, seance_id').in('nom', exoNoms)
+      .from('exercices').select('id, nom, seance_id, unilateral, poids_corps').in('nom', exoNoms)
     if (!exs?.length) return
     const scIds = [...new Set(exs.map(e => e.seance_id))]
 
-    const [{ data: seances }, { data: srAll }] = await Promise.all([
+    const [{ data: seances }, { data: srAll }, poidsRes] = await Promise.all([
       supabase.from('seances').select('id, semaine_id').in('id', scIds).in('semaine_id', semIds),
       supabase.from('series_realisees')
-        .select('charge, reps, exercice_id, semaine_id')
+        .select('charge, reps, exercice_id, semaine_id, poids_corps_kg')
         .eq('athlete_id', profile.id).in('exercice_id', exs.map(e => e.id)).in('semaine_id', semIds)
-        .not('charge', 'is', null),
+        .not('reps', 'is', null),
+      supabase.from('data_tracking').select('poids')
+        .eq('athlete_id', profile.id).not('poids', 'is', null)
+        .order('date', { ascending: false }).limit(1),
     ])
+
+    const athletePoids = poidsRes.data?.[0]?.poids || profile.poids || null
 
     const { data: semaines } = await supabase
       .from('semaines').select('id, numero').in('id', semIds).order('numero')
 
     const seanceToSemaine = {}; (seances || []).forEach(sc => { seanceToSemaine[sc.id] = sc.semaine_id })
-    const exToNom = {}; const exToSemaine = {}
+    const exToNom = {}; const exToSemaine = {}; const exById = {}
     ;(exs || []).forEach(ex => {
       exToNom[ex.id] = ex.nom
+      exById[ex.id] = ex
       const sid = seanceToSemaine[ex.seance_id]; if (sid) exToSemaine[ex.id] = sid
     })
     const semaineNumero = {}; (semaines || []).forEach(s => { semaineNumero[s.id] = s.numero })
@@ -184,8 +207,10 @@ export default function CoachProgression() {
       if (!aggr[nom]) aggr[nom] = {}
       if (!aggr[nom][semId]) aggr[nom][semId] = { maxCharge: 0, series: 0, tonnage: 0 }
       const d = aggr[nom][semId]
-      d.maxCharge = Math.max(d.maxCharge, Number(s.charge)); d.series++
-      d.tonnage += Number(s.charge) * (Number(s.reps) || 0)
+      d.maxCharge = Math.max(d.maxCharge, Number(s.charge) || 0)
+      d.series++
+      // Feature 3 : tonnage favori avec poids de corps
+      d.tonnage += calcSerieTonnage(s, exById[s.exercice_id] || {}, athletePoids)
     })
 
     const result = {}
@@ -201,7 +226,6 @@ export default function CoachProgression() {
     setFavData(result)
   }
 
-  // ── Historique cross-blocs ─────────────────────────────────────────
   async function loadHistorique() {
     if (blocs.length <= 1) return
     setLoadingHistory(true)
@@ -214,26 +238,43 @@ export default function CoachProgression() {
       const semIds = semaines.map(s => s.id)
       const { data: scAll } = await supabase.from('seances').select('id, semaine_id').in('semaine_id', semIds)
       const scIds = (scAll || []).map(s => s.id); if (!scIds.length) return
-      const { data: exAll } = await supabase.from('exercices').select('id, seance_id, unilateral').in('seance_id', scIds)
-      const { data: srAll } = await supabase.from('series_realisees')
-        .select('charge, reps, exercice_id, semaine_id')
-        .eq('athlete_id', profile.id).in('semaine_id', semIds)
-        .not('charge', 'is', null).not('reps', 'is', null)
 
+      // Feature 3 : poids_corps dans l'historique
+      const [{ data: exAll }, { data: srAll }, poidsRes] = await Promise.all([
+        supabase.from('exercices').select('id, seance_id, unilateral, poids_corps').in('seance_id', scIds),
+        supabase.from('series_realisees')
+          .select('charge, reps, exercice_id, semaine_id, poids_corps_kg')
+          .eq('athlete_id', profile.id).in('semaine_id', semIds)
+          .not('reps', 'is', null),
+        supabase.from('data_tracking').select('poids')
+          .eq('athlete_id', profile.id).not('poids', 'is', null)
+          .order('date', { ascending: false }).limit(1),
+      ])
+
+      const athletePoids = poidsRes.data?.[0]?.poids || profile.poids || null
       const scToSemaine = {}; (scAll || []).forEach(sc => { scToSemaine[sc.id] = sc.semaine_id })
       const exById = {}; (exAll || []).forEach(ex => {
-        exById[ex.id] = { semaine_id: scToSemaine[ex.seance_id], unilateral: ex.unilateral }
+        exById[ex.id] = {
+          semaine_id:  scToSemaine[ex.seance_id],
+          unilateral:  ex.unilateral,
+          poids_corps: ex.poids_corps,
+        }
       })
+
       const tonnageMap = {}
       ;(srAll || []).forEach(s => {
         const ex = exById[s.exercice_id]; if (!ex) return
-        const vol = Number(s.charge) * Number(s.reps) * (ex.unilateral ? 2 : 1)
+        const vol = calcSerieTonnage(s, ex, athletePoids)
         if (!tonnageMap[s.semaine_id]) tonnageMap[s.semaine_id] = { tonnage: 0, series: 0 }
-        tonnageMap[s.semaine_id].tonnage += vol; tonnageMap[s.semaine_id].series++
+        tonnageMap[s.semaine_id].tonnage += vol
+        tonnageMap[s.semaine_id].series++
       })
+
       semaines.filter(s => tonnageMap[s.id]).forEach(s => {
         result.push({
-          semaine:  `S${s.numero}`, blocName: bloc.name, blocIdx,
+          semaine:  `S${s.numero}`,
+          blocName: bloc.name,
+          blocIdx,
           tonnage:  Math.round(tonnageMap[s.id].tonnage),
           series:   tonnageMap[s.id].series,
         })
@@ -241,7 +282,6 @@ export default function CoachProgression() {
     }))
     setHistoriqueData(result)
 
-    // Cross-blocs pour les favoris
     if (favExos.length) {
       const favResult = {}
       await Promise.all(blocs.map(async (bloc, blocIdx) => {
@@ -284,7 +324,6 @@ export default function CoachProgression() {
     setLoadingHistory(false)
   }
 
-  // ── Composants graphes ─────────────────────────────────────────────
   const DataChart = ({ data, dataKey, name, color: c }) => (
     <ResponsiveContainer width="100%" height={160}>
       <LineChart data={data}>
@@ -344,15 +383,12 @@ export default function CoachProgression() {
         </button>
       </div>
 
-      {/* Sélecteur de bloc */}
       {blocs.length > 1 && (
         <div className="flex gap-2 mb-5 flex-wrap">
           {blocs.map((b, i) => (
             <button key={b.id} onClick={() => setActiveBloc(b)}
               className={`px-3 py-1.5 rounded-lg text-sm transition-colors border ${
-                activeBloc?.id === b.id
-                  ? 'text-white border-transparent'
-                  : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'
+                activeBloc?.id === b.id ? 'text-white border-transparent' : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'
               }`}
               style={activeBloc?.id === b.id ? { backgroundColor: BLOC_PALETTE[i % BLOC_PALETTE.length] } : {}}>
               {b.name}
@@ -361,7 +397,6 @@ export default function CoachProgression() {
         </div>
       )}
 
-      {/* Config */}
       {showConfig && (
         <div className="bg-white border border-gray-100 rounded-xl p-4 mb-4 space-y-4">
           <div>
@@ -423,7 +458,6 @@ export default function CoachProgression() {
       ) : (
         <div className="space-y-4">
 
-          {/* Exercices favoris — bloc actif */}
           {favExos.length > 0 && favExos.map(exoNom => {
             const data = favData[exoNom] || []
             return (
@@ -474,7 +508,6 @@ export default function CoachProgression() {
             )
           })}
 
-          {/* Volume total — bloc actif */}
           {tonnageData.length > 0 && (
             <div className="bg-white border border-gray-100 rounded-xl p-4">
               <p className="text-sm font-medium text-gray-700 mb-1">Volume total — {activeBloc?.name}</p>
@@ -493,7 +526,6 @@ export default function CoachProgression() {
             </div>
           )}
 
-          {/* Volume par muscle — bloc actif */}
           {volumeData.length > 0 && (
             <div className="bg-white border border-gray-100 rounded-xl p-4">
               <p className="text-sm font-medium text-gray-700 mb-1">Volume par groupe musculaire — {activeBloc?.name}</p>
@@ -518,11 +550,9 @@ export default function CoachProgression() {
             </div>
           )}
 
-          {/* ── HISTORIQUE CROSS-BLOCS ── */}
           {blocs.length > 1 && (
             <div className="border-t border-gray-100 pt-4 space-y-4">
               <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">Historique tous blocs</p>
-
               {loadingHistory ? (
                 <div className="h-40 bg-gray-100 rounded-xl animate-pulse" />
               ) : (

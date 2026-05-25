@@ -64,7 +64,6 @@ export default function CoachAthleteView() {
 
     const seancesNormales = seances.filter(s => s.nom !== 'Bonus')
 
-    // Batch : toutes les notes en une requête
     const { data: notesAll } = await supabase
       .from('notes_seances')
       .select('contenu, seance_id')
@@ -97,7 +96,6 @@ export default function CoachAthleteView() {
       if (done.length) text += `## Bonus réalisés\n${done.map(a => `  ✓ ${a.nom}`).join('\n')}\n\n`
     }
 
-    // Tracking — filtré par les 7 derniers jours du bloc courant
     const { data: tracking } = await supabase
       .from('data_tracking')
       .select('*')
@@ -121,6 +119,24 @@ export default function CoachAthleteView() {
   const isFemme = athlete?.genre === 'femme'
   const obj = Array.isArray(activeBloc?.objectifs_bloc) ? activeBloc?.objectifs_bloc[0] : activeBloc?.objectifs_bloc
   const planLabel = { prise_de_masse: '💪 Prise de masse', maintien: '⚖️ Maintien', seche: '🔥 Sèche' }
+
+  // Feature 2 : calcul état séance côté coach
+  function getSeanceStatus(seance) {
+    const exs = seance.exercices || []
+    if (!exs.length) return { status: 'empty', doneSets: 0, totalSets: 0, pct: 0 }
+    const srFiltered = exs.flatMap(ex =>
+      (ex.series_realisees || []).filter(s =>
+        (s.reps || s.charge) && (!athleteId || s.athlete_id === athleteId)
+      )
+    )
+    const totalSets = exs.reduce((acc, ex) => acc + (ex.sets || 0), 0)
+    const doneSets  = srFiltered.length
+    const pct = totalSets > 0 ? Math.round((doneSets / totalSets) * 100) : 0
+    let status = 'not_started'
+    if (doneSets > 0 && doneSets < totalSets) status = 'partial'
+    if (doneSets >= totalSets && totalSets > 0) status = 'complete'
+    return { status, doneSets, totalSets, pct }
+  }
 
   return (
     <Layout>
@@ -194,6 +210,7 @@ export default function CoachAthleteView() {
               athleteId={athleteId}
               isFemme={isFemme}
               navigate={navigate}
+              seanceStatus={getSeanceStatus(sc)}
             />
           ))}
           {seances.filter(s => s.nom === 'Bonus').map(sc => (
@@ -209,13 +226,10 @@ export default function CoachAthleteView() {
   )
 }
 
-function SeanceCard({ seance, semaineId, athleteId, isFemme, navigate }) {
+function SeanceCard({ seance, semaineId, athleteId, isFemme, navigate, seanceStatus }) {
   const [open, setOpen] = useState(false)
   const [note, setNote] = useState('')
-
-  const totalEx = seance.exercices?.length || 0
-  const doneEx  = seance.exercices?.filter(e => (e.series_realisees || []).some(s => s.reps || s.charge)).length || 0
-  const pct = totalEx > 0 ? Math.round((doneEx / totalEx) * 100) : 0
+  const { status, doneSets, totalSets, pct } = seanceStatus
 
   useEffect(() => {
     supabase.from('notes_seances').select('contenu')
@@ -228,10 +242,31 @@ function SeanceCard({ seance, semaineId, athleteId, isFemme, navigate }) {
     <div className="bg-white border border-gray-100 rounded-xl overflow-hidden">
       <div className="px-5 py-4 flex items-center justify-between">
         <button onClick={() => setOpen(o => !o)} className="flex-1 text-left">
-          <p className="font-medium text-sm text-gray-900">{seance.nom}</p>
-          <p className="text-xs text-gray-400 mt-0.5">{totalEx} exercices · {pct}% complété</p>
-          <div className="mt-2 h-1.5 bg-gray-100 rounded-full overflow-hidden w-full max-w-48">
-            <div className={`h-full ${isFemme ? 'bg-pink-500' : 'bg-brand-500'} rounded-full`} style={{ width: `${pct}%` }} />
+          <div className="flex items-center gap-2 flex-wrap mb-1">
+            <p className="font-medium text-sm text-gray-900">{seance.nom}</p>
+            {/* Feature 2 : badge état */}
+            {status === 'complete' && (
+              <span className="text-xs px-2 py-0.5 rounded-full bg-green-50 text-green-700 font-medium">✓ Terminé</span>
+            )}
+            {status === 'partial' && (
+              <span className="text-xs px-2 py-0.5 rounded-full bg-amber-50 text-amber-600 font-medium">⚠ En cours</span>
+            )}
+            {status === 'not_started' && (
+              <span className="text-xs px-2 py-0.5 rounded-full bg-gray-50 text-gray-400 font-medium">Non commencé</span>
+            )}
+          </div>
+          <p className="text-xs text-gray-400">{doneSets}/{totalSets} sets · {pct}%</p>
+          <div className={`mt-2 h-1.5 rounded-full overflow-hidden w-full max-w-48 ${
+            status === 'complete' ? 'bg-green-100' : 'bg-gray-100'
+          }`}>
+            <div
+              className={`h-full rounded-full ${
+                status === 'complete' ? 'bg-green-500'
+                : status === 'partial' ? 'bg-amber-400'
+                : isFemme ? 'bg-pink-500' : 'bg-brand-500'
+              }`}
+              style={{ width: `${pct}%` }}
+            />
           </div>
         </button>
         <button
@@ -246,16 +281,24 @@ function SeanceCard({ seance, semaineId, athleteId, isFemme, navigate }) {
             <div className="bg-gray-50 rounded-lg px-3 py-2 text-xs text-gray-600 italic">💬 {note}</div>
           )}
           {(seance.exercices || []).sort((a, b) => a.ordre - b.ordre).map(ex => {
-            const seriesDone = (ex.series_realisees || []).sort((a, b) => a.numero_set - b.numero_set)
+            const seriesDone = (ex.series_realisees || [])
+              .filter(s => s.athlete_id === athleteId)
+              .sort((a, b) => a.numero_set - b.numero_set)
+            const doneEx = seriesDone.filter(s => s.reps || s.charge).length
+            const totalEx = ex.sets || 0
+            const exPartial = doneEx > 0 && doneEx < totalEx
+
             return (
               <div key={ex.id}>
                 <div className="flex items-center justify-between mb-1">
                   <p className="text-sm font-medium text-gray-800">{ex.nom}</p>
                   <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
-                    seriesDone.length >= ex.sets ? 'bg-green-50 text-green-700'
-                    : seriesDone.length > 0 ? 'bg-amber-50 text-amber-700'
+                    doneEx >= totalEx && totalEx > 0 ? 'bg-green-50 text-green-700'
+                    : exPartial ? 'bg-amber-50 text-amber-600'
                     : 'bg-gray-50 text-gray-400'
-                  }`}>{seriesDone.length}/{ex.sets}</span>
+                  }`}>
+                    {exPartial && '⚠ '}{doneEx}/{totalEx}
+                  </span>
                 </div>
                 <p className="text-xs text-gray-400 mb-1">{ex.muscle} · {ex.sets}×{ex.rep_range} · repos {ex.repos}</p>
                 {ex.indications && <p className="text-xs text-amber-600 mb-1">{ex.indications}</p>}
@@ -264,6 +307,12 @@ function SeanceCard({ seance, semaineId, athleteId, isFemme, navigate }) {
                     {seriesDone.map(s => (
                       <span key={s.id} className={`text-xs px-2 py-0.5 rounded-md border ${isFemme ? 'bg-pink-50 border-pink-100 text-pink-700' : 'bg-brand-50 border-brand-100 text-brand-700'}`}>
                         S{s.numero_set} : {s.charge ? `${s.charge}kg` : '—'} × {s.reps || '—'}{s.notes ? ` · ${s.notes}` : ''}
+                      </span>
+                    ))}
+                    {/* Feature 2 : sets manquants */}
+                    {Array.from({ length: Math.max(0, totalEx - seriesDone.length) }, (_, i) => (
+                      <span key={`missing-${i}`} className="text-xs px-2 py-0.5 rounded-md border border-dashed border-amber-200 text-amber-400">
+                        S{seriesDone.length + i + 1} : —
                       </span>
                     ))}
                   </div>
@@ -288,7 +337,19 @@ function BonusCard({ seance, semaineId, isFemme, navigate }) {
   return (
     <div className="bg-white border border-gray-100 rounded-xl p-5">
       <div className="flex items-center justify-between mb-3">
-        <h3 className="text-sm font-medium text-gray-800">Activités bonus</h3>
+        <div className="flex items-center gap-2">
+          <h3 className="text-sm font-medium text-gray-800">Activités bonus</h3>
+          {/* Feature 2 : progression bonus */}
+          {activites.length > 0 && (
+            <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
+              done.length === activites.length ? 'bg-green-50 text-green-700'
+              : done.length > 0 ? 'bg-amber-50 text-amber-600'
+              : 'bg-gray-50 text-gray-400'
+            }`}>
+              {done.length}/{activites.length}
+            </span>
+          )}
+        </div>
         <button
           onClick={() => navigate(`/athlete/seance/${seance.id}/semaine/${semaineId}`)}
           className={`px-3 py-1.5 rounded-lg text-xs font-medium border ${isFemme ? 'border-pink-200 text-pink-600 hover:bg-pink-50' : 'border-brand-200 text-brand-600 hover:bg-brand-50'}`}>

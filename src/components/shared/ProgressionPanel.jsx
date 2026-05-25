@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { supabase } from '../../lib/supabase'
 import { LineChart, Line, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts'
+import { calcSerieTonnage } from '../../lib/tonnage'
 
 export default function ProgressionPanel({ athleteId, config, onConfigChange, color = '#6366f1', readOnly = false }) {
   const [data, setData] = useState({ tonnage: [], series: [], byExo: {} })
@@ -14,7 +15,7 @@ export default function ProgressionPanel({ athleteId, config, onConfigChange, co
 
   async function fetchData() {
     setLoading(true)
-    // Fetch all in parallel for performance
+
     const [blocsRes] = await Promise.all([
       supabase.from('blocs').select('id').eq('athlete_id', athleteId)
     ])
@@ -38,14 +39,25 @@ export default function ProgressionPanel({ athleteId, config, onConfigChange, co
     const scancesIds = (scRes.data || []).map(s => s.id)
     if (!scancesIds.length) { setLoading(false); return }
 
-    const exsRes = await supabase.from('exercices').select('id, nom, muscle, unilateral, seance_id')
+    // Feature 3 : récupérer poids_corps sur les exercices
+    const exsRes = await supabase.from('exercices')
+      .select('id, nom, muscle, unilateral, seance_id, poids_corps')
       .in('seance_id', scancesIds)
     const exsAll = exsRes.data || []
 
-    const srRes = await supabase.from('series_realisees').select('exercice_id, charge, reps, semaine_id')
+    // Feature 3 : récupérer poids_corps_kg sur les séries
+    const srRes = await supabase.from('series_realisees')
+      .select('exercice_id, charge, reps, semaine_id, poids_corps_kg')
       .eq('athlete_id', athleteId).in('semaine_id', semIds)
-      .not('charge', 'is', null).not('reps', 'is', null)
+      .not('reps', 'is', null)
     const srAll = srRes.data || []
+
+    // Feature 3 : récupérer le poids de l'athlète (fallback)
+    const { data: poidsData } = await supabase
+      .from('data_tracking').select('poids')
+      .eq('athlete_id', athleteId).not('poids', 'is', null)
+      .order('date', { ascending: false }).limit(1)
+    const athletePoids = poidsData?.[0]?.poids || null
 
     // Aggregate by semaine
     const tonnageByWeek = []
@@ -62,18 +74,17 @@ export default function ProgressionPanel({ athleteId, config, onConfigChange, co
       for (const sr of srInSem) {
         const ex = exsInSem.find(e => e.id === sr.exercice_id)
         if (!ex) continue
-        // Filtre muscles
         if (config.muscles_filter?.length && !config.muscles_filter.includes(ex.muscle)) continue
-        const mult = ex.unilateral ? 2 : 1
-        tonnage += Number(sr.charge) * Number(sr.reps) * mult
+
+        // Feature 3 : utiliser calcSerieTonnage
+        const t = calcSerieTonnage(sr, ex, athletePoids)
+        tonnage += t
         nbSeries++
 
-        // Par exercice favori
         if (config.fav_exercices?.includes(ex.nom)) {
           if (!byExo[ex.nom]) byExo[ex.nom] = []
           const existing = byExo[ex.nom].find(d => d.semaine === semLabel)
-          const t = Number(sr.charge) * Number(sr.reps) * mult
-          if (existing) { existing.tonnage += t; existing.series++ }
+          if (existing) { existing.tonnage += Math.round(t); existing.series++ }
           else byExo[ex.nom].push({ semaine: semLabel, tonnage: Math.round(t), series: 1 })
         }
       }
@@ -95,7 +106,6 @@ export default function ProgressionPanel({ athleteId, config, onConfigChange, co
   const display = localConfig.display || 'graph'
   const mainData = metric === 'series' ? data.series : data.tonnage
   const dataKey = metric === 'series' ? 'series' : 'tonnage'
-  const unit = metric === 'series' ? ' séries' : ' kg'
 
   return (
     <div className="bg-white border border-gray-100 rounded-xl overflow-hidden">
@@ -178,7 +188,6 @@ export default function ProgressionPanel({ athleteId, config, onConfigChange, co
           <p className="text-xs text-gray-400 text-center py-4">Aucune donnée disponible</p>
         ) : (
           <>
-            {/* Graphe/tableau principal */}
             {(metric === 'tonnage' || metric === 'both') && (
               <ProgressChart data={data.tonnage} dataKey="tonnage" label="Tonnage (kg)" color={color} display={display} />
             )}
@@ -186,7 +195,6 @@ export default function ProgressionPanel({ athleteId, config, onConfigChange, co
               <ProgressChart data={data.series} dataKey="series" label="Nb séries" color={color} display={display} />
             )}
 
-            {/* Exercices favoris */}
             {(localConfig.fav_exercices || []).map(nom => (
               data.byExo[nom]?.length > 0 && (
                 <div key={nom}>
