@@ -4,6 +4,7 @@ import { supabase } from '../../lib/supabase'
 import Layout from '../../components/shared/Layout'
 import RecapTracking from '../../components/coach/RecapTracking'
 import ProgressionPanel from '../../components/shared/ProgressionPanel'
+import BlocReport from '../../components/coach/BlocReport'
 import { calcTDEE, nutritionSuggestions, ageFromDateNaissance } from '../../lib/tdee'
 
 function calcAge(dateNaissance) {
@@ -12,21 +13,23 @@ function calcAge(dateNaissance) {
 
 export default function CoachAthlete() {
   const { athleteId } = useParams()
-  const [athlete, setAthlete]         = useState(null)
-  const [blocs, setBlocs]             = useState([])
-  const [activeBloc, setActiveBloc]   = useState(null)
-  const [loading, setLoading]         = useState(true)
-  const [showNewBloc, setShowNewBloc] = useState(false)
-  const [newBlocName, setNewBlocName] = useState('')
+  const [athlete, setAthlete]           = useState(null)
+  const [blocs, setBlocs]               = useState([])
+  const [activeBloc, setActiveBloc]     = useState(null)
+  const [loading, setLoading]           = useState(true)
+  const [showNewBloc, setShowNewBloc]   = useState(false)
+  const [newBlocName, setNewBlocName]   = useState('')
   const [editingProfile, setEditingProfile] = useState(false)
-  const [profileForm, setProfileForm] = useState({
+  const [profileForm, setProfileForm]   = useState({
     full_name: '', genre: 'homme', taille: '', date_naissance: '', travail_physique: false,
   })
-  const [savingProfile, setSavingProfile]   = useState(false)
-  const [profileErr, setProfileErr]         = useState('')
+  const [savingProfile, setSavingProfile] = useState(false)
+  const [profileErr, setProfileErr]       = useState('')
   const [confirmDeleteBloc, setConfirmDeleteBloc] = useState(null)
   const [editingBlocName, setEditingBlocName]     = useState(null)
   const [editBlocNameVal, setEditBlocNameVal]     = useState('')
+  // Compte rendu de fin de bloc
+  const [showReport, setShowReport]     = useState(false)
 
   useEffect(() => { fetchData() }, [athleteId])
 
@@ -122,7 +125,7 @@ export default function CoachAthlete() {
         seance_id: oldToNewSc[sc.id], muscle: ex.muscle, nom: ex.nom, sets: ex.sets,
         rep_range: ex.rep_range, repos: ex.repos, indications: ex.indications, ordre: ex.ordre,
         charge_indicative: ex.charge_indicative, rpe_cible: ex.rpe_cible,
-        unilateral: ex.unilateral, main_lift: ex.main_lift,
+        unilateral: ex.unilateral, main_lift: ex.main_lift, poids_corps: ex.poids_corps,
       }))
     )
     const allBonus = seancesSource.flatMap(sc =>
@@ -151,6 +154,17 @@ export default function CoachAthlete() {
 
   return (
     <Layout>
+      {/* Modale compte rendu */}
+      {showReport && activeBloc && (
+        <BlocReport
+          athleteId={athleteId}
+          blocId={activeBloc.id}
+          blocName={activeBloc.name}
+          athleteName={athlete?.full_name}
+          onClose={() => setShowReport(false)}
+        />
+      )}
+
       {confirmDeleteBloc && (
         <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-2xl p-6 w-full max-w-sm shadow-xl">
@@ -164,6 +178,7 @@ export default function CoachAthlete() {
         </div>
       )}
 
+      {/* Header athlète */}
       <div className="flex items-center gap-3 mb-6">
         <Link to="/coach" className="text-sm text-gray-400 hover:text-gray-700">← Retour</Link>
         <div className="flex items-center gap-3 flex-1">
@@ -204,14 +219,11 @@ export default function CoachAthlete() {
                     className="border border-gray-200 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400"
                   />
                 </div>
-                {/* Travail physique */}
                 <div>
                   <button type="button"
                     onClick={() => setProfileForm(f => ({ ...f, travail_physique: !f.travail_physique }))}
                     className={`flex items-center gap-2 px-3 py-1.5 rounded-lg border text-sm transition-colors ${
-                      profileForm.travail_physique
-                        ? 'bg-brand-50 border-brand-200 text-brand-700'
-                        : 'border-gray-200 text-gray-500 hover:border-gray-300'
+                      profileForm.travail_physique ? 'bg-brand-50 border-brand-200 text-brand-700' : 'border-gray-200 text-gray-500 hover:border-gray-300'
                     }`}>
                     <div className={`w-4 h-4 rounded border-2 flex items-center justify-center flex-shrink-0 transition-colors ${
                       profileForm.travail_physique ? 'bg-brand-600 border-brand-600' : 'border-gray-300'
@@ -225,9 +237,6 @@ export default function CoachAthlete() {
                     <span className="text-xs">Travail physique</span>
                     <span className="text-xs text-gray-400">(maçon, infirmière, serveur…)</span>
                   </button>
-                  {profileForm.travail_physique && (
-                    <p className="text-xs text-brand-600 mt-1 pl-1">↑ Multiplicateur d'activité augmenté d'une catégorie</p>
-                  )}
                 </div>
                 <div className="flex items-center gap-2">
                   <button onClick={saveProfile} disabled={savingProfile}
@@ -311,9 +320,18 @@ export default function CoachAthlete() {
 
       {activeBloc ? (
         <div className="space-y-6">
-          <div className="flex items-center justify-between">
+          {/* Actions du bloc */}
+          <div className="flex items-center justify-between flex-wrap gap-2">
             <h2 className="font-medium text-gray-900">{activeBloc.name}</h2>
-            <div className="flex items-center gap-4">
+            <div className="flex items-center gap-3 flex-wrap">
+              {/* Compte rendu de fin de bloc */}
+              {!athlete?.is_self && (
+                <button
+                  onClick={() => setShowReport(true)}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium bg-gray-900 text-white hover:bg-gray-700 transition-colors">
+                  📋 Compte rendu du bloc
+                </button>
+              )}
               <Link to={`/coach/athlete/${athleteId}/view`} className="text-sm text-gray-500 hover:text-gray-800 font-medium">
                 👁 Vue athlète
               </Link>
@@ -322,8 +340,14 @@ export default function CoachAthlete() {
               </Link>
             </div>
           </div>
+
           <ObjectifsBloc bloc={activeBloc} athlete={athlete} onSave={fetchData} />
-          {!athlete?.is_self && <RecapTracking athleteId={athleteId} blocId={activeBloc.id} coachMode />}
+
+          {!athlete?.is_self && (
+            <RecapTracking athleteId={athleteId} blocId={activeBloc.id} coachMode />
+          )}
+
+          {/* Fix Feature 2 : athleteId correctement passé */}
           <ProgressionPanel
             athleteId={athleteId}
             config={{ metric: 'tonnage', display: 'graph', fav_exercices: [], muscles_filter: [] }}
@@ -370,17 +394,10 @@ function ObjectifsBloc({ bloc, athlete, onSave }) {
     else { setForm({}); setBornesForm({}) }
   }
 
-  /**
-   * Calcule le TDEE de l'athlète.
-   * Utilise athlete (props) comme source pour taille/date_naissance/genre/travail_physique.
-   * Poids : data_tracking > profile.poids (onboarding)
-   * Activité : data_tracking 30j (≥7 entrées) > objectifs_bloc > profile (onboarding)
-   */
   async function fetchTdee() {
     if (!athlete?.taille || !athlete?.date_naissance) return
     setLoadingTdee(true)
 
-    // 1. Poids
     const { data: poidsData } = await supabase
       .from('data_tracking').select('poids, date')
       .eq('athlete_id', athlete.id).not('poids', 'is', null)
@@ -389,7 +406,6 @@ function ObjectifsBloc({ bloc, athlete, onSave }) {
     const poids = poidsData?.[0]?.poids || athlete.poids
     if (!poids) { setLoadingTdee(false); return }
 
-    // 2. Activité 30 jours
     const thirtyAgo = new Date(); thirtyAgo.setDate(thirtyAgo.getDate() - 30)
     const { data: tracking } = await supabase
       .from('data_tracking').select('pas_journaliers, sport_fait, date')
@@ -401,7 +417,6 @@ function ObjectifsBloc({ bloc, athlete, onSave }) {
     const pasJournaliersMoy = pasVals.length ? pasVals.reduce((a, b) => a + b, 0) / pasVals.length : 0
     const seancesTracking   = entries.filter(e => e.sport_fait).length / Math.max(1, entries.length / 7)
 
-    // 3. Fallback objectifs_bloc
     const { data: objBloc } = await supabase
       .from('objectifs_bloc').select('pas_journaliers, seances_par_semaine')
       .eq('bloc_id', bloc.id).single()
@@ -411,20 +426,13 @@ function ObjectifsBloc({ bloc, athlete, onSave }) {
     const seancesUsed = hasSufficientTracking ? seancesTracking      : (objBloc?.seances_par_semaine || athlete.seances_semaine     || 0)
 
     const result = calcTDEE(
-      {
-        poids,
-        taille:           athlete.taille,
-        date_naissance:   athlete.date_naissance,
-        genre:            athlete.genre,
-        travail_physique: athlete.travail_physique || false,
-      },
+      { poids, taille: athlete.taille, date_naissance: athlete.date_naissance, genre: athlete.genre, travail_physique: athlete.travail_physique || false },
       { pasJournaliersMoy: pasUsed, seancesParSemaine: seancesUsed }
     )
 
     if (result) {
       setTdeeData({
-        ...result,
-        poids,
+        ...result, poids,
         pasJournaliersMoy:  Math.round(pasUsed),
         seancesParSemaine:  parseFloat(seancesUsed.toFixed(1)),
         lastPoidsDate:      poidsData?.[0]?.date || 'Onboarding',
@@ -437,7 +445,6 @@ function ObjectifsBloc({ bloc, athlete, onSave }) {
   async function saveObj() {
     setSaving(true)
     const payload = { ...form, bloc_id: bloc.id, bornes: bornesForm }
-
     if (obj) await supabase.from('objectifs_bloc').update(payload).eq('id', obj.id)
     else      await supabase.from('objectifs_bloc').insert(payload)
 
@@ -465,14 +472,7 @@ function ObjectifsBloc({ bloc, athlete, onSave }) {
   function applySuggestion(plan) {
     if (!tdeeData) return
     const sugg = nutritionSuggestions(tdeeData.tdee, tdeeData.poids, plan)
-    setForm(f => ({
-      ...f,
-      plan_nutritionnel: plan,
-      kcal:              sugg.kcal,
-      proteines:         sugg.proteines,
-      glucides:          sugg.glucides,
-      lipides:           sugg.lipides,
-    }))
+    setForm(f => ({ ...f, plan_nutritionnel: plan, kcal: sugg.kcal, proteines: sugg.proteines, glucides: sugg.glucides, lipides: sugg.lipides }))
   }
 
   function setBorne(borneKey, side, value) {
@@ -514,9 +514,7 @@ function ObjectifsBloc({ bloc, athlete, onSave }) {
             <div>
               <p className="text-xs font-semibold text-blue-700 mb-0.5">Maintien estimé</p>
               <p className="text-2xl font-bold text-blue-800">{tdeeData.tdee} <span className="text-sm font-normal">kcal/j</span></p>
-              <p className="text-xs text-blue-500 mt-0.5">
-                BMR {tdeeData.bmr} kcal · ×{tdeeData.multiplier} ({tdeeData.activityLabel})
-              </p>
+              <p className="text-xs text-blue-500 mt-0.5">BMR {tdeeData.bmr} kcal · ×{tdeeData.multiplier} ({tdeeData.activityLabel})</p>
               <p className="text-xs text-blue-400 mt-0.5">
                 {tdeeData.poids}kg · {tdeeData.pasJournaliersMoy.toLocaleString('fr')} pas/j · {tdeeData.seancesParSemaine} séances/sem
                 {athlete?.travail_physique ? ' · 💼 travail physique' : ''}
@@ -527,9 +525,9 @@ function ObjectifsBloc({ bloc, athlete, onSave }) {
               <div className="flex flex-col gap-1.5 flex-shrink-0">
                 <p className="text-xs text-blue-600 font-medium mb-0.5">Pré-remplir :</p>
                 {[
-                  ['seche',         '🔥 Sèche',          'bg-orange-100 text-orange-700 hover:bg-orange-200'],
-                  ['maintien',      '⚖️ Maintien',        'bg-blue-100 text-blue-700 hover:bg-blue-200'],
-                  ['prise_de_masse','💪 Prise de masse',  'bg-green-100 text-green-700 hover:bg-green-200'],
+                  ['seche',         '🔥 Sèche',         'bg-orange-100 text-orange-700 hover:bg-orange-200'],
+                  ['maintien',      '⚖️ Maintien',       'bg-blue-100 text-blue-700 hover:bg-blue-200'],
+                  ['prise_de_masse','💪 Prise de masse', 'bg-green-100 text-green-700 hover:bg-green-200'],
                 ].map(([plan, label, cls]) => (
                   <button key={plan} onClick={() => applySuggestion(plan)}
                     className={`text-xs px-3 py-1.5 rounded-lg font-medium transition-colors ${cls}`}>
@@ -549,7 +547,6 @@ function ObjectifsBloc({ bloc, athlete, onSave }) {
 
       {editing ? (
         <div className="space-y-5">
-          {/* Plan nutritionnel */}
           <div>
             <label className="text-xs text-gray-500 block mb-1">Plan nutritionnel</label>
             <div className="flex gap-2">
@@ -562,8 +559,6 @@ function ObjectifsBloc({ bloc, athlete, onSave }) {
               ))}
             </div>
           </div>
-
-          {/* Cibles */}
           <div>
             <label className="text-xs text-gray-500 block mb-2">Cibles</label>
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
@@ -581,16 +576,11 @@ function ObjectifsBloc({ bloc, athlete, onSave }) {
               ))}
             </div>
           </div>
-
-          {/* Bornes */}
           <div>
             <button type="button" onClick={() => setShowBornes(v => !v)}
               className="text-xs text-brand-600 hover:text-brand-800 font-medium flex items-center gap-1">
               {showBornes ? '▾' : '▸'} Bornes de couleur personnalisées
             </button>
-            <p className="text-xs text-gray-400 mt-0.5">
-              Définit les plages vertes/oranges/rouges sur les graphiques et l'historique.
-            </p>
             {showBornes && (
               <div className="mt-3 border border-gray-100 rounded-xl overflow-hidden">
                 <table className="w-full text-xs">
@@ -609,7 +599,7 @@ function ObjectifsBloc({ bloc, athlete, onSave }) {
                           <div className="flex items-center gap-1 justify-center">
                             <input type="number" value={bornesForm[borneKey]?.min ?? ''}
                               onChange={e => setBorne(borneKey, 'min', e.target.value)} placeholder="—"
-                              className="w-20 border border-gray-200 rounded px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-brand-400 text-center" />
+                              className="w-20 border border-gray-200 rounded px-2 py-1 text-xs focus:outline-none text-center" />
                             {unit && <span className="text-gray-400">{unit}</span>}
                           </div>
                         </td>
@@ -617,7 +607,7 @@ function ObjectifsBloc({ bloc, athlete, onSave }) {
                           <div className="flex items-center gap-1 justify-center">
                             <input type="number" value={bornesForm[borneKey]?.max ?? ''}
                               onChange={e => setBorne(borneKey, 'max', e.target.value)} placeholder="—"
-                              className="w-20 border border-gray-200 rounded px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-brand-400 text-center" />
+                              className="w-20 border border-gray-200 rounded px-2 py-1 text-xs focus:outline-none text-center" />
                             {unit && <span className="text-gray-400">{unit}</span>}
                           </div>
                         </td>
@@ -625,9 +615,6 @@ function ObjectifsBloc({ bloc, athlete, onSave }) {
                     ))}
                   </tbody>
                 </table>
-                <div className="px-4 py-2 bg-gray-50 text-xs text-gray-400">
-                  ✓ Vert = dans la plage · ○ Orange = légèrement hors plage (±15%) · ✗ Rouge = hors plage
-                </div>
               </div>
             )}
           </div>
@@ -650,9 +637,7 @@ function ObjectifsBloc({ bloc, athlete, onSave }) {
             ))}
           </div>
           {obj.bornes && Object.keys(obj.bornes).length > 0 && (
-            <p className="text-xs text-gray-400 mt-2">
-              Bornes personnalisées : {Object.keys(obj.bornes).join(', ')}
-            </p>
+            <p className="text-xs text-gray-400 mt-2">Bornes personnalisées : {Object.keys(obj.bornes).join(', ')}</p>
           )}
         </div>
       ) : (

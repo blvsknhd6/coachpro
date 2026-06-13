@@ -3,10 +3,13 @@ import { supabase } from '../../lib/supabase'
 import { LineChart, Line, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts'
 import { calcSerieTonnage } from '../../lib/tonnage'
 
+// Fix Feature 2 : toutes les requêtes utilisent athleteId (prop) et non profile.id
+// Le composant est appelé depuis CoachAthlete avec athleteId = l'athlète coaché
+
 export default function ProgressionPanel({ athleteId, config, onConfigChange, color = '#6366f1', readOnly = false }) {
-  const [data, setData] = useState({ tonnage: [], series: [], byExo: {} })
+  const [data, setData]         = useState({ tonnage: [], series: [], byExo: {} })
   const [exercices, setExercices] = useState([])
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading]   = useState(true)
   const [showConfig, setShowConfig] = useState(false)
   const [localConfig, setLocalConfig] = useState(config)
 
@@ -14,61 +17,59 @@ export default function ProgressionPanel({ athleteId, config, onConfigChange, co
   useEffect(() => { setLocalConfig(config) }, [config])
 
   async function fetchData() {
+    if (!athleteId) return
     setLoading(true)
 
-    const [blocsRes] = await Promise.all([
-      supabase.from('blocs').select('id').eq('athlete_id', athleteId)
-    ])
-    if (!blocsRes.data?.length) { setLoading(false); return }
-    const blocIds = blocsRes.data.map(b => b.id)
+    const { data: blocsRes } = await supabase
+      .from('blocs').select('id').eq('athlete_id', athleteId)
+    if (!blocsRes?.length) { setLoading(false); return }
+    const blocIds = blocsRes.map(b => b.id)
 
     const [semRes, exRes] = await Promise.all([
       supabase.from('semaines').select('id, numero').in('bloc_id', blocIds).order('numero').limit(16),
-      supabase.from('exercices').select('id, nom, muscle').neq('nom', '')
+      supabase.from('exercices').select('id, nom, muscle').neq('nom', ''),
     ])
 
     const semaines = semRes.data || []
-    const allExs = exRes.data || []
+    const allExs   = exRes.data || []
     const uniqueNoms = [...new Set(allExs.map(e => e.nom))].sort()
     setExercices(uniqueNoms)
 
     if (!semaines.length) { setLoading(false); return }
 
     const semIds = semaines.map(s => s.id)
-    const scRes = await supabase.from('seances').select('id, semaine_id').in('semaine_id', semIds)
-    const scancesIds = (scRes.data || []).map(s => s.id)
-    if (!scancesIds.length) { setLoading(false); return }
+    const { data: scData } = await supabase.from('seances').select('id, semaine_id').in('semaine_id', semIds)
+    const scIds = (scData || []).map(s => s.id)
+    if (!scIds.length) { setLoading(false); return }
 
-    // Feature 3 : récupérer poids_corps sur les exercices
-    const exsRes = await supabase.from('exercices')
+    // Feature 3 : poids_corps dans la sélection
+    const { data: exsAll } = await supabase.from('exercices')
       .select('id, nom, muscle, unilateral, seance_id, poids_corps')
-      .in('seance_id', scancesIds)
-    const exsAll = exsRes.data || []
+      .in('seance_id', scIds)
 
-    // Feature 3 : récupérer poids_corps_kg sur les séries
-    const srRes = await supabase.from('series_realisees')
-      .select('exercice_id, charge, reps, semaine_id, poids_corps_kg')
-      .eq('athlete_id', athleteId).in('semaine_id', semIds)
-      .not('reps', 'is', null)
-    const srAll = srRes.data || []
+    // Fix Feature 2 : filtrer par athleteId (pas profile.id)
+    const [{ data: srAll }, poidsRes] = await Promise.all([
+      supabase.from('series_realisees')
+        .select('exercice_id, charge, reps, semaine_id, poids_corps_kg')
+        .eq('athlete_id', athleteId)
+        .in('semaine_id', semIds)
+        .not('reps', 'is', null),
+      supabase.from('data_tracking').select('poids')
+        .eq('athlete_id', athleteId).not('poids', 'is', null)
+        .order('date', { ascending: false }).limit(1),
+    ])
 
-    // Feature 3 : récupérer le poids de l'athlète (fallback)
-    const { data: poidsData } = await supabase
-      .from('data_tracking').select('poids')
-      .eq('athlete_id', athleteId).not('poids', 'is', null)
-      .order('date', { ascending: false }).limit(1)
-    const athletePoids = poidsData?.[0]?.poids || null
+    const athletePoids = poidsRes.data?.[0]?.poids || null
 
-    // Aggregate by semaine
     const tonnageByWeek = []
-    const seriesByWeek = []
-    const byExo = {}
+    const seriesByWeek  = []
+    const byExo         = {}
 
     for (const sem of semaines) {
-      const semLabel = `S${sem.numero}`
-      const scInSem = (scRes.data || []).filter(sc => sc.semaine_id === sem.id).map(sc => sc.id)
-      const exsInSem = exsAll.filter(e => scInSem.includes(e.seance_id))
-      const srInSem = srAll.filter(s => s.semaine_id === sem.id)
+      const semLabel  = `S${sem.numero}`
+      const scInSem   = (scData || []).filter(sc => sc.semaine_id === sem.id).map(sc => sc.id)
+      const exsInSem  = (exsAll || []).filter(e => scInSem.includes(e.seance_id))
+      const srInSem   = (srAll  || []).filter(s => s.semaine_id === sem.id)
 
       let tonnage = 0; let nbSeries = 0
       for (const sr of srInSem) {
@@ -76,7 +77,7 @@ export default function ProgressionPanel({ athleteId, config, onConfigChange, co
         if (!ex) continue
         if (config.muscles_filter?.length && !config.muscles_filter.includes(ex.muscle)) continue
 
-        // Feature 3 : utiliser calcSerieTonnage
+        // Feature 3 : tonnage poids de corps
         const t = calcSerieTonnage(sr, ex, athletePoids)
         tonnage += t
         nbSeries++
@@ -97,15 +98,12 @@ export default function ProgressionPanel({ athleteId, config, onConfigChange, co
     setLoading(false)
   }
 
-  function saveConfig() {
-    onConfigChange(localConfig)
-    setShowConfig(false)
-  }
+  function saveConfig() { onConfigChange(localConfig); setShowConfig(false) }
 
-  const metric = localConfig.metric || 'tonnage'
+  const metric  = localConfig.metric  || 'tonnage'
   const display = localConfig.display || 'graph'
   const mainData = metric === 'series' ? data.series : data.tonnage
-  const dataKey = metric === 'series' ? 'series' : 'tonnage'
+  const dataKey  = metric === 'series' ? 'series' : 'tonnage'
 
   return (
     <div className="bg-white border border-gray-100 rounded-xl overflow-hidden">
@@ -122,7 +120,6 @@ export default function ProgressionPanel({ athleteId, config, onConfigChange, co
         <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-2xl p-6 w-full max-w-md shadow-xl max-h-[85vh] overflow-y-auto">
             <h3 className="text-base font-semibold mb-4">Configurer la progression</h3>
-
             <div className="space-y-4">
               <div>
                 <label className="text-xs font-medium text-gray-500 block mb-2">Métrique</label>
@@ -135,7 +132,6 @@ export default function ProgressionPanel({ athleteId, config, onConfigChange, co
                   ))}
                 </div>
               </div>
-
               <div>
                 <label className="text-xs font-medium text-gray-500 block mb-2">Affichage</label>
                 <div className="flex gap-2">
@@ -147,10 +143,9 @@ export default function ProgressionPanel({ athleteId, config, onConfigChange, co
                   ))}
                 </div>
               </div>
-
               <div>
                 <label className="text-xs font-medium text-gray-500 block mb-2">
-                  Exercices favoris (max 5) — graphe individuel
+                  Exercices favoris (max 5)
                 </label>
                 <div className="space-y-1 max-h-40 overflow-y-auto">
                   {exercices.map(nom => {
@@ -165,8 +160,7 @@ export default function ProgressionPanel({ athleteId, config, onConfigChange, co
                               if (favs.length >= 5) return c
                               return { ...c, fav_exercices: [...favs, nom] }
                             })
-                          }}
-                          className="rounded" />
+                          }} className="rounded" />
                         <span className="text-sm text-gray-700">{nom}</span>
                       </label>
                     )
@@ -174,7 +168,6 @@ export default function ProgressionPanel({ athleteId, config, onConfigChange, co
                 </div>
               </div>
             </div>
-
             <div className="flex gap-2 mt-5">
               <button onClick={saveConfig} className="flex-1 bg-brand-600 text-white rounded-lg py-2 text-sm font-medium">Enregistrer</button>
               <button onClick={() => setShowConfig(false)} className="flex-1 border border-gray-200 rounded-lg py-2 text-sm text-gray-600">Annuler</button>
@@ -184,9 +177,9 @@ export default function ProgressionPanel({ athleteId, config, onConfigChange, co
       )}
 
       <div className="p-5 space-y-5">
-        {loading ? <p className="text-xs text-gray-400">Chargement...</p> : mainData.length === 0 ? (
-          <p className="text-xs text-gray-400 text-center py-4">Aucune donnée disponible</p>
-        ) : (
+        {loading ? <p className="text-xs text-gray-400">Chargement...</p>
+        : mainData.length === 0 ? <p className="text-xs text-gray-400 text-center py-4">Aucune donnée disponible</p>
+        : (
           <>
             {(metric === 'tonnage' || metric === 'both') && (
               <ProgressChart data={data.tonnage} dataKey="tonnage" label="Tonnage (kg)" color={color} display={display} />
@@ -194,7 +187,6 @@ export default function ProgressionPanel({ athleteId, config, onConfigChange, co
             {(metric === 'series' || metric === 'both') && (
               <ProgressChart data={data.series} dataKey="series" label="Nb séries" color={color} display={display} />
             )}
-
             {(localConfig.fav_exercices || []).map(nom => (
               data.byExo[nom]?.length > 0 && (
                 <div key={nom}>
