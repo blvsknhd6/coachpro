@@ -396,13 +396,18 @@ export default function CoachBlocEditor() {
     setConfirmDeleteSemaine(null)
   }
 
-  async function propagate(seanceNom, currentNum) {
+  // Accepte seancesRef optionnel pour éviter de lire un state potentiellement stale
+  async function propagate(seanceNom, currentNum, seancesRef) {
     const suiv = semaines.filter(s => s.numero > currentNum)
     if (!suiv.length) return
 
-    const sc = seances.find(s => s.nom === seanceNom); if (!sc) return
-    const { data: exsCour } = await supabase.from('exercices').select('*').eq('seance_id', sc.id).order('ordre')
-    if (!exsCour?.length) return
+    const ref = seancesRef || seances
+    const sc  = ref.find(s => s.nom === seanceNom)
+    if (!sc) return
+
+    // Utiliser le state local — pas de requête Supabase pour lire les exos courants
+    const exsCour = (sc.exercices || []).slice().sort((a, b) => a.ordre - b.ordre)
+    if (!exsCour.length) return
 
     const { data: scSuivAll } = await supabase.from('seances').select('id, semaine_id')
       .in('semaine_id', suiv.map(s => s.id)).eq('nom', seanceNom)
@@ -424,7 +429,7 @@ export default function CoachBlocEditor() {
           muscle: ex.muscle, nom: ex.nom, sets: ex.sets,
           rep_range: ex.rep_range, repos: ex.repos,
           unilateral: ex.unilateral, main_lift: ex.main_lift,
-          poids_corps: ex.poids_corps, // Feature 3 : propager poids_corps
+          poids_corps: ex.poids_corps,
         }
         const cible = byOrdre[ex.ordre]
         if (cible) updates.push({ id: cible.id, ...payload })
@@ -442,20 +447,38 @@ export default function CoachBlocEditor() {
   }
 
   async function addExercice(seanceId, seanceNom) {
-    const s     = seances.find(sc => sc.id === seanceId)
-    const ordre = (s?.exercices || []).length
-    const { data: newEx } = await supabase.from('exercices').insert({
+    const sc    = seances.find(s => s.id === seanceId)
+    const ordre = (sc?.exercices || []).length
+
+    // Optimistic update immédiat — l'UI réagit sans attendre Supabase
+    const tempId = `temp-${Date.now()}`
+    const tempEx = {
+      id: tempId, seance_id: seanceId, nom: '', sets: 3, rep_range: '8-10',
+      repos: "2'", ordre, muscle: '', unilateral: false, main_lift: null,
+      poids_corps: false, indications: '', charge_indicative: null, rpe_cible: null,
+    }
+    setSeances(prev => prev.map(s =>
+      s.id === seanceId ? { ...s, exercices: [...(s.exercices || []), tempEx] } : s
+    ))
+
+    // Insert en arrière-plan
+    const { data: inserted } = await supabase.from('exercices').insert({
       seance_id: seanceId, nom: '', sets: 3, rep_range: '8-10', repos: "2'", ordre,
     }).select().single()
-    if (newEx) {
-      // Optimistic update : pas de fetchSeances complet, on insère directement
-      setSeances(prev => prev.map(sc =>
-        sc.id === seanceId ? { ...sc, exercices: [...(sc.exercices || []), newEx] } : sc
-      ))
-    }
-    // Propager seulement si des semaines suivantes existent et ont déjà des exercices
+
+    if (!inserted) return
+
+    // Remplacer tempId par le vrai id
+    const seancesAvecVrai = seances.map(s =>
+      s.id === seanceId
+        ? { ...s, exercices: [...(s.exercices || []).filter(e => e.id !== tempId), inserted] }
+        : s
+    )
+    setSeances(seancesAvecVrai)
+
+    // Propager sur les semaines suivantes avec le state à jour
     const hasSuiv = semaines.some(s => s.numero > activeSemaine.numero)
-    if (hasSuiv) await propagate(seanceNom, activeSemaine.numero)
+    if (hasSuiv) await propagate(seanceNom, activeSemaine.numero, seancesAvecVrai)
   }
 
   async function updateExercice(id, field, value, seanceNom) {
@@ -477,7 +500,11 @@ export default function CoachBlocEditor() {
 
     // Propager uniquement si champ concerné ET valeur réellement modifiée
     if (!noPropagateFields.includes(field) && hasChanged) {
-      await propagate(seanceNom, activeSemaine.numero)
+      const seancesMAJ = seances.map(sc => ({
+        ...sc,
+        exercices: (sc.exercices || []).map(ex => ex.id === id ? { ...ex, [field]: valueNormalisee } : ex),
+      }))
+      await propagate(seanceNom, activeSemaine.numero, seancesMAJ)
     }
   }
 
@@ -490,7 +517,13 @@ export default function CoachBlocEditor() {
     })))
     await supabase.from('exercices').delete().eq('id', id)
     const hasSuiv = semaines.some(s => s.numero > activeSemaine.numero)
-    if (hasSuiv) await propagate(seanceNom, activeSemaine.numero)
+    if (hasSuiv) {
+      const seancesMAJ = seances.map(sc => ({
+        ...sc,
+        exercices: (sc.exercices || []).filter(ex => ex.id !== id).map((ex, i) => ({ ...ex, ordre: i })),
+      }))
+      await propagate(seanceNom, activeSemaine.numero, seancesMAJ)
+    }
   }
 
   async function reorderExercices(seanceId, fromIdx, toIdx) {
