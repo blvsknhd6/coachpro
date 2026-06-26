@@ -167,7 +167,6 @@ function PowerliftingMultiSemaineView({ blocId, semaines, onClose }) {
                     return (
                       <tr key={`${lift}-${fieldDef.key}`}
                         className={`border-b ${isLastField ? 'border-gray-200' : 'border-gray-50'} ${liftIdx % 2 === 0 ? '' : 'bg-gray-50/30'}`}>
-                        {/* Lift label — seulement sur la première ligne du groupe */}
                         <td className="px-5 py-2 sticky left-0 bg-white z-10"
                           style={liftIdx % 2 === 0 ? {} : { backgroundColor: 'rgb(249 250 251 / 0.3)' }}>
                           {isFirstField ? (
@@ -176,11 +175,9 @@ function PowerliftingMultiSemaineView({ blocId, semaines, onClose }) {
                             </span>
                           ) : null}
                         </td>
-                        {/* Nom du champ */}
                         <td className="px-3 py-2">
                           <span className="text-xs text-gray-400">{fieldDef.label}</span>
                         </td>
-                        {/* Valeur par semaine */}
                         {semaines.map(s => {
                           const ex = data[s.id]?.[lift]
                           if (!ex) return (
@@ -252,7 +249,6 @@ export default function CoachBlocEditor() {
   const [customExos, setCustomExos]         = useState({})
   const [confirmDeleteSemaine, setConfirmDeleteSemaine] = useState(null)
   const [editingDateSemaine, setEditingDateSemaine]     = useState(null)
-  // Feature 4
   const [showPLView, setShowPLView]         = useState(false)
 
   useEffect(() => { fetchBloc() }, [blocId])
@@ -396,7 +392,6 @@ export default function CoachBlocEditor() {
     setConfirmDeleteSemaine(null)
   }
 
-  // Accepte seancesRef optionnel pour éviter de lire un state potentiellement stale
   async function propagate(seanceNom, currentNum, seancesRef) {
     const suiv = semaines.filter(s => s.numero > currentNum)
     if (!suiv.length) return
@@ -405,7 +400,6 @@ export default function CoachBlocEditor() {
     const sc  = ref.find(s => s.nom === seanceNom)
     if (!sc) return
 
-    // Utiliser le state local — pas de requête Supabase pour lire les exos courants
     const exsCour = (sc.exercices || []).slice().sort((a, b) => a.ordre - b.ordre)
     if (!exsCour.length) return
 
@@ -447,45 +441,41 @@ export default function CoachBlocEditor() {
   }
 
   async function addExercice(seanceId, seanceNom) {
-    const sc    = seances.find(s => s.id === seanceId)
-    const ordre = (sc?.exercices || []).length
+    const s = seances.find(sc => sc.id === seanceId)
+    const maxOrdre = (s?.exercices || []).reduce((max, ex) => Math.max(max, ex.ordre), -1)
+    const nouvelOrdre = maxOrdre + 1
 
-    // Optimistic update immédiat — l'UI réagit sans attendre Supabase
+    // Optimistic update
     const tempId = `temp-${Date.now()}`
     const tempEx = {
       id: tempId, seance_id: seanceId, nom: '', sets: 3, rep_range: '8-10',
-      repos: "2'", ordre, muscle: '', unilateral: false, main_lift: null,
+      repos: "2'", ordre: nouvelOrdre, muscle: '', unilateral: false, main_lift: null,
       poids_corps: false, indications: '', charge_indicative: null, rpe_cible: null,
     }
-    setSeances(prev => prev.map(s =>
-      s.id === seanceId ? { ...s, exercices: [...(s.exercices || []), tempEx] } : s
+    setSeances(prev => prev.map(sc =>
+      sc.id === seanceId ? { ...sc, exercices: [...(sc.exercices || []), tempEx] } : sc
     ))
 
-    // Insert en arrière-plan
     const { data: inserted } = await supabase.from('exercices').insert({
-      seance_id: seanceId, nom: '', sets: 3, rep_range: '8-10', repos: "2'", ordre,
+      seance_id: seanceId, nom: '', sets: 3, rep_range: '8-10', repos: "2'", ordre: nouvelOrdre,
     }).select().single()
 
     if (!inserted) return
 
-    // Remplacer tempId par le vrai id
-    const seancesAvecVrai = seances.map(s =>
-      s.id === seanceId
-        ? { ...s, exercices: [...(s.exercices || []).filter(e => e.id !== tempId), inserted] }
-        : s
+    const seancesAvecVrai = seances.map(sc =>
+      sc.id === seanceId
+        ? { ...sc, exercices: [...(sc.exercices || []).filter(e => e.id !== tempId), inserted] }
+        : sc
     )
     setSeances(seancesAvecVrai)
 
-    // Propager sur les semaines suivantes avec le state à jour
-    const hasSuiv = semaines.some(s => s.numero > activeSemaine.numero)
+    const hasSuiv = semaines.some(sem => sem.numero > activeSemaine.numero)
     if (hasSuiv) await propagate(seanceNom, activeSemaine.numero, seancesAvecVrai)
   }
 
   async function updateExercice(id, field, value, seanceNom) {
-    // Ne pas propager les champs locaux à la semaine
     const noPropagateFields = ['indications', 'charge_indicative', 'rpe_cible']
 
-    // Vérifier si la valeur a réellement changé avant de propager
     const exCourant = seances.flatMap(sc => sc.exercices || []).find(ex => ex.id === id)
     const ancienneValeur = exCourant?.[field]
     const valueNormalisee = value === '' ? null : value
@@ -498,7 +488,6 @@ export default function CoachBlocEditor() {
       exercices: (sc.exercices || []).map(ex => ex.id === id ? { ...ex, [field]: valueNormalisee } : ex),
     })))
 
-    // Propager uniquement si champ concerné ET valeur réellement modifiée
     if (!noPropagateFields.includes(field) && hasChanged) {
       const seancesMAJ = seances.map(sc => ({
         ...sc,
@@ -509,19 +498,45 @@ export default function CoachBlocEditor() {
   }
 
   async function deleteExercice(id, seanceNom) {
-    // Optimistic update immédiat
-    setSeances(prev => prev.map(sc => ({
-      ...sc,
-      exercices: (sc.exercices || []).filter(ex => ex.id !== id)
-        .map((ex, i) => ({ ...ex, ordre: i })),
-    })))
+    // 1. Optimistic update
+    setSeances(prev => prev.map(sc => {
+      if ((sc.exercices || []).some(ex => ex.id === id)) {
+        return {
+          ...sc,
+          exercices: (sc.exercices || []).filter(ex => ex.id !== id).map((ex, i) => ({ ...ex, ordre: i }))
+        }
+      }
+      return sc
+    }))
+
+    // 2. Suppression et mise à jour des ordres en DB
     await supabase.from('exercices').delete().eq('id', id)
-    const hasSuiv = semaines.some(s => s.numero > activeSemaine.numero)
+    
+    const s = seances.find(sc => (sc.exercices || []).some(ex => ex.id === id))
+    if (s) {
+      const remaining = (s.exercices || [])
+        .filter(ex => ex.id !== id)
+        .sort((a, b) => a.ordre - b.ordre)
+        
+      await Promise.all(
+        remaining.map((ex, i) =>
+          ex.ordre !== i ? supabase.from('exercices').update({ ordre: i }).eq('id', ex.id) : null
+        ).filter(Boolean)
+      )
+    }
+
+    // 3. Propagation
+    const hasSuiv = semaines.some(sem => sem.numero > activeSemaine.numero)
     if (hasSuiv) {
-      const seancesMAJ = seances.map(sc => ({
-        ...sc,
-        exercices: (sc.exercices || []).filter(ex => ex.id !== id).map((ex, i) => ({ ...ex, ordre: i })),
-      }))
+      const seancesMAJ = seances.map(sc => {
+        if (sc.id === s?.id) {
+          return {
+            ...sc,
+            exercices: (sc.exercices || []).filter(ex => ex.id !== id).map((ex, i) => ({ ...ex, ordre: i }))
+          }
+        }
+        return sc
+      })
       await propagate(seanceNom, activeSemaine.numero, seancesMAJ)
     }
   }
@@ -576,7 +591,6 @@ export default function CoachBlocEditor() {
 
   return (
     <Layout>
-      {/* Feature 4 : Modal vue multi-semaines powerlifting */}
       {showPLView && (
         <PowerliftingMultiSemaineView
           blocId={blocId}
@@ -604,7 +618,6 @@ export default function CoachBlocEditor() {
         <Link to={`/coach/athlete/${bloc?.athlete_id}`} className="text-sm text-gray-400 hover:text-gray-700">← Retour</Link>
         <h1 className="text-xl font-semibold flex-1">{bloc?.name} — Programme</h1>
         <div className="flex gap-2 flex-wrap">
-          {/* Feature 4 : bouton vue PL multi-semaines (visible seulement si PL activé) */}
           {bloc?.powerlifting && (
             <button onClick={() => setShowPLView(true)}
               className="text-xs px-3 py-1.5 rounded-lg border bg-amber-500 text-white border-amber-500 hover:bg-amber-600 transition-colors font-medium">
@@ -636,7 +649,6 @@ export default function CoachBlocEditor() {
         <PowerliftingMaxEditor blocId={blocId} athleteId={bloc.athlete_id} />
       )}
 
-      {/* Sélecteur semaines */}
       <div className="flex items-center gap-2 mb-6 flex-wrap">
         {semaines.map(s => (
           <div key={s.id} className="flex items-center">
@@ -673,7 +685,6 @@ export default function CoachBlocEditor() {
         </button>
       </div>
 
-      {/* Popup date_debut */}
       {editingDateSemaine && (
         <div className="mb-4 bg-white border border-brand-200 rounded-xl p-4 flex items-center gap-4 flex-wrap shadow-sm">
           <div>
@@ -851,7 +862,7 @@ function SeanceEditor({ seance, showChargeIndicative, showRpe, isPowerlifting, g
     + (showChargeIndicative ? 2 : 0)
     + (showRpe ? 1 : 0)
     + (isPowerlifting ? 2 : 0)
-    + 1 // Feature 3 : colonne poids corps
+    + 1 
 
   return (
     <div className="bg-white border border-gray-100 rounded-xl overflow-hidden">
@@ -890,7 +901,7 @@ function SeanceEditor({ seance, showChargeIndicative, showRpe, isPowerlifting, g
             {showChargeIndicative && <div className="col-span-2">Charge (kg)</div>}
             {showRpe && <div>RPE</div>}
             {isPowerlifting && <div className="col-span-2">Lift principal</div>}
-            <div>PC</div>  {/* Feature 3 : colonne poids corps */}
+            <div>PC</div>
             <div className="col-span-2">Indication</div>
           </div>
           <div className="w-5 flex-shrink-0" />
@@ -940,7 +951,7 @@ function ExerciceRow({ exercice, showChargeIndicative, showRpe, isPowerlifting, 
   const [indication, setIndication] = useState(exercice.indications || '')
   const [unilateral, setUnilateral] = useState(exercice.unilateral || false)
   const [mainLift, setMainLift]     = useState(exercice.main_lift || '')
-  const [poidsCorp, setPoidsCorp]   = useState(exercice.poids_corps || false) // Feature 3
+  const [poidsCorp, setPoidsCorp]   = useState(exercice.poids_corps || false)
   const [addingExo, setAddingExo]   = useState(false)
   const [newExoName, setNewExoName] = useState('')
 
@@ -958,7 +969,6 @@ function ExerciceRow({ exercice, showChargeIndicative, showRpe, isPowerlifting, 
     setNewExoName(''); setAddingExo(false)
   }
   function toggleUnilateral() { const v = !unilateral; setUnilateral(v); onUpdate('unilateral', v) }
-  // Feature 3
   function togglePoidsCorp() { const v = !poidsCorp; setPoidsCorp(v); onUpdate('poids_corps', v) }
 
   const sel = "w-full border border-gray-100 rounded px-1.5 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-brand-400 hover:border-gray-300 bg-gray-50"
@@ -1039,7 +1049,6 @@ function ExerciceRow({ exercice, showChargeIndicative, showRpe, isPowerlifting, 
               </select>
             </div>
           )}
-          {/* Feature 3 : toggle poids corps */}
           <div>
             <button onClick={togglePoidsCorp}
               title="Exercice au poids de corps"
@@ -1064,7 +1073,6 @@ function ExerciceRow({ exercice, showChargeIndicative, showRpe, isPowerlifting, 
             className={`text-xs px-2 py-0.5 rounded border transition-colors ${unilateral ? 'bg-brand-600 text-white border-brand-600' : 'bg-gray-50 text-gray-400 border-gray-100 hover:border-gray-300'}`}>
             {unilateral ? '✓ Unilatéral' : 'Unilatéral'}
           </button>
-          {/* Feature 3 : badge poids corps si activé */}
           {poidsCorp && (
             <span className="text-xs text-blue-600 bg-blue-50 border border-blue-100 px-2 py-0.5 rounded">
               🏃 Poids corps
