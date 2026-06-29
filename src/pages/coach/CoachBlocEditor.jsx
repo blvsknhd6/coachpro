@@ -181,6 +181,8 @@ export default function CoachBlocEditor() {
             ordre:             ex.ordre,      charge_indicative: ex.charge_indicative,
             rpe_cible:         ex.rpe_cible,  unilateral: ex.unilateral,
             main_lift:         ex.main_lift,
+            // On garde le même groupe_id : c'est "le même exercice" qui continue sur la nouvelle semaine
+            groupe_id:         ex.groupe_id,
           }))
         )
         const allBonus = ref.flatMap(sc =>
@@ -218,12 +220,19 @@ export default function CoachBlocEditor() {
     setConfirmDeleteSemaine(null)
   }
 
+  /**
+   * Propage le contenu des exercices de la semaine courante vers les semaines
+   * suivantes du bloc. Le matching se fait sur `groupe_id` (identité stable
+   * de l'exercice à travers les semaines), PAS sur `ordre` (qui n'est qu'une
+   * position d'affichage et peut être changée librement via drag & drop sans
+   * jamais affecter ce qui est propagé).
+   */
   async function propagate(seanceNom, currentNum) {
     const suiv = semaines.filter(s => s.numero > currentNum)
     if (!suiv.length) return
 
     const sc = seances.find(s => s.nom === seanceNom); if (!sc) return
-    const { data: exsCour } = await supabase.from('exercices').select('*').eq('seance_id', sc.id).order('ordre')
+    const { data: exsCour } = await supabase.from('exercices').select('*').eq('seance_id', sc.id)
     if (!exsCour?.length) return
 
     const { data: scSuivAll } = await supabase.from('seances').select('id, semaine_id')
@@ -231,15 +240,15 @@ export default function CoachBlocEditor() {
     if (!scSuivAll?.length) return
 
     const { data: exsExAll } = await supabase.from('exercices').select('*')
-      .in('seance_id', scSuivAll.map(s => s.id)).order('ordre')
+      .in('seance_id', scSuivAll.map(s => s.id))
 
-    const ordres  = new Set(exsCour.map(e => e.ordre))
+    const groupeIdsCour = new Set(exsCour.map(e => e.groupe_id).filter(Boolean))
     const updates = [], inserts = [], deleteIds = []
 
     for (const scSuiv of scSuivAll) {
-      const exsEx   = (exsExAll || []).filter(e => e.seance_id === scSuiv.id)
-      const byOrdre = {}
-      exsEx.forEach(e => { byOrdre[e.ordre] = e })
+      const exsEx    = (exsExAll || []).filter(e => e.seance_id === scSuiv.id)
+      const byGroupe = {}
+      exsEx.forEach(e => { if (e.groupe_id) byGroupe[e.groupe_id] = e })
 
       for (const ex of exsCour) {
         // charge_indicative et rpe_cible exclus de la propagation
@@ -248,11 +257,20 @@ export default function CoachBlocEditor() {
           rep_range: ex.rep_range, repos: ex.repos,
           unilateral: ex.unilateral, main_lift: ex.main_lift,
         }
-        const cible = byOrdre[ex.ordre]
-        if (cible) updates.push({ id: cible.id, ...payload })
-        else inserts.push({ seance_id: scSuiv.id, ordre: ex.ordre, indications: ex.indications, charge_indicative: null, rpe_cible: null, ...payload })
+        const cible = ex.groupe_id ? byGroupe[ex.groupe_id] : null
+        if (cible) {
+          updates.push({ id: cible.id, ...payload })
+        } else {
+          inserts.push({
+            seance_id: scSuiv.id, ordre: ex.ordre, groupe_id: ex.groupe_id,
+            indications: ex.indications, charge_indicative: null, rpe_cible: null,
+            ...payload,
+          })
+        }
       }
-      const aSup = exsEx.filter(e => !ordres.has(e.ordre))
+      // On supprime dans les semaines suivantes les exercices dont le groupe_id
+      // n'existe plus dans la semaine courante (= exercice supprimé par le coach)
+      const aSup = exsEx.filter(e => !e.groupe_id || !groupeIdsCour.has(e.groupe_id))
       deleteIds.push(...aSup.map(e => e.id))
     }
 
@@ -265,9 +283,10 @@ export default function CoachBlocEditor() {
 
   async function addExercice(seanceId, seanceNom) {
     const s = seances.find(sc => sc.id === seanceId)
-    // CORRECTION : max(ordre) + 1 au lieu de length, pour éviter les collisions
+    // max(ordre) + 1 plutôt que length, pour éviter les collisions
     // après une suppression qui aurait laissé des trous dans les ordres
     const maxOrdre = (s?.exercices || []).reduce((max, ex) => Math.max(max, ex.ordre), -1)
+    // groupe_id généré automatiquement par la base (default gen_random_uuid())
     await supabase.from('exercices').insert({
       seance_id: seanceId, nom: '', sets: 3, rep_range: '8-10', repos: "2'", ordre: maxOrdre + 1,
     })
@@ -291,8 +310,8 @@ export default function CoachBlocEditor() {
   async function deleteExercice(id, seanceNom) {
     await supabase.from('exercices').delete().eq('id', id)
 
-    // CORRECTION : réindexer les ordres restants pour éviter les trous
-    // qui causaient des collisions d'ordre lors d'un addExercice ultérieur
+    // Réindexer les ordres restants (affichage uniquement, sans impact sur
+    // l'identité groupe_id utilisée pour la propagation)
     const s = seances.find(sc => (sc.exercices || []).some(ex => ex.id === id))
     if (s) {
       const remaining = (s.exercices || [])
@@ -309,6 +328,13 @@ export default function CoachBlocEditor() {
     await propagate(seanceNom, activeSemaine.numero)
   }
 
+  /**
+   * CORRECTION : réordonner ne touche QUE l'`ordre` (position d'affichage de
+   * la semaine courante). Comme `propagate` matche désormais sur `groupe_id`
+   * et ne transporte jamais le champ `ordre` des exercices existants, il n'y
+   * a plus besoin d'appeler propagate ici — réordonner ne doit avoir AUCUN
+   * impact sur les semaines suivantes.
+   */
   async function reorderExercices(seanceId, fromIdx, toIdx) {
     if (fromIdx === toIdx) return
     const sc  = seances.find(s => s.id === seanceId); if (!sc) return
@@ -317,7 +343,6 @@ export default function CoachBlocEditor() {
     const updated = exs.map((ex, i) => ({ ...ex, ordre: i }))
     setSeances(prev => prev.map(s => s.id === seanceId ? { ...s, exercices: updated } : s))
     await Promise.all(updated.map(ex => supabase.from('exercices').update({ ordre: ex.ordre }).eq('id', ex.id)))
-    await propagate(sc.nom, activeSemaine.numero)
   }
 
   async function updateSeanceNom(seanceId, ancien, nouveau) {
@@ -395,7 +420,7 @@ export default function CoachBlocEditor() {
 
       {hasSuiv && (
         <div className="mb-4 bg-amber-50 border border-amber-200 rounded-lg px-4 py-2 text-xs text-amber-700">
-          ✏️ Modifications en S{activeSemaine?.numero} propagées sur S{activeSemaine?.numero + 1}→S{semaines[semaines.length - 1]?.numero} (sauf indications, RPE et charge)
+          ✏️ Modifications en S{activeSemaine?.numero} propagées sur S{activeSemaine?.numero + 1}→S{semaines[semaines.length - 1]?.numero} (sauf indications, RPE et charge). Réordonner les exercices n'affecte que cette semaine.
         </div>
       )}
 
