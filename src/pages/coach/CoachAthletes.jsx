@@ -4,12 +4,22 @@ import { supabase } from '../../lib/supabase'
 import { useAuth } from '../../hooks/useAuth'
 import Layout from '../../components/shared/Layout'
 import { metricColor, computeAverages } from '../../lib/tracking'
+import { getCycleStatus } from '../../lib/cycleUtils'
+
+const PHASE_COLOR_CLASSES = {
+  red:    'bg-red-100 text-red-700',
+  yellow: 'bg-yellow-100 text-yellow-700',
+  green:  'bg-green-100 text-green-700',
+  orange: 'bg-orange-100 text-orange-700',
+  purple: 'bg-purple-100 text-purple-700',
+}
 
 export default function CoachAthletes() {
   const { profile } = useAuth()
   const [athletes, setAthletes]                 = useState([])
   const [athleteTracking, setAthleteTracking]   = useState({})
   const [athleteObjectifs, setAthleteObjectifs] = useState({})
+  const [athleteCycle, setAthleteCycle]         = useState({})
   const [loading, setLoading]                   = useState(true)
   const [showAdd, setShowAdd]     = useState(false)
   const [form, setForm]           = useState({ full_name: '', email: '', genre: 'femme' })
@@ -72,6 +82,24 @@ export default function CoachAthletes() {
       }
     }
     setAthleteObjectifs(objMap)
+
+    // Cycle — batch pour toutes les athlètes femmes (hors profil perso du coach)
+    const femaleIds = aths.filter(a => a.genre === 'femme' && !a.is_self).map(a => a.id)
+    if (femaleIds.length) {
+      const { data: cycleLogs } = await supabase
+        .from('period_logs')
+        .select('*')
+        .in('user_id', femaleIds)
+        .order('period_start_date', { ascending: false })
+
+      const cycleMap = {}
+      for (const id of femaleIds) {
+        const logs = (cycleLogs || []).filter(l => l.user_id === id)
+        cycleMap[id] = logs.length ? getCycleStatus(logs) : null
+      }
+      setAthleteCycle(cycleMap)
+    }
+
     setLoading(false)
   }
 
@@ -292,6 +320,7 @@ export default function CoachAthletes() {
             const tr  = athleteTracking[a.id]
             const obj = athleteObjectifs[a.id]
             const b   = obj?.bornes || {}
+            const cycle = athleteCycle[a.id]
             return (
               <div key={a.id} className="relative group">
                 <Link
@@ -369,6 +398,18 @@ export default function CoachAthletes() {
                           : 'En attente de complétion du profil…'}
                       </p>
                     </div>
+                  )}
+
+                  {/* Badge cycle — athlètes femmes uniquement */}
+                  {a.genre === 'femme' && !a.is_self && (
+                    cycle ? (
+                      <div className={`mt-2 inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full font-medium ${PHASE_COLOR_CLASSES[cycle.phaseColor]}`}>
+                        <span>{cycle.phaseLabel}</span>
+                        <span className="opacity-70">· {cycle.dayLabel}</span>
+                      </div>
+                    ) : (
+                      <p className="mt-2 text-xs text-gray-300">Cycle non renseigné</p>
+                    )
                   )}
                 </Link>
 
