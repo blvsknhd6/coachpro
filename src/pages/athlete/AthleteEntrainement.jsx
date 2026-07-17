@@ -19,6 +19,12 @@ export default function AthleteEntrainement() {
   const [newActivite, setNewActivite]   = useState('')
   const [addingActivite, setAddingActivite] = useState(false)
 
+  // Le coach utilise ce même composant pour son propre entraînement :
+  // les séances pointent vers /coach/my-training/seance/... au lieu de /athlete/seance/...
+  const seanceBasePath = profile?.role === 'coach'
+    ? '/coach/my-training/seance'
+    : '/athlete/seance'
+
   useEffect(() => { if (profile) fetchBlocs() }, [profile])
   useEffect(() => { if (activeSemaine) fetchSeances(activeSemaine.id) }, [activeSemaine])
 
@@ -57,8 +63,8 @@ export default function AthleteEntrainement() {
         .select(`
           id, nom, ordre,
           exercices(
-            id, sets,
-            series_realisees(id, reps, charge)
+            id,
+            series_realisees(id)
           ),
           activites_bonus(id, nom, ordre)
         `)
@@ -110,20 +116,6 @@ export default function AthleteEntrainement() {
     }
   }
 
-  // Feature 2 : calcul état d'une séance
-  function getSeanceStatus(sc) {
-    const exs = sc.exercices || []
-    if (!exs.length) return 'empty'
-    // Nb de séries avec au moins reps ou charge renseigné
-    const totalSets = exs.reduce((acc, ex) => acc + (ex.sets || 0), 0)
-    const doneSets  = exs.reduce((acc, ex) =>
-      acc + (ex.series_realisees || []).filter(s => s.reps || s.charge).length, 0
-    )
-    if (doneSets === 0) return 'not_started'
-    if (doneSets >= totalSets) return 'complete'
-    return 'partial'
-  }
-
   const accentText  = theme.isFemme ? 'text-pink-600' : 'text-brand-600'
   const accentBg    = theme.isFemme ? 'bg-pink-600' : 'bg-brand-600'
   const accentLight = theme.isFemme ? 'bg-pink-50 text-pink-700 border-pink-200' : 'bg-brand-50 text-brand-700 border-brand-200'
@@ -147,6 +139,16 @@ export default function AthleteEntrainement() {
         </div>
       )}
 
+      {/* Lien vers l'éditeur — uniquement pour le coach qui regarde son propre programme */}
+      {profile?.role === 'coach' && activeBloc && (
+        <div className="flex justify-end mb-2">
+          <Link to={`/coach/bloc/${activeBloc.id}/edit`}
+            className="text-xs text-brand-600 hover:text-brand-800 font-medium border border-brand-200 rounded-lg px-3 py-1.5">
+            ✎ Éditer le programme
+          </Link>
+        </div>
+      )}
+
       {semaines.length > 0 && (
         <div className="flex gap-2 mb-4 flex-wrap">
           {semaines.map(s => (
@@ -165,69 +167,21 @@ export default function AthleteEntrainement() {
       ) : (
         <div className="space-y-3">
           {seancesNormales.map(sc => {
-            const total  = sc.exercices?.length || 0
-            const status = getSeanceStatus(sc)
-            const doneSets  = sc.exercices?.reduce((acc, ex) =>
-              acc + (ex.series_realisees || []).filter(s => s.reps || s.charge).length, 0) || 0
-            const totalSets = sc.exercices?.reduce((acc, ex) => acc + (ex.sets || 0), 0) || 0
-            const pct = totalSets > 0 ? Math.round((doneSets / totalSets) * 100) : 0
-
+            const total = sc.exercices?.length || 0
+            const done  = sc.exercices?.filter(e => (e.series_realisees?.length || 0) > 0).length || 0
+            const pct   = total > 0 ? Math.round((done / total) * 100) : 0
             return (
-              <Link key={sc.id} to={`/athlete/seance/${sc.id}/semaine/${activeSemaine?.id}`}
+              <Link key={sc.id} to={`${seanceBasePath}/${sc.id}/semaine/${activeSemaine?.id}`}
                 className="bg-white border border-gray-100 rounded-xl p-4 block hover:shadow-sm transition-all group">
                 <div className="flex items-center justify-between mb-2">
                   <p className={`font-medium text-sm text-gray-900 group-hover:${accentText}`}>{sc.nom}</p>
-
-                  {/* Feature 2 : badge état enrichi */}
-                  {status === 'complete' && (
-                    <span className="text-xs px-2 py-0.5 rounded-full font-medium bg-green-50 text-green-700">
-                      ✓ Terminé
-                    </span>
-                  )}
-                  {status === 'partial' && (
-                    <span className="text-xs px-2 py-0.5 rounded-full font-medium bg-amber-50 text-amber-600">
-                      ⚠ En cours · {doneSets}/{totalSets}
-                    </span>
-                  )}
-                  {status === 'not_started' && (
-                    <span className="text-xs px-2 py-0.5 rounded-full font-medium bg-gray-50 text-gray-400">
-                      {total} exercice{total !== 1 ? 's' : ''}
-                    </span>
-                  )}
-                  {status === 'empty' && (
-                    <span className="text-xs px-2 py-0.5 rounded-full font-medium bg-gray-50 text-gray-300">
-                      —
-                    </span>
-                  )}
+                  <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${pct === 100 ? 'bg-green-50 text-green-700' : pct > 0 ? 'bg-amber-50 text-amber-700' : 'bg-gray-50 text-gray-400'}`}>
+                    {pct === 100 ? 'Terminé' : `${done}/${total}`}
+                  </span>
                 </div>
-
-                {/* Barre de progression par sets (Feature 2 : couleur selon état) */}
                 <div className="h-1.5 bg-gray-100 rounded-full overflow-hidden">
-                  <div
-                    className={`h-full rounded-full transition-all ${
-                      status === 'complete' ? 'bg-green-500'
-                      : status === 'partial' ? 'bg-amber-400'
-                      : theme.progress
-                    }`}
-                    style={{ width: `${pct}%` }}
-                  />
+                  <div className={`h-full ${theme.progress} rounded-full`} style={{ width: `${pct}%` }} />
                 </div>
-
-                {/* Feature 2 : détail exercices partiellement faits */}
-                {status === 'partial' && (
-                  <div className="mt-2 flex flex-wrap gap-1">
-                    {sc.exercices?.map(ex => {
-                      const doneEx = (ex.series_realisees || []).filter(s => s.reps || s.charge).length
-                      const totalEx = ex.sets || 0
-                      if (doneEx === 0 || doneEx >= totalEx) return null
-                      return (
-                        <span key={ex.id} className="text-xs bg-amber-50 text-amber-600 border border-amber-100 px-1.5 py-0.5 rounded">
-                          {doneEx}/{totalEx} sets incomplets
-                        </span>
-                      )
-                    })}
-                  </div>
-                )}
               </Link>
             )
           })}
@@ -271,7 +225,15 @@ export default function AthleteEntrainement() {
           )}
 
           {seances.length === 0 && (
-            <p className="text-sm text-gray-400 text-center py-12">Ton coach n'a pas encore créé de programme.</p>
+            <div className="text-center py-16 text-gray-400">
+              <p className="text-sm mb-2">Aucun programme pour toi.</p>
+              {profile?.role === 'coach' && activeBloc && (
+                <Link to={`/coach/bloc/${activeBloc.id}/edit`}
+                  className="text-brand-600 hover:text-brand-800 font-medium text-sm">
+                  Créer le programme →
+                </Link>
+              )}
+            </div>
           )}
         </div>
       )}

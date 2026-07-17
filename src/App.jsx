@@ -7,14 +7,12 @@ import CoachAthletes from './pages/coach/CoachAthletes'
 import CoachAthlete from './pages/coach/CoachAthlete'
 import CoachBlocEditor from './pages/coach/CoachBlocEditor'
 import CoachAthleteView from './pages/coach/CoachAthleteView'
-import CoachMyTraining from './pages/coach/CoachMyTraining'
 import AthleteHome from './pages/athlete/AthleteHome'
 import AthleteEntrainement from './pages/athlete/AthleteEntrainement'
 import AthleteSeance from './pages/athlete/AthleteSeance'
 import AthleteDataTracking from './pages/athlete/AthleteDataTracking'
 import AthleteProgression from './pages/athlete/AthleteProgression'
 import CycleTrackerPage from './pages/athlete/CycleTrackerPage'
-
 
 function PrivateRoute({ children, role }) {
   const { user, profile, loading } = useAuth()
@@ -31,13 +29,12 @@ export default function App() {
   return (
     <Routes>
       <Route path="/login" element={<LoginPage />} />
-
-      {/* Route publique — accessible sans être connecté (lien d'invitation) */}
       <Route path="/onboarding" element={<OnboardingPage />} />
 
       <Route path="/coach" element={<PrivateRoute role="coach"><CoachHome /></PrivateRoute>} />
       <Route path="/coach/athletes" element={<PrivateRoute role="coach"><CoachAthletes /></PrivateRoute>} />
-      <Route path="/coach/mon-programme" element={<PrivateRoute role="coach"><CoachMyTraining /></PrivateRoute>} />
+      {/* Mon entraînement = même composant que l'athlète, le coach est son propre athlète */}
+      <Route path="/coach/mon-programme" element={<PrivateRoute role="coach"><AthleteEntrainement /></PrivateRoute>} />
       <Route path="/coach/progression" element={<PrivateRoute role="coach"><AthleteProgression /></PrivateRoute>} />
       <Route path="/coach/athlete/:athleteId" element={<PrivateRoute role="coach"><CoachAthlete /></PrivateRoute>} />
       <Route path="/coach/athlete/:athleteId/view" element={<PrivateRoute role="coach"><CoachAthleteView /></PrivateRoute>} />
