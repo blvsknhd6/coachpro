@@ -1,651 +1,737 @@
-import { useState, useEffect } from 'react'
-import { useParams, Link } from 'react-router-dom'
+import { useState, useEffect, useRef } from 'react'
+import { useParams, useNavigate } from 'react-router-dom'
 import { supabase } from '../../lib/supabase'
+import { useAuth } from '../../hooks/useAuth'
+import { useTheme } from '../../hooks/useTheme'
 import Layout from '../../components/shared/Layout'
-import RecapTracking from '../../components/coach/RecapTracking'
-import ProgressionPanel from '../../components/shared/ProgressionPanel'
-import BlocReport from '../../components/coach/BlocReport'
-import { calcTDEE, nutritionSuggestions, ageFromDateNaissance } from '../../lib/tdee'
 
-function calcAge(dateNaissance) {
-  return ageFromDateNaissance(dateNaissance) ?? '?'
+const RPE_VALUES = [6, 6.5, 7, 7.5, 8, 8.5, 9, 9.5, 10]
+const LIFT_LABELS = { squat: '🏋️ Squat', bench: '💪 Bench', deadlift: '⚡ Deadlift' }
+const CARDIO_ACTIVITES = ['Course à pied', 'Vélo', 'Rameur', 'Natation', 'Elliptique', 'Corde à sauter', 'Marche', 'Autre']
+
+function epley1RM(weight, reps, rpe = null) {
+  if (!weight || !reps || reps <= 0) return null
+  const rir     = rpe != null ? Math.max(0, 10 - Number(rpe)) : 0
+  const adjReps = Number(reps) + rir
+  return Math.round(Number(weight) * (1 + adjReps / 30) * 10) / 10
 }
 
-export default function CoachAthlete() {
-  const { athleteId } = useParams()
-  const [athlete, setAthlete]           = useState(null)
-  const [blocs, setBlocs]               = useState([])
-  const [activeBloc, setActiveBloc]     = useState(null)
-  const [loading, setLoading]           = useState(true)
-  const [showNewBloc, setShowNewBloc]   = useState(false)
-  const [newBlocName, setNewBlocName]   = useState('')
-  const [editingProfile, setEditingProfile] = useState(false)
-  const [profileForm, setProfileForm]   = useState({
-    full_name: '', genre: 'homme', taille: '', date_naissance: '', travail_physique: false,
-  })
-  const [savingProfile, setSavingProfile] = useState(false)
-  const [profileErr, setProfileErr]       = useState('')
-  const [confirmDeleteBloc, setConfirmDeleteBloc] = useState(null)
-  const [editingBlocName, setEditingBlocName]     = useState(null)
-  const [editBlocNameVal, setEditBlocNameVal]     = useState('')
-  // Compte rendu de fin de bloc
-  const [showReport, setShowReport]     = useState(false)
+export default function AthleteSeance() {
+  const { seanceId, semaineId } = useParams()
+  const { profile } = useAuth()
+  const theme = useTheme()
+  const navigate = useNavigate()
 
-  useEffect(() => { fetchData() }, [athleteId])
+  const [seance, setSeance]                     = useState(null)
+  const [exercices, setExercices]               = useState([])
+  const [activites, setActivites]               = useState([])
+  const [series, setSeries]                     = useState({})
+  const [seriesPrev, setSeriesPrev]             = useState({})
+  const [notePrev, setNotePrev]                 = useState('')
+  const [activitesRealisees, setActivitesRealisees] = useState({})
+  const [noteSeance, setNoteSeance]             = useState('')
+  const [noteSaved, setNoteSaved]               = useState(false)
+  const [loading, setLoading]                   = useState(true)
+  const [isCoachEditing, setIsCoachEditing]     = useState(false)
+  const [targetAthleteId, setTargetAthleteId]   = useState(null)
+  const [newActiviteInput, setNewActiviteInput] = useState('')
+  const [addingActivite, setAddingActivite]     = useState(false)
+  const [showChargeIndicative, setShowChargeIndicative] = useState(false)
+  const [showRpe, setShowRpe]                   = useState(false)
+  const [isPowerlifting, setIsPowerlifting]     = useState(false)
+  const [powerMaxes, setPowerMaxes]             = useState({})
+  const [showCalc, setShowCalc]                 = useState(null)
 
-  async function fetchData() {
-    setLoading(true)
-    const { data: ath } = await supabase.from('profiles').select('*').eq('id', athleteId).single()
-    if (ath) {
-      setAthlete(ath)
-      setProfileForm({
-        full_name:        ath.full_name        || '',
-        genre:            ath.genre            || 'homme',
-        taille:           ath.taille           || '',
-        date_naissance:   ath.date_naissance   || '',
-        travail_physique: ath.travail_physique || false,
-      })
+  // Cardio
+  const [cardioLog, setCardioLog]   = useState(null)
+  const [cardioForm, setCardioForm] = useState({ activite: '', duree_min: '', distance_km: '', fc_moy: '', notes: '' })
+  const [cardioSaved, setCardioSaved] = useState(false)
+  const cardioTimerRef = useRef(null)
+
+  useEffect(() => { if (profile) fetchAll() }, [seanceId, semaineId, profile])
+
+  async function fetchAll() {
+    if (!profile) return
+
+    const [{ data: sc }, { data: semaine }] = await Promise.all([
+      supabase.from('seances').select('*').eq('id', seanceId).single(),
+      supabase.from('semaines').select('bloc_id').eq('id', semaineId).single(),
+    ])
+    setSeance(sc)
+
+    const { data: bloc } = semaine
+      ? await supabase.from('blocs')
+          .select('athlete_id, show_charge_indicative, show_rpe, powerlifting')
+          .eq('id', semaine.bloc_id).single()
+      : { data: null }
+
+    const athId = bloc?.athlete_id || profile.id
+    setTargetAthleteId(athId)
+    setIsCoachEditing(profile.role === 'coach' && athId !== profile.id)
+    setShowChargeIndicative(bloc?.show_charge_indicative || false)
+    setShowRpe(bloc?.show_rpe || false)
+    setIsPowerlifting(bloc?.powerlifting || false)
+
+    if (bloc?.powerlifting && semaine?.bloc_id) {
+      const { data: maxData } = await supabase.from('powerlifting_maxes')
+        .select('lift, max_kg').eq('bloc_id', semaine.bloc_id).eq('athlete_id', athId)
+      const maxMap = {}
+      ;(maxData || []).forEach(m => { maxMap[m.lift] = Number(m.max_kg) })
+      setPowerMaxes(maxMap)
     }
-    const { data: bl } = await supabase
-      .from('blocs').select('*, objectifs_bloc(*)')
-      .eq('athlete_id', athleteId).order('created_at', { ascending: false })
-    setBlocs(bl || [])
-    if (bl?.length) setActiveBloc(bl[0])
+
+    // ── Cardio ──────────────────────────────────────────────────────
+    if (sc?.type === 'cardio') {
+      const { data: log } = await supabase.from('cardio_logs')
+        .select('*').eq('seance_id', seanceId).eq('semaine_id', semaineId).eq('athlete_id', athId).single()
+      setCardioLog(log)
+      if (log) {
+        setCardioForm({
+          activite:    log.activite    || '',
+          duree_min:   log.duree_min   ?? '',
+          distance_km: log.distance_km ?? '',
+          fc_moy:      log.fc_moy      ?? '',
+          notes:       log.notes       || '',
+        })
+      }
+      setLoading(false)
+      return
+    }
+
+    // ── Bonus ────────────────────────────────────────────────────────
+    if (sc?.nom === 'Bonus') {
+      const [{ data: acts }, { data: realisees }] = await Promise.all([
+        supabase.from('activites_bonus').select('*').eq('seance_id', seanceId).order('ordre'),
+        supabase.from('activites_realisees').select('*').eq('semaine_id', semaineId).eq('athlete_id', athId),
+      ])
+      setActivites(acts || [])
+      const map = {}
+      ;(realisees || []).forEach(r => { map[r.activite_id] = r.realisee })
+      setActivitesRealisees(map)
+      setLoading(false)
+      return
+    }
+
+    // ── Muscu ────────────────────────────────────────────────────────
+    const [{ data: exs }, { data: srData }, { data: noteData }] = await Promise.all([
+      supabase.from('exercices').select('*').eq('seance_id', seanceId).order('ordre'),
+      supabase.from('series_realisees')
+        .select('*').eq('semaine_id', semaineId).eq('athlete_id', athId).order('numero_set'),
+      supabase.from('notes_seances')
+        .select('contenu').eq('athlete_id', athId).eq('seance_id', seanceId).eq('semaine_id', semaineId).single(),
+    ])
+
+    setExercices(exs || [])
+    setNoteSeance(noteData?.contenu || '')
+
+    const map = {}
+    ;(exs || []).forEach(ex => { map[ex.id] = [] })
+    ;(srData || []).forEach(s => { if (map[s.exercice_id]) map[s.exercice_id].push(s) })
+    setSeries(map)
+
+    await fetchSeriesPrev(exs || [], semaineId, athId, sc?.nom, semaine?.bloc_id)
     setLoading(false)
   }
 
-  async function saveProfile() {
-    if (!profileForm.full_name.trim()) return
-    setSavingProfile(true); setProfileErr('')
-    const { data, error } = await supabase.from('profiles')
-      .update({
-        full_name:        profileForm.full_name.trim(),
-        genre:            profileForm.genre,
-        taille:           profileForm.taille         ? Number(profileForm.taille)         : null,
-        date_naissance:   profileForm.date_naissance || null,
-        travail_physique: profileForm.travail_physique,
-      })
-      .eq('id', athleteId).select().single()
-    if (!error && data) { setAthlete(data); setEditingProfile(false) }
-    else setProfileErr(error?.message || 'Erreur lors de la sauvegarde')
-    setSavingProfile(false)
+  async function fetchSeriesPrev(exs, currentSemaineId, athId, seanceNom, blocId) {
+    if (!blocId) return
+    const { data: semaineCourante } = await supabase.from('semaines').select('numero').eq('id', currentSemaineId).single()
+    if (!semaineCourante || semaineCourante.numero <= 1) return
+
+    const { data: semPrev } = await supabase.from('semaines')
+      .select('id').eq('bloc_id', blocId).eq('numero', semaineCourante.numero - 1).single()
+    if (!semPrev) return
+
+    const { data: seancePrev } = await supabase.from('seances')
+      .select('id').eq('semaine_id', semPrev.id).eq('nom', seanceNom || '').single()
+    if (!seancePrev) return
+
+    const [{ data: exsPrev }, { data: notePrevSeance }] = await Promise.all([
+      supabase.from('exercices').select('*').eq('seance_id', seancePrev.id).order('ordre'),
+      supabase.from('notes_seances').select('contenu')
+        .eq('athlete_id', athId).eq('seance_id', seancePrev.id).eq('semaine_id', semPrev.id).single(),
+    ])
+
+    setNotePrev(notePrevSeance?.contenu || '')
+
+    const exPrevIds = (exsPrev || []).map(e => e.id)
+    if (!exPrevIds.length) return
+
+    const { data: srPrevReal } = await supabase.from('series_realisees')
+      .select('*').eq('semaine_id', semPrev.id).eq('athlete_id', athId)
+      .in('exercice_id', exPrevIds).order('numero_set')
+
+    const mapByGroupe = {}
+    ;(exsPrev || []).forEach(ex => { if (ex.groupe_id) mapByGroupe[ex.groupe_id] = [] })
+    ;(srPrevReal || []).forEach(s => {
+      const ex = (exsPrev || []).find(e => e.id === s.exercice_id)
+      if (ex?.groupe_id && mapByGroupe[ex.groupe_id] !== undefined) mapByGroupe[ex.groupe_id].push(s)
+    })
+    setSeriesPrev(mapByGroupe)
   }
 
-  async function createBloc() {
-    if (!newBlocName.trim()) return
-    const { data } = await supabase.from('blocs')
-      .insert({ athlete_id: athleteId, name: newBlocName.trim() }).select().single()
-    setBlocs(b => [data, ...b]); setActiveBloc(data); setNewBlocName(''); setShowNewBloc(false)
-  }
-
-  async function renameBloc(blocId, newName) {
-    if (!newName.trim()) return
-    await supabase.from('blocs').update({ name: newName.trim() }).eq('id', blocId)
-    setBlocs(bs => bs.map(b => b.id === blocId ? { ...b, name: newName.trim() } : b))
-    if (activeBloc?.id === blocId) setActiveBloc(b => ({ ...b, name: newName.trim() }))
-    setEditingBlocName(null)
-  }
-
-  async function duplicateBloc(bloc) {
-    const { data: newBloc } = await supabase.from('blocs')
-      .insert({ athlete_id: athleteId, name: bloc.name + ' (copie)' }).select().single()
-
-    const objData = Array.isArray(bloc.objectifs_bloc) ? bloc.objectifs_bloc[0] : bloc.objectifs_bloc
-    if (objData) {
-      const { id: _id, bloc_id: _b, ...objRest } = objData
-      await supabase.from('objectifs_bloc').insert({ ...objRest, bloc_id: newBloc.id })
+  // ── Sauvegarde cardio (auto-save au blur) ────────────────────────────
+  async function saveCardio(updatedForm) {
+    if (!targetAthleteId) return
+    const payload = {
+      seance_id:   seanceId,
+      semaine_id:  semaineId,
+      athlete_id:  targetAthleteId,
+      activite:    updatedForm.activite    || null,
+      duree_min:   updatedForm.duree_min   === '' ? null : Number(updatedForm.duree_min),
+      distance_km: updatedForm.distance_km === '' ? null : Number(updatedForm.distance_km),
+      fc_moy:      updatedForm.fc_moy      === '' ? null : Number(updatedForm.fc_moy),
+      notes:       updatedForm.notes       || null,
     }
-
-    const { data: semaines } = await supabase
-      .from('semaines').select('*').eq('bloc_id', bloc.id).order('numero')
-    if (!semaines?.length) { setBlocs(bs => [newBloc, ...bs]); setActiveBloc(newBloc); return }
-
-    const { data: newSemaines } = await supabase.from('semaines')
-      .insert(semaines.map(s => ({ bloc_id: newBloc.id, numero: s.numero }))).select()
-
-    const oldToNewSem = {}
-    semaines.forEach((s, i) => { oldToNewSem[s.id] = newSemaines[i].id })
-
-    const { data: seancesSource } = await supabase
-      .from('seances').select('*, exercices(*), activites_bonus(*)')
-      .in('semaine_id', semaines.map(s => s.id)).order('ordre')
-
-    if (!seancesSource?.length) { setBlocs(bs => [newBloc, ...bs]); setActiveBloc(newBloc); return }
-
-    const { data: newSeances } = await supabase.from('seances')
-      .insert(seancesSource.map(sc => ({
-        semaine_id: oldToNewSem[sc.semaine_id], nom: sc.nom, ordre: sc.ordre,
-      }))).select()
-
-    const oldToNewSc = {}
-    seancesSource.forEach((sc, i) => { oldToNewSc[sc.id] = newSeances[i].id })
-
-    const allExercices = seancesSource.flatMap(sc =>
-      (sc.exercices || []).map(ex => ({
-        seance_id: oldToNewSc[sc.id], muscle: ex.muscle, nom: ex.nom, sets: ex.sets,
-        rep_range: ex.rep_range, repos: ex.repos, indications: ex.indications, ordre: ex.ordre,
-        charge_indicative: ex.charge_indicative, rpe_cible: ex.rpe_cible,
-        unilateral: ex.unilateral, main_lift: ex.main_lift, poids_corps: ex.poids_corps,
-      }))
-    )
-    const allBonus = seancesSource.flatMap(sc =>
-      (sc.activites_bonus || []).map(act => ({
-        seance_id: oldToNewSc[sc.id], nom: act.nom, ordre: act.ordre,
-      }))
-    )
-
-    await Promise.all([
-      allExercices.length ? supabase.from('exercices').insert(allExercices) : null,
-      allBonus.length     ? supabase.from('activites_bonus').insert(allBonus) : null,
-    ].filter(Boolean))
-
-    setBlocs(bs => [newBloc, ...bs]); setActiveBloc(newBloc)
+    await supabase.from('cardio_logs').upsert(payload, { onConflict: 'seance_id,semaine_id,athlete_id' })
+    setCardioSaved(true)
+    clearTimeout(cardioTimerRef.current)
+    cardioTimerRef.current = setTimeout(() => setCardioSaved(false), 2000)
   }
 
-  async function deleteBloc(blocId) {
-    await supabase.from('blocs').delete().eq('id', blocId)
-    const remaining = blocs.filter(b => b.id !== blocId)
-    setBlocs(remaining); setActiveBloc(remaining[0] || null); setConfirmDeleteBloc(null)
+  function handleCardioChange(field, value) {
+    const updated = { ...cardioForm, [field]: value }
+    setCardioForm(updated)
   }
 
-  const initiales = (name) => name?.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2) || '?'
+  function handleCardioBlur(field, value) {
+    const updated = { ...cardioForm, [field]: value }
+    setCardioForm(updated)
+    saveCardio(updated)
+  }
 
-  if (loading) return <Layout><p className="text-gray-400 text-sm">Chargement…</p></Layout>
+  async function saveNoteSeance(contenu) {
+    if (!targetAthleteId) return
+    await supabase.from('notes_seances').upsert({
+      athlete_id: targetAthleteId, seance_id: seanceId, semaine_id: semaineId,
+      contenu: contenu.trim() || null,
+    }, { onConflict: 'athlete_id,seance_id,semaine_id' })
+    setNoteSaved(true); setTimeout(() => setNoteSaved(false), 2000)
+  }
+
+  async function addSerie(exerciceId, numeroSet) {
+    if (!targetAthleteId) return
+    const { data } = await supabase.from('series_realisees').upsert({
+      exercice_id: exerciceId, semaine_id: semaineId, athlete_id: targetAthleteId,
+      numero_set: numeroSet, charge: null, reps: null, rpe: null,
+    }, { onConflict: 'exercice_id,semaine_id,athlete_id,numero_set' }).select().single()
+    setSeries(prev => ({
+      ...prev,
+      [exerciceId]: [...(prev[exerciceId] || []).filter(s => s.numero_set !== numeroSet), data]
+        .sort((a, b) => a.numero_set - b.numero_set)
+    }))
+  }
+
+  async function updateSerie(serieId, exerciceId, field, value) {
+    await supabase.from('series_realisees').update({ [field]: value === '' ? null : value }).eq('id', serieId)
+    setSeries(prev => ({
+      ...prev,
+      [exerciceId]: prev[exerciceId].map(s => s.id === serieId ? { ...s, [field]: value } : s)
+    }))
+  }
+
+  async function deleteSerie(serieId, exerciceId) {
+    await supabase.from('series_realisees').delete().eq('id', serieId)
+    setSeries(prev => ({ ...prev, [exerciceId]: prev[exerciceId].filter(s => s.id !== serieId) }))
+  }
+
+  async function toggleActivite(activiteId, current) {
+    if (!targetAthleteId) return
+    const newVal = !current
+    setActivitesRealisees(prev => ({ ...prev, [activiteId]: newVal }))
+    await supabase.from('activites_realisees').upsert({
+      activite_id: activiteId, semaine_id: semaineId, athlete_id: targetAthleteId, realisee: newVal,
+    }, { onConflict: 'activite_id,semaine_id,athlete_id' })
+  }
+
+  async function addCustomActivite() {
+    if (!newActiviteInput.trim()) return
+    const ordre = activites.length
+    const { data } = await supabase.from('activites_bonus')
+      .insert({ seance_id: seanceId, nom: newActiviteInput.trim(), ordre }).select().single()
+    if (data) { setActivites(prev => [...prev, data]); setNewActiviteInput(''); setAddingActivite(false) }
+  }
+
+  async function saveNewMax(lift, maxKg) {
+    const { data: semaine } = await supabase.from('semaines').select('bloc_id').eq('id', semaineId).single()
+    if (!semaine) return
+    await supabase.from('powerlifting_maxes').upsert(
+      { athlete_id: targetAthleteId, bloc_id: semaine.bloc_id, lift, max_kg: maxKg, date_test: new Date().toISOString().split('T')[0] },
+      { onConflict: 'athlete_id,bloc_id,lift' }
+    )
+    setPowerMaxes(prev => ({ ...prev, [lift]: maxKg }))
+  }
+
+  const goBack = () => { if (window.history.length > 1) navigate(-1); else navigate('/athlete') }
+
+  if (loading) return <Layout><p className="text-sm text-gray-400">Chargement…</p></Layout>
+
+  // ── Vue Cardio ──────────────────────────────────────────────────────
+  if (seance?.type === 'cardio') {
+    const inputBase = `w-full border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none bg-gray-50 focus:bg-white focus:ring-2 ${theme.isFemme ? 'focus:ring-pink-300' : 'focus:ring-sky-300'} transition-colors`
+    const hasSomething = cardioForm.activite || cardioForm.duree_min || cardioForm.distance_km
+
+    return (
+      <Layout>
+        <div className="flex items-center gap-3 mb-4 flex-wrap">
+          <button onClick={goBack} className="text-sm text-gray-400 hover:text-gray-700">← Retour</button>
+          <h1 className="text-xl font-semibold">🏃 {seance?.nom}</h1>
+          {isCoachEditing && <span className="text-xs bg-amber-100 text-amber-700 px-2 py-1 rounded-full font-medium">Mode édition coach</span>}
+          {cardioSaved && <span className="text-xs text-green-500 font-medium ml-auto">✓ Enregistré</span>}
+        </div>
+
+        <div className="space-y-4">
+          {/* Activité */}
+          <div className="bg-white border border-gray-100 rounded-xl p-5">
+            <h3 className="text-sm font-medium text-gray-700 mb-3">Type d'activité</h3>
+            <div className="flex flex-wrap gap-2">
+              {CARDIO_ACTIVITES.map(act => (
+                <button key={act}
+                  onClick={() => { handleCardioChange('activite', act); saveCardio({ ...cardioForm, activite: act }) }}
+                  className={`px-3 py-2 rounded-xl text-sm font-medium border transition-all ${
+                    cardioForm.activite === act
+                      ? 'bg-sky-500 text-white border-sky-500'
+                      : 'bg-gray-50 text-gray-600 border-gray-200 hover:border-sky-300 hover:text-sky-600'
+                  }`}>
+                  {act}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Métriques */}
+          <div className="bg-white border border-gray-100 rounded-xl p-5">
+            <h3 className="text-sm font-medium text-gray-700 mb-4">Détails de la séance</h3>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-xs font-medium text-gray-500 mb-1">Durée</label>
+                <div className="flex items-center gap-1.5">
+                  <input type="number" inputMode="numeric" value={cardioForm.duree_min}
+                    onChange={e => handleCardioChange('duree_min', e.target.value)}
+                    onBlur={e => handleCardioBlur('duree_min', e.target.value)}
+                    placeholder="45" className={inputBase} />
+                  <span className="text-xs text-gray-400 flex-shrink-0">min</span>
+                </div>
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-500 mb-1">Distance <span className="text-gray-300">(optionnel)</span></label>
+                <div className="flex items-center gap-1.5">
+                  <input type="number" inputMode="decimal" step="0.1" value={cardioForm.distance_km}
+                    onChange={e => handleCardioChange('distance_km', e.target.value)}
+                    onBlur={e => handleCardioBlur('distance_km', e.target.value)}
+                    placeholder="5.0" className={inputBase} />
+                  <span className="text-xs text-gray-400 flex-shrink-0">km</span>
+                </div>
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-500 mb-1">FC moy. <span className="text-gray-300">(optionnel)</span></label>
+                <div className="flex items-center gap-1.5">
+                  <input type="number" inputMode="numeric" value={cardioForm.fc_moy}
+                    onChange={e => handleCardioChange('fc_moy', e.target.value)}
+                    onBlur={e => handleCardioBlur('fc_moy', e.target.value)}
+                    placeholder="145" className={inputBase} />
+                  <span className="text-xs text-gray-400 flex-shrink-0">bpm</span>
+                </div>
+              </div>
+              {/* Allure calculée automatiquement si durée + distance */}
+              {cardioForm.duree_min && cardioForm.distance_km && Number(cardioForm.distance_km) > 0 && (
+                <div className="flex flex-col justify-center">
+                  <p className="text-xs text-gray-400 mb-1">Allure</p>
+                  <p className="text-lg font-bold text-sky-600">
+                    {(() => {
+                      const secPerKm = (Number(cardioForm.duree_min) * 60) / Number(cardioForm.distance_km)
+                      const min = Math.floor(secPerKm / 60)
+                      const sec = Math.round(secPerKm % 60)
+                      return `${min}:${sec.toString().padStart(2, '0')}`
+                    })()}
+                    <span className="text-sm font-normal text-gray-400 ml-1">/km</span>
+                  </p>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Notes */}
+          <div className="bg-white border border-gray-100 rounded-xl p-4">
+            <p className="text-xs font-medium text-gray-500 mb-2">📝 Notes</p>
+            <textarea value={cardioForm.notes}
+              onChange={e => handleCardioChange('notes', e.target.value)}
+              onBlur={e => handleCardioBlur('notes', e.target.value)}
+              placeholder="Ressenti, conditions, observations…"
+              rows={3}
+              className={`w-full border border-gray-100 rounded-lg px-3 py-2.5 text-sm focus:outline-none bg-gray-50 focus:bg-white resize-none ${theme.isFemme ? 'focus:ring-2 focus:ring-pink-300' : 'focus:ring-2 focus:ring-sky-300'}`}
+            />
+          </div>
+
+          {/* Résumé */}
+          {hasSomething && (
+            <div className="bg-sky-50 border border-sky-100 rounded-xl px-4 py-3 text-sm text-sky-700">
+              {cardioForm.activite && <span className="font-medium">{cardioForm.activite}</span>}
+              {cardioForm.duree_min && <span> · {cardioForm.duree_min} min</span>}
+              {cardioForm.distance_km && <span> · {cardioForm.distance_km} km</span>}
+              {cardioForm.fc_moy && <span> · {cardioForm.fc_moy} bpm</span>}
+            </div>
+          )}
+        </div>
+      </Layout>
+    )
+  }
+
+  // ── Vue Bonus ───────────────────────────────────────────────────────
+  if (seance?.nom === 'Bonus') {
+    const doneCount = activites.filter(a => activitesRealisees[a.id]).length
+    return (
+      <Layout>
+        <div className="flex items-center gap-3 mb-4">
+          <button onClick={goBack} className="text-sm text-gray-400 hover:text-gray-700">← Retour</button>
+          <h1 className="text-xl font-semibold">Activités bonus</h1>
+          {isCoachEditing && <span className="text-xs bg-amber-100 text-amber-700 px-2 py-1 rounded-full font-medium">Mode édition coach</span>}
+        </div>
+        <p className="text-sm text-gray-400 mb-4">{doneCount}/{activites.length} réalisées</p>
+        <div className="space-y-2">
+          {activites.map(act => {
+            const done = !!activitesRealisees[act.id]
+            return (
+              <button key={act.id} onClick={() => toggleActivite(act.id, done)}
+                className={`w-full flex items-center gap-3 p-4 rounded-xl border text-left transition-all ${done ? (theme.isFemme ? 'bg-pink-50 border-pink-200 text-pink-800' : 'bg-brand-50 border-brand-200 text-brand-800') : 'bg-white border-gray-100 text-gray-700'}`}>
+                <div className={`w-6 h-6 rounded-full border-2 flex items-center justify-center flex-shrink-0 ${done ? (theme.isFemme ? 'border-pink-500 bg-pink-500' : 'border-brand-500 bg-brand-500') : 'border-gray-300'}`}>
+                  {done && <svg className="w-3 h-3 text-white" fill="none" viewBox="0 0 12 12"><path d="M2 6l3 3 5-5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+                </div>
+                <span className="text-sm font-medium">{act.nom}</span>
+              </button>
+            )
+          })}
+          {addingActivite ? (
+            <div className="flex gap-2">
+              <input autoFocus value={newActiviteInput} onChange={e => setNewActiviteInput(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && addCustomActivite()}
+                placeholder="Nom de l'activité…"
+                className="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400" />
+              <button onClick={addCustomActivite} className={`px-3 py-2 rounded-lg text-sm font-medium ${theme.isFemme ? 'bg-pink-600 text-white' : 'bg-brand-600 text-white'}`}>✓</button>
+              <button onClick={() => setAddingActivite(false)} className="px-3 py-2 rounded-lg text-sm border border-gray-200 text-gray-600">✕</button>
+            </div>
+          ) : (
+            <button onClick={() => setAddingActivite(true)}
+              className="w-full py-3 border border-dashed border-gray-200 rounded-xl text-sm text-gray-400 hover:border-gray-300 transition-colors">
+              + Ajouter une activité
+            </button>
+          )}
+        </div>
+      </Layout>
+    )
+  }
+
+  // ── Vue séance muscu ────────────────────────────────────────────────
+  const totalSeries = exercices.reduce((acc, ex) => acc + ex.sets, 0)
+  const doneSeries  = Object.values(series).reduce((acc, arr) => acc + arr.filter(s => s.reps || s.charge).length, 0)
+  const pct = totalSeries > 0 ? Math.round((doneSeries / totalSeries) * 100) : 0
+  const hasSeriesPrev = Object.values(seriesPrev).some(arr => arr.some(s => s.charge || s.reps))
 
   return (
     <Layout>
-      {/* Modale compte rendu */}
-      {showReport && activeBloc && (
-        <BlocReport
-          athleteId={athleteId}
-          blocId={activeBloc.id}
-          blocName={activeBloc.name}
-          athleteName={athlete?.full_name}
-          onClose={() => setShowReport(false)}
-        />
-      )}
+      <div className="flex items-center gap-3 mb-2 flex-wrap">
+        <button onClick={goBack} className="text-sm text-gray-400 hover:text-gray-700">← Retour</button>
+        <h1 className="text-xl font-semibold">{seance?.nom}</h1>
+        {isCoachEditing && <span className="text-xs bg-amber-100 text-amber-700 px-2 py-1 rounded-full font-medium">Mode édition coach</span>}
+      </div>
 
-      {confirmDeleteBloc && (
-        <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-2xl p-6 w-full max-w-sm shadow-xl">
-            <h3 className="text-base font-semibold mb-2">Supprimer ce bloc ?</h3>
-            <p className="text-sm text-gray-500 mb-5">Toutes les données associées seront supprimées définitivement.</p>
-            <div className="flex gap-2">
-              <button onClick={() => deleteBloc(confirmDeleteBloc)} className="flex-1 bg-red-500 text-white rounded-lg py-2 text-sm font-medium hover:bg-red-600">Supprimer</button>
-              <button onClick={() => setConfirmDeleteBloc(null)} className="flex-1 border border-gray-200 rounded-lg py-2 text-sm text-gray-600">Annuler</button>
-            </div>
-          </div>
+      <div className="mb-4">
+        <div className="flex justify-between text-xs text-gray-400 mb-1">
+          <span>{doneSeries} / {totalSeries} séries</span>
+          <span>{pct}%</span>
         </div>
-      )}
-
-      {/* Header athlète */}
-      <div className="flex items-center gap-3 mb-6">
-        <Link to="/coach" className="text-sm text-gray-400 hover:text-gray-700">← Retour</Link>
-        <div className="flex items-center gap-3 flex-1">
-          <div className={`w-9 h-9 rounded-full flex items-center justify-center text-sm font-medium flex-shrink-0 ${athlete?.genre === 'femme' ? 'bg-pink-100 text-pink-700' : 'bg-brand-100 text-brand-700'}`}>
-            {initiales(athlete?.full_name)}
-          </div>
-          <div className="flex-1">
-            {editingProfile ? (
-              <div className="space-y-2">
-                <div className="flex items-center gap-2 flex-wrap">
-                  <input value={profileForm.full_name}
-                    onChange={e => setProfileForm(f => ({ ...f, full_name: e.target.value }))}
-                    className="border border-gray-200 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400"
-                    placeholder="Nom complet"
-                  />
-                  <div className="flex gap-1">
-                    {['homme', 'femme'].map(g => (
-                      <button key={g} type="button"
-                        onClick={() => setProfileForm(f => ({ ...f, genre: g }))}
-                        className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${profileForm.genre === g ? 'bg-brand-600 text-white border-brand-600' : 'border-gray-200 text-gray-600'}`}>
-                        {g === 'homme' ? '♂' : '♀'} {g}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-                <div className="flex items-center gap-2 flex-wrap">
-                  <div className="flex items-center gap-1">
-                    <input type="number" value={profileForm.taille}
-                      onChange={e => setProfileForm(f => ({ ...f, taille: e.target.value }))}
-                      className="w-20 border border-gray-200 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400"
-                      placeholder="Taille"
-                    />
-                    <span className="text-xs text-gray-400">cm</span>
-                  </div>
-                  <input type="date" value={profileForm.date_naissance}
-                    onChange={e => setProfileForm(f => ({ ...f, date_naissance: e.target.value }))}
-                    max={new Date().toISOString().split('T')[0]}
-                    className="border border-gray-200 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400"
-                  />
-                </div>
-                <div>
-                  <button type="button"
-                    onClick={() => setProfileForm(f => ({ ...f, travail_physique: !f.travail_physique }))}
-                    className={`flex items-center gap-2 px-3 py-1.5 rounded-lg border text-sm transition-colors ${
-                      profileForm.travail_physique ? 'bg-brand-50 border-brand-200 text-brand-700' : 'border-gray-200 text-gray-500 hover:border-gray-300'
-                    }`}>
-                    <div className={`w-4 h-4 rounded border-2 flex items-center justify-center flex-shrink-0 transition-colors ${
-                      profileForm.travail_physique ? 'bg-brand-600 border-brand-600' : 'border-gray-300'
-                    }`}>
-                      {profileForm.travail_physique && (
-                        <svg className="w-2.5 h-2.5 text-white" fill="none" viewBox="0 0 12 12">
-                          <path d="M2 6l3 3 5-5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-                        </svg>
-                      )}
-                    </div>
-                    <span className="text-xs">Travail physique</span>
-                    <span className="text-xs text-gray-400">(maçon, infirmière, serveur…)</span>
-                  </button>
-                </div>
-                <div className="flex items-center gap-2">
-                  <button onClick={saveProfile} disabled={savingProfile}
-                    className="text-sm text-brand-600 font-medium hover:text-brand-800">
-                    {savingProfile ? 'Enregistrement…' : 'Enregistrer'}
-                  </button>
-                  <button onClick={() => setEditingProfile(false)} className="text-sm text-gray-400">Annuler</button>
-                </div>
-                {profileErr && <p className="text-xs text-red-500">{profileErr}</p>}
-              </div>
-            ) : (
-              <div className="flex items-center gap-2">
-                <div>
-                  <div className="flex items-center gap-2">
-                    <h1 className="text-xl font-semibold">{athlete?.full_name}</h1>
-                    {athlete?.is_self && <span className="text-xs bg-brand-100 text-brand-700 px-2 py-0.5 rounded-full font-medium">Moi</span>}
-                  </div>
-                  <p className="text-xs text-gray-400">
-                    {athlete?.genre === 'femme' ? '♀ Femme' : '♂ Homme'}
-                    {athlete?.taille         ? ` · ${athlete.taille}cm`                      : ''}
-                    {athlete?.date_naissance ? ` · ${calcAge(athlete.date_naissance)} ans`   : ''}
-                    {athlete?.travail_physique ? ' · 💼 travail physique'                     : ''}
-                    {!athlete?.is_self        ? ` · ${athlete?.email}`                       : ''}
-                  </p>
-                </div>
-                <button onClick={() => setEditingProfile(true)} className="text-xs text-gray-400 hover:text-brand-600 ml-2">Modifier</button>
-              </div>
-            )}
-          </div>
+        <div className="h-1.5 bg-gray-100 rounded-full overflow-hidden">
+          <div className={`h-full ${theme.progress} rounded-full transition-all duration-300`} style={{ width: `${pct}%` }} />
         </div>
       </div>
 
-      {/* Sélecteur blocs */}
-      <div className="flex items-center gap-2 mb-6 flex-wrap">
-        {blocs.map(b => (
-          <div key={b.id} className="flex items-center group">
-            {editingBlocName === b.id ? (
-              <input autoFocus value={editBlocNameVal}
-                onChange={e => setEditBlocNameVal(e.target.value)}
-                onBlur={() => renameBloc(b.id, editBlocNameVal)}
-                onKeyDown={e => e.key === 'Enter' && renameBloc(b.id, editBlocNameVal)}
-                className="border border-brand-400 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400 w-36"
-              />
-            ) : (
-              <>
-                <button onClick={() => setActiveBloc(b)}
-                  className={`px-3 py-1.5 rounded-l-lg text-sm transition-colors ${activeBloc?.id === b.id ? 'bg-brand-600 text-white' : 'bg-white border border-gray-200 text-gray-600 hover:border-brand-300'}`}>
-                  {b.name}
-                </button>
-                <div className={`flex border-t border-b border-r rounded-r-lg overflow-hidden ${activeBloc?.id === b.id ? 'border-brand-600' : 'border-gray-200'}`}>
-                  <button onClick={() => { setEditingBlocName(b.id); setEditBlocNameVal(b.name) }}
-                    className={`px-1.5 py-1.5 text-xs transition-colors ${activeBloc?.id === b.id ? 'bg-brand-700 text-brand-200 border-brand-700 hover:bg-brand-800' : 'bg-white text-gray-300 hover:text-brand-500'}`}
-                    title="Renommer">✎</button>
-                  <button onClick={() => duplicateBloc(b)}
-                    className={`px-1.5 py-1.5 text-xs transition-colors ${activeBloc?.id === b.id ? 'bg-brand-700 text-brand-200 border-brand-700 hover:bg-brand-800' : 'bg-white text-gray-300 hover:text-brand-500'}`}
-                    title="Dupliquer">⧉</button>
-                  <button onClick={() => setConfirmDeleteBloc(b.id)}
-                    className={`px-1.5 py-1.5 text-xs transition-colors ${activeBloc?.id === b.id ? 'bg-brand-700 text-brand-200 border-brand-700 hover:bg-brand-800' : 'bg-white text-gray-300 hover:text-red-400'}`}
-                    title="Supprimer">×</button>
-                </div>
-              </>
-            )}
-          </div>
-        ))}
-        {showNewBloc ? (
-          <div className="flex gap-2 items-center">
-            <input autoFocus value={newBlocName} onChange={e => setNewBlocName(e.target.value)}
-              onKeyDown={e => e.key === 'Enter' && createBloc()} placeholder="Nom du bloc…"
-              className="border border-gray-200 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500"
-            />
-            <button onClick={createBloc} className="bg-brand-600 text-white rounded-lg px-3 py-1.5 text-sm">OK</button>
-            <button onClick={() => setShowNewBloc(false)} className="text-gray-400 text-sm">Annuler</button>
-          </div>
-        ) : (
-          <button onClick={() => setShowNewBloc(true)}
-            className="px-3 py-1.5 rounded-lg text-sm border border-dashed border-gray-300 text-gray-400 hover:border-brand-400 hover:text-brand-600 transition-colors">
-            + Nouveau bloc
-          </button>
-        )}
-      </div>
+      {(hasSeriesPrev || notePrev) && (
+        <RecapSemainePrev exercices={exercices} seriesPrev={seriesPrev} notePrev={notePrev} theme={theme} />
+      )}
 
-      {activeBloc ? (
-        <div className="space-y-6">
-          {/* Actions du bloc */}
-          <div className="flex items-center justify-between flex-wrap gap-2">
-            <h2 className="font-medium text-gray-900">{activeBloc.name}</h2>
-            <div className="flex items-center gap-3 flex-wrap">
-              {/* Compte rendu de fin de bloc */}
-              {!athlete?.is_self && (
-                <button
-                  onClick={() => setShowReport(true)}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium bg-gray-900 text-white hover:bg-gray-700 transition-colors">
-                  📋 Compte rendu du bloc
-                </button>
-              )}
-              <Link to={`/coach/athlete/${athleteId}/view`} className="text-sm text-gray-500 hover:text-gray-800 font-medium">
-                👁 Vue athlète
-              </Link>
-              <Link to={`/coach/bloc/${activeBloc.id}/edit`} className="text-sm text-brand-600 hover:text-brand-800 font-medium">
-                Éditer le programme →
-              </Link>
-            </div>
-          </div>
-
-          <ObjectifsBloc bloc={activeBloc} athlete={athlete} onSave={fetchData} />
-
-          {!athlete?.is_self && (
-            <RecapTracking athleteId={athleteId} blocId={activeBloc.id} coachMode />
-          )}
-
-          {/* Fix Feature 2 : athleteId correctement passé */}
-          <ProgressionPanel
-            athleteId={athleteId}
-            config={{ metric: 'tonnage', display: 'graph', fav_exercices: [], muscles_filter: [] }}
-            onConfigChange={() => {}}
-            color={athlete?.genre === 'femme' ? '#ec4899' : '#6366f1'}
+      <div className="space-y-3">
+        {exercices.map(ex => (
+          <ExerciceCard key={ex.id} exercice={ex}
+            series={series[ex.id] || []}
+            prevSeries={seriesPrev[ex.groupe_id] || []}
+            showChargeIndicative={showChargeIndicative}
+            showRpe={showRpe}
+            theme={theme}
+            isPowerlifting={isPowerlifting}
+            maxForLift={ex.main_lift ? powerMaxes[ex.main_lift] : null}
+            onAddSerie={(num) => addSerie(ex.id, num)}
+            onUpdate={(serieId, field, val) => updateSerie(serieId, ex.id, field, val)}
+            onDelete={(serieId) => deleteSerie(serieId, ex.id)}
+            onOpenCalc={(defaultCharge, defaultReps) => setShowCalc({ lift: ex.main_lift, defaultCharge, defaultReps })}
           />
-        </div>
-      ) : (
-        <div className="text-center py-16 text-gray-400 text-sm">Crée un premier bloc pour commencer.</div>
+        ))}
+      </div>
+
+      <div className="mt-4 bg-white border border-gray-100 rounded-xl p-4">
+        <p className="text-xs font-medium text-gray-500 mb-2">📝 Note générale de séance</p>
+        <textarea value={noteSeance} onChange={e => setNoteSeance(e.target.value)}
+          onBlur={() => saveNoteSeance(noteSeance)}
+          placeholder="Comment s'est passée la séance ? Fatigue, ressenti, observations…"
+          rows={3}
+          className={`w-full border border-gray-100 rounded-lg px-3 py-2.5 text-sm focus:outline-none bg-gray-50 focus:bg-white resize-none ${theme.isFemme ? 'focus:ring-2 focus:ring-pink-300' : 'focus:ring-2 focus:ring-brand-400'}`}
+        />
+        {noteSaved && <p className="text-xs text-green-500 mt-1">✓ Note enregistrée</p>}
+      </div>
+
+      {showCalc && (
+        <Calculator1RM
+          lift={showCalc.lift}
+          defaultCharge={showCalc.defaultCharge}
+          defaultReps={showCalc.defaultReps}
+          currentMax={showCalc.lift ? powerMaxes[showCalc.lift] : null}
+          onSaveMax={showCalc.lift ? (kg) => saveNewMax(showCalc.lift, kg) : null}
+          onClose={() => setShowCalc(null)}
+          theme={theme}
+        />
       )}
     </Layout>
   )
 }
 
-// ── Métriques éditables ───────────────────────────────────────────────
-const METRICS = [
-  { key: 'seances_par_semaine', borneKey: 'seances',   label: 'Séances / sem.',  unit: '',     type: 'number' },
-  { key: 'kcal',                borneKey: 'kcal',      label: 'Kcal / jour',     unit: 'kcal', type: 'number' },
-  { key: 'proteines',           borneKey: 'proteines', label: 'Protéines',       unit: 'g',    type: 'number' },
-  { key: 'glucides',            borneKey: 'glucides',  label: 'Glucides',        unit: 'g',    type: 'number' },
-  { key: 'lipides',             borneKey: 'lipides',   label: 'Lipides',         unit: 'g',    type: 'number' },
-  { key: 'sommeil',             borneKey: 'sommeil',   label: 'Sommeil',         unit: 'h',    type: 'number', step: '0.5' },
-  { key: 'pas_journaliers',     borneKey: 'pas',       label: 'Pas / jour',      unit: '',     type: 'number' },
-  { key: 'stress_cible',        borneKey: 'stress',    label: 'Stress cible',    unit: '/10',  type: 'number' },
-]
-
-function ObjectifsBloc({ bloc, athlete, onSave }) {
-  const [obj, setObj]               = useState(null)
-  const [editing, setEditing]       = useState(false)
-  const [form, setForm]             = useState({})
-  const [bornesForm, setBornesForm] = useState({})
-  const [showBornes, setShowBornes] = useState(false)
-  const [saving, setSaving]         = useState(false)
-  const [tdeeData, setTdeeData]     = useState(null)
-  const [loadingTdee, setLoadingTdee] = useState(false)
-
-  useEffect(() => { fetchObj() }, [bloc.id])
-  useEffect(() => { if (athlete) fetchTdee() }, [athlete?.id, bloc.id, athlete?.taille, athlete?.date_naissance, athlete?.travail_physique])
-
-  async function fetchObj() {
-    const { data } = await supabase.from('objectifs_bloc').select('*').eq('bloc_id', bloc.id).single()
-    setObj(data)
-    if (data) { setForm(data); setBornesForm(data.bornes || {}) }
-    else { setForm({}); setBornesForm({}) }
-  }
-
-  async function fetchTdee() {
-    if (!athlete?.taille || !athlete?.date_naissance) return
-    setLoadingTdee(true)
-
-    const { data: poidsData } = await supabase
-      .from('data_tracking').select('poids, date')
-      .eq('athlete_id', athlete.id).not('poids', 'is', null)
-      .order('date', { ascending: false }).limit(1)
-
-    const poids = poidsData?.[0]?.poids || athlete.poids
-    if (!poids) { setLoadingTdee(false); return }
-
-    const thirtyAgo = new Date(); thirtyAgo.setDate(thirtyAgo.getDate() - 30)
-    const { data: tracking } = await supabase
-      .from('data_tracking').select('pas_journaliers, sport_fait, date')
-      .eq('athlete_id', athlete.id)
-      .gte('date', thirtyAgo.toISOString().split('T')[0]).order('date')
-
-    const entries           = tracking || []
-    const pasVals           = entries.map(e => e.pas_journaliers).filter(v => v != null)
-    const pasJournaliersMoy = pasVals.length ? pasVals.reduce((a, b) => a + b, 0) / pasVals.length : 0
-    const seancesTracking   = entries.filter(e => e.sport_fait).length / Math.max(1, entries.length / 7)
-
-    const { data: objBloc } = await supabase
-      .from('objectifs_bloc').select('pas_journaliers, seances_par_semaine')
-      .eq('bloc_id', bloc.id).single()
-
-    const hasSufficientTracking = entries.length >= 7
-    const pasUsed     = hasSufficientTracking ? pasJournaliersMoy    : (objBloc?.pas_journaliers     || athlete.pas_journaliers_moy || 0)
-    const seancesUsed = hasSufficientTracking ? seancesTracking      : (objBloc?.seances_par_semaine || athlete.seances_semaine     || 0)
-
-    const result = calcTDEE(
-      { poids, taille: athlete.taille, date_naissance: athlete.date_naissance, genre: athlete.genre, travail_physique: athlete.travail_physique || false },
-      { pasJournaliersMoy: pasUsed, seancesParSemaine: seancesUsed }
-    )
-
-    if (result) {
-      setTdeeData({
-        ...result, poids,
-        pasJournaliersMoy:  Math.round(pasUsed),
-        seancesParSemaine:  parseFloat(seancesUsed.toFixed(1)),
-        lastPoidsDate:      poidsData?.[0]?.date || 'Onboarding',
-        sourceActivite:     hasSufficientTracking ? 'tracking' : 'onboarding',
-      })
-    }
-    setLoadingTdee(false)
-  }
-
-  async function saveObj() {
-    setSaving(true)
-    const payload = { ...form, bloc_id: bloc.id, bornes: bornesForm }
-    if (obj) await supabase.from('objectifs_bloc').update(payload).eq('id', obj.id)
-    else      await supabase.from('objectifs_bloc').insert(payload)
-
-    await supabase.from('objectifs_bloc_historique').insert({
-      bloc_id:             bloc.id,
-      date_debut:          new Date().toISOString().split('T')[0],
-      kcal:                form.kcal                || null,
-      proteines:           form.proteines           || null,
-      glucides:            form.glucides            || null,
-      lipides:             form.lipides             || null,
-      sommeil:             form.sommeil             || null,
-      pas_journaliers:     form.pas_journaliers     || null,
-      stress_cible:        form.stress_cible        || null,
-      seances_par_semaine: form.seances_par_semaine || null,
-      plan_nutritionnel:   form.plan_nutritionnel   || null,
-      bornes:              bornesForm,
-    })
-
-    await fetchObj()
-    if (onSave) onSave()
-    setEditing(false)
-    setSaving(false)
-  }
-
-  function applySuggestion(plan) {
-    if (!tdeeData) return
-    const sugg = nutritionSuggestions(tdeeData.tdee, tdeeData.poids, plan)
-    setForm(f => ({ ...f, plan_nutritionnel: plan, kcal: sugg.kcal, proteines: sugg.proteines, glucides: sugg.glucides, lipides: sugg.lipides }))
-  }
-
-  function setBorne(borneKey, side, value) {
-    setBornesForm(b => ({
-      ...b,
-      [borneKey]: { ...(b[borneKey] || {}), [side]: value === '' ? undefined : Number(value) }
-    }))
-  }
-
-  const missingMorpho = !athlete?.taille || !athlete?.date_naissance
-
+// ── Récap semaine précédente ─────────────────────────────────────────
+function RecapSemainePrev({ exercices, seriesPrev, notePrev, theme }) {
+  const [open, setOpen] = useState(true)
+  const exsAvecPerfs = exercices.filter(ex => (seriesPrev[ex.groupe_id] || []).some(s => s.charge || s.reps))
   return (
-    <div className="bg-white border border-gray-100 rounded-xl p-5">
-      <div className="flex items-center justify-between mb-4">
-        <h3 className="text-sm font-medium text-gray-700">Objectifs du bloc</h3>
-        {editing ? (
-          <div className="flex gap-2">
-            <button onClick={saveObj} disabled={saving} className="text-sm text-brand-600 font-medium hover:text-brand-800">
-              {saving ? 'Enregistrement…' : 'Enregistrer'}
-            </button>
-            <button onClick={() => { setEditing(false); setForm(obj || {}); setBornesForm(obj?.bornes || {}) }}
-              className="text-sm text-gray-400">Annuler</button>
-          </div>
-        ) : (
-          <button onClick={() => setEditing(true)} className="text-sm text-brand-600 hover:text-brand-800">Modifier</button>
-        )}
-      </div>
-
-      {/* Encart TDEE */}
-      {missingMorpho ? (
-        <div className="mb-4 bg-gray-50 border border-gray-100 rounded-lg px-4 py-3 text-xs text-gray-500">
-          💡 Ajoute la <strong>taille</strong> et la <strong>date de naissance</strong> de l'athlète pour calculer son maintien calorique.
-        </div>
-      ) : loadingTdee ? (
-        <div className="mb-4 h-16 bg-gray-50 rounded-lg animate-pulse" />
-      ) : tdeeData ? (
-        <div className="mb-4 bg-blue-50 border border-blue-100 rounded-xl p-4">
-          <div className="flex items-start justify-between flex-wrap gap-2">
-            <div>
-              <p className="text-xs font-semibold text-blue-700 mb-0.5">Maintien estimé</p>
-              <p className="text-2xl font-bold text-blue-800">{tdeeData.tdee} <span className="text-sm font-normal">kcal/j</span></p>
-              <p className="text-xs text-blue-500 mt-0.5">BMR {tdeeData.bmr} kcal · ×{tdeeData.multiplier} ({tdeeData.activityLabel})</p>
-              <p className="text-xs text-blue-400 mt-0.5">
-                {tdeeData.poids}kg · {tdeeData.pasJournaliersMoy.toLocaleString('fr')} pas/j · {tdeeData.seancesParSemaine} séances/sem
-                {athlete?.travail_physique ? ' · 💼 travail physique' : ''}
-                {' · '}{tdeeData.sourceActivite === 'onboarding' ? 'données onboarding' : '30j tracking'}
-              </p>
-            </div>
-            {editing && (
-              <div className="flex flex-col gap-1.5 flex-shrink-0">
-                <p className="text-xs text-blue-600 font-medium mb-0.5">Pré-remplir :</p>
-                {[
-                  ['seche',         '🔥 Sèche',         'bg-orange-100 text-orange-700 hover:bg-orange-200'],
-                  ['maintien',      '⚖️ Maintien',       'bg-blue-100 text-blue-700 hover:bg-blue-200'],
-                  ['prise_de_masse','💪 Prise de masse', 'bg-green-100 text-green-700 hover:bg-green-200'],
-                ].map(([plan, label, cls]) => (
-                  <button key={plan} onClick={() => applySuggestion(plan)}
-                    className={`text-xs px-3 py-1.5 rounded-lg font-medium transition-colors ${cls}`}>
-                    {label}
-                  </button>
+    <div className="bg-gray-50 border border-gray-100 rounded-xl mb-4 overflow-hidden">
+      <button onClick={() => setOpen(o => !o)} className="w-full flex items-center justify-between px-4 py-3">
+        <p className="text-xs font-medium text-gray-500">📊 Semaine précédente</p>
+        <span className="text-xs text-gray-400">{open ? '▲' : '▼'}</span>
+      </button>
+      {open && (
+        <div className="px-4 pb-3 space-y-2.5">
+          {notePrev && <div className="bg-white border border-gray-200 rounded-lg px-3 py-2 text-xs text-gray-600 italic">💬 {notePrev}</div>}
+          {exsAvecPerfs.map(ex => (
+            <div key={ex.id}>
+              <p className="text-xs font-medium text-gray-600 mb-1">{ex.nom}</p>
+              <div className="flex flex-wrap gap-1">
+                {(seriesPrev[ex.groupe_id] || []).map((s, i) => (
+                  <span key={i} className={`text-xs border px-2 py-0.5 rounded-md ${theme.isFemme ? 'bg-pink-50 border-pink-100 text-pink-600' : 'bg-brand-50 border-brand-100 text-brand-600'}`}>
+                    S{i+1} : {s.charge ? `${s.charge}kg` : '—'} × {s.reps || '—'}{s.rpe ? ` @${s.rpe}` : ''}{s.notes ? ` · ${s.notes}` : ''}
+                  </span>
                 ))}
               </div>
-            )}
-          </div>
-          {editing && (
-            <p className="text-xs text-blue-400 mt-2">
-              Sèche : {tdeeData.tdee - 350} kcal · Maintien : {tdeeData.tdee} kcal · Prise : {tdeeData.tdee + 250} kcal
-            </p>
-          )}
-        </div>
-      ) : null}
-
-      {editing ? (
-        <div className="space-y-5">
-          <div>
-            <label className="text-xs text-gray-500 block mb-1">Plan nutritionnel</label>
-            <div className="flex gap-2">
-              {[['prise_de_masse','💪 Prise de masse'],['maintien','⚖️ Maintien'],['seche','🔥 Sèche']].map(([val, label]) => (
-                <button key={val} type="button"
-                  onClick={() => setForm(f => ({ ...f, plan_nutritionnel: val }))}
-                  className={`flex-1 py-2 rounded-lg text-xs font-medium border transition-colors ${form.plan_nutritionnel === val ? 'bg-brand-600 text-white border-brand-600' : 'border-gray-200 text-gray-600'}`}>
-                  {label}
-                </button>
-              ))}
             </div>
-          </div>
-          <div>
-            <label className="text-xs text-gray-500 block mb-2">Cibles</label>
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-              {METRICS.map(({ key, label, unit, type, step }) => (
-                <div key={key}>
-                  <label className="text-xs text-gray-500">{label}</label>
-                  <div className="flex items-center gap-1 mt-0.5">
-                    <input type={type} step={step} value={form[key] || ''}
-                      onChange={e => setForm(f => ({ ...f, [key]: e.target.value }))}
-                      className="w-24 border border-gray-200 rounded px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-brand-400"
-                    />
-                    {unit && <span className="text-xs text-gray-400">{unit}</span>}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-          <div>
-            <button type="button" onClick={() => setShowBornes(v => !v)}
-              className="text-xs text-brand-600 hover:text-brand-800 font-medium flex items-center gap-1">
-              {showBornes ? '▾' : '▸'} Bornes de couleur personnalisées
-            </button>
-            {showBornes && (
-              <div className="mt-3 border border-gray-100 rounded-xl overflow-hidden">
-                <table className="w-full text-xs">
-                  <thead>
-                    <tr className="bg-gray-50 border-b border-gray-100">
-                      <th className="text-left px-4 py-2 font-medium text-gray-500">Métrique</th>
-                      <th className="px-3 py-2 font-medium text-gray-500 text-center">Min</th>
-                      <th className="px-3 py-2 font-medium text-gray-500 text-center">Max</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {METRICS.map(({ label, borneKey, unit }) => (
-                      <tr key={borneKey} className="border-b border-gray-50">
-                        <td className="px-4 py-2 text-gray-700">{label}</td>
-                        <td className="px-3 py-2">
-                          <div className="flex items-center gap-1 justify-center">
-                            <input type="number" value={bornesForm[borneKey]?.min ?? ''}
-                              onChange={e => setBorne(borneKey, 'min', e.target.value)} placeholder="—"
-                              className="w-20 border border-gray-200 rounded px-2 py-1 text-xs focus:outline-none text-center" />
-                            {unit && <span className="text-gray-400">{unit}</span>}
-                          </div>
-                        </td>
-                        <td className="px-3 py-2">
-                          <div className="flex items-center gap-1 justify-center">
-                            <input type="number" value={bornesForm[borneKey]?.max ?? ''}
-                              onChange={e => setBorne(borneKey, 'max', e.target.value)} placeholder="—"
-                              className="w-20 border border-gray-200 rounded px-2 py-1 text-xs focus:outline-none text-center" />
-                            {unit && <span className="text-gray-400">{unit}</span>}
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </div>
+          ))}
         </div>
-      ) : obj ? (
-        <div className="space-y-3">
-          {obj.plan_nutritionnel && (
-            <div className="text-sm font-medium text-gray-800">
-              {{'prise_de_masse':'💪 Prise de masse','maintien':'⚖️ Maintien','seche':'🔥 Sèche'}[obj.plan_nutritionnel]}
-            </div>
-          )}
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-            {METRICS.map(({ key, label, unit }) => (
-              <div key={key}>
-                <p className="text-xs text-gray-400">{label}</p>
-                <p className="text-sm font-medium text-gray-900">
-                  {obj[key] != null ? `${obj[key]}${unit ? ' ' + unit : ''}` : '—'}
-                </p>
-              </div>
-            ))}
-          </div>
-          {obj.bornes && Object.keys(obj.bornes).length > 0 && (
-            <p className="text-xs text-gray-400 mt-2">Bornes personnalisées : {Object.keys(obj.bornes).join(', ')}</p>
-          )}
-        </div>
-      ) : (
-        <p className="text-sm text-gray-400">
-          Aucun objectif défini.{' '}
-          <button onClick={() => setEditing(true)} className="text-brand-600 hover:underline">Ajouter →</button>
-        </p>
       )}
+    </div>
+  )
+}
+
+// ── ExerciceCard ─────────────────────────────────────────────────────
+function ExerciceCard({ exercice, series, prevSeries, showChargeIndicative, showRpe, onAddSerie, onUpdate, onDelete, theme, isPowerlifting, maxForLift, onOpenCalc }) {
+  const nextSet   = series.length + 1
+  const canAddSet = series.length < exercice.sets
+
+  const best1RM = isPowerlifting && exercice.main_lift
+    ? series.reduce((best, s) => { const est = epley1RM(s.charge, s.reps, s.rpe); return est && est > best ? est : best }, 0) || null
+    : null
+
+  return (
+    <div className="bg-white border border-gray-100 rounded-xl overflow-hidden">
+      <div className="px-4 py-3 border-b border-gray-50 flex items-start justify-between">
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <p className="font-medium text-sm text-gray-900 truncate">{exercice.nom}</p>
+            {exercice.unilateral && <span className="text-xs bg-gray-100 text-gray-500 px-1.5 py-0.5 rounded font-medium flex-shrink-0">×2</span>}
+            {isPowerlifting && exercice.main_lift && (
+              <span className="text-xs bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded font-medium flex-shrink-0">
+                {exercice.main_lift === 'squat' ? '🏋️' : exercice.main_lift === 'bench' ? '💪' : '⚡'} {exercice.main_lift}
+              </span>
+            )}
+          </div>
+          <p className="text-xs text-gray-400 mt-0.5">
+            {exercice.muscle && <span className="mr-1">{exercice.muscle} ·</span>}
+            <span className={`font-medium ${theme.isFemme ? 'text-pink-600' : 'text-brand-600'}`}>
+              {exercice.sets} × {exercice.rep_range}
+            </span>
+            {exercice.repos && <span className="ml-1">· {exercice.repos}</span>}
+            {showChargeIndicative && exercice.charge_indicative && <span className="ml-1 text-gray-500">· {exercice.charge_indicative}kg indic.</span>}
+            {showRpe && exercice.rpe_cible && <span className="ml-1 text-gray-500">· @{exercice.rpe_cible} cible</span>}
+          </p>
+          {exercice.indications && <p className="text-xs text-amber-600 mt-0.5 font-medium">{exercice.indications}</p>}
+          {isPowerlifting && exercice.main_lift && (
+            <div className="flex items-center gap-3 mt-1 flex-wrap">
+              {maxForLift && <span className="text-xs text-amber-600 font-medium">Max réf : {maxForLift}kg</span>}
+              {best1RM && <span className="text-xs text-green-600 font-medium">~1RM session : {best1RM}kg</span>}
+              <button onClick={() => onOpenCalc(series[series.length - 1]?.charge, series[series.length - 1]?.reps)}
+                className="text-xs text-gray-400 hover:text-amber-600 border border-gray-200 hover:border-amber-300 rounded px-1.5 py-0.5 transition-colors">
+                🧮 Calculer 1RM
+              </button>
+            </div>
+          )}
+        </div>
+        <span className={`text-xs px-2 py-0.5 rounded-full font-medium ml-2 flex-shrink-0 ${series.length >= exercice.sets ? 'bg-green-50 text-green-700' : series.length > 0 ? 'bg-amber-50 text-amber-700' : 'bg-gray-50 text-gray-400'}`}>
+          {series.length}/{exercice.sets}
+        </span>
+      </div>
+      <div className="px-4 py-3 space-y-2">
+        {series.map((s, i) => (
+          <SerieRow key={s.id} serie={s} index={i + 1}
+            prevSerie={prevSeries[i] || null}
+            repos={exercice.repos} repRange={exercice.rep_range}
+            showRpe={showRpe} theme={theme}
+            maxForLift={maxForLift} isPowerlifting={isPowerlifting && !!exercice.main_lift}
+            onUpdate={(field, val) => onUpdate(s.id, field, val)}
+            onDelete={() => onDelete(s.id)}
+          />
+        ))}
+        {canAddSet ? (
+          <button onClick={() => onAddSerie(nextSet)}
+            className={`w-full mt-1 py-2.5 border border-dashed rounded-lg text-sm font-medium transition-colors ${theme.isFemme ? 'border-pink-200 text-pink-400 hover:border-pink-400 hover:text-pink-600' : 'border-gray-200 text-gray-400 hover:border-brand-400 hover:text-brand-600'}`}>
+            + Set {nextSet}
+            {prevSeries[series.length] && (
+              <span className="ml-2 text-xs text-gray-300">
+                S-1 : {prevSeries[series.length].charge ? `${prevSeries[series.length].charge}kg` : '—'} × {prevSeries[series.length].reps || '—'}
+                {prevSeries[series.length].rpe ? ` @${prevSeries[series.length].rpe}` : ''}
+              </span>
+            )}
+          </button>
+        ) : (
+          <div className="w-full mt-1 py-2 text-center text-xs text-green-600 font-medium">✓ Tous les sets complétés</div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ── SerieRow ─────────────────────────────────────────────────────────
+function SerieRow({ serie, index, prevSerie, repRange, repos, showRpe, onUpdate, onDelete, theme, maxForLift, isPowerlifting }) {
+  const [charge, setCharge] = useState(serie.charge ?? '')
+  const [reps, setReps]     = useState(serie.reps   ?? '')
+  const [rpe, setRpe]       = useState(serie.rpe    ?? '')
+  const [notes, setNotes]   = useState(serie.notes  ?? '')
+  const chargeRef = useRef(null)
+
+  useEffect(() => { if (!serie.charge && !serie.reps) chargeRef.current?.focus() }, [])
+
+  const ringClass = theme.isFemme ? 'focus:ring-2 focus:ring-pink-300' : 'focus:ring-2 focus:ring-brand-400'
+  const inputBase = `border border-gray-100 rounded-lg px-3 py-2.5 text-sm focus:outline-none bg-gray-50 focus:bg-white transition-colors ${ringClass}`
+
+  const pctOfMax   = isPowerlifting && maxForLift && charge ? Math.round((Number(charge) / maxForLift) * 100) : null
+  const liveEst1RM = isPowerlifting && charge && reps ? epley1RM(charge, reps, rpe || null) : null
+
+  return (
+    <div className="space-y-1 pb-2 border-b border-gray-50 last:border-0 last:pb-0">
+      <div className="flex items-center gap-2">
+        <span className="w-5 text-xs font-medium text-gray-400 text-center flex-shrink-0">{index}</span>
+        <div className="flex-1 relative">
+          <input ref={chargeRef} type="number" inputMode="decimal" value={charge}
+            placeholder={prevSerie?.charge ? String(prevSerie.charge) : 'kg'}
+            onChange={e => setCharge(e.target.value)} onBlur={() => onUpdate('charge', charge)}
+            className={inputBase + ' w-full'} />
+          {pctOfMax !== null && (
+            <span className={`absolute right-2 top-1/2 -translate-y-1/2 text-xs font-semibold pointer-events-none ${pctOfMax >= 90 ? 'text-red-500' : pctOfMax >= 80 ? 'text-amber-500' : 'text-green-500'}`}>
+              {pctOfMax}%
+            </span>
+          )}
+        </div>
+        <input type="number" inputMode="numeric" value={reps}
+          placeholder={prevSerie?.reps ? String(prevSerie.reps) : (repRange || 'reps')}
+          onChange={e => setReps(e.target.value)} onBlur={() => onUpdate('reps', reps)}
+          className={inputBase + ' flex-1'} />
+        <button onClick={onDelete} className="text-gray-200 hover:text-red-400 text-xl flex-shrink-0">×</button>
+      </div>
+      <div className="flex gap-2 items-center pl-7">
+        <input type="text" value={notes} placeholder="Note (facile, douleur…)"
+          onChange={e => setNotes(e.target.value)} onBlur={() => onUpdate('notes', notes)}
+          className={inputBase + ' flex-1 text-xs py-2'} />
+        {showRpe && (
+          <select value={rpe} onChange={e => { setRpe(e.target.value); onUpdate('rpe', e.target.value || null) }}
+            className={inputBase + ' flex-shrink-0 text-xs py-2 w-[72px] pr-1'}>
+            <option value="">RPE</option>
+            {RPE_VALUES.map(v => <option key={v} value={v}>@{v}</option>)}
+          </select>
+        )}
+      </div>
+      {liveEst1RM && <div className="pl-7"><p className="text-xs text-amber-600 font-medium">~1RM estimé : {liveEst1RM}kg</p></div>}
+      {prevSerie && (prevSerie.charge || prevSerie.reps) && (
+        <div className="pl-7">
+          <p className="text-xs text-gray-300">
+            S-1 : {prevSerie.charge ? `${prevSerie.charge}kg` : '—'} × {prevSerie.reps || '—'}
+            {prevSerie.rpe ? ` @${prevSerie.rpe}` : ''}{prevSerie.notes ? ` · ${prevSerie.notes}` : ''}
+          </p>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── Calculator1RM ────────────────────────────────────────────────────
+function Calculator1RM({ lift, defaultCharge, defaultReps, currentMax, onSaveMax, onClose, theme }) {
+  const [charge, setCharge] = useState(defaultCharge || '')
+  const [reps, setReps]     = useState(defaultReps || '')
+  const [rpe, setRpe]       = useState('')
+  const [saved, setSaved]   = useState(false)
+
+  const est       = epley1RM(charge, reps, rpe || null)
+  const pctChange = est && currentMax ? Math.round(((est - currentMax) / currentMax) * 100) : null
+
+  async function handleSave() {
+    if (!est || !onSaveMax) return
+    await onSaveMax(est)
+    setSaved(true); setTimeout(() => setSaved(false), 1500)
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/40 flex items-end sm:items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-2xl w-full max-w-sm shadow-2xl overflow-hidden">
+        <div className="bg-amber-500 px-5 py-4 text-white">
+          <div className="flex items-center justify-between">
+            <p className="font-semibold">🧮 Calculateur 1RM</p>
+            <button onClick={onClose} className="text-white/70 hover:text-white text-lg">✕</button>
+          </div>
+          {lift && <p className="text-xs text-amber-100 mt-0.5">{LIFT_LABELS[lift]}</p>}
+        </div>
+        <div className="p-5 space-y-4">
+          <div className="grid grid-cols-3 gap-3">
+            <div>
+              <label className="text-xs font-medium text-gray-500 block mb-1">Charge (kg)</label>
+              <input type="number" inputMode="decimal" value={charge} onChange={e => setCharge(e.target.value)}
+                className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-amber-400" placeholder="100" />
+            </div>
+            <div>
+              <label className="text-xs font-medium text-gray-500 block mb-1">Répétitions</label>
+              <input type="number" inputMode="numeric" value={reps} onChange={e => setReps(e.target.value)}
+                className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-amber-400" placeholder="5" />
+            </div>
+            <div>
+              <label className="text-xs font-medium text-gray-500 block mb-1">RPE (opt.)</label>
+              <select value={rpe} onChange={e => setRpe(e.target.value)}
+                className="w-full border border-gray-200 rounded-lg px-2 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-amber-400">
+                <option value="">—</option>
+                {RPE_VALUES.map(v => <option key={v} value={v}>@{v}</option>)}
+              </select>
+            </div>
+          </div>
+          {est ? (
+            <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 text-center">
+              <p className="text-xs text-amber-600 mb-1">1RM estimé</p>
+              <p className="text-3xl font-bold text-amber-700">{est}<span className="text-base font-normal ml-1">kg</span></p>
+              {currentMax && (
+                <p className={`text-xs mt-1 font-medium ${pctChange > 0 ? 'text-green-600' : pctChange < 0 ? 'text-red-500' : 'text-gray-500'}`}>
+                  {pctChange > 0 ? '+' : ''}{pctChange}% vs max actuel ({currentMax}kg)
+                </p>
+              )}
+              <p className="text-xs text-gray-400 mt-1">Formule Epley{rpe ? ` · RPE ${rpe} → ${Math.max(0, 10 - Number(rpe))} rep(s) en réserve` : ''}</p>
+            </div>
+          ) : (
+            <div className="bg-gray-50 rounded-xl p-4 text-center text-xs text-gray-400">Entre charge + répétitions pour calculer</div>
+          )}
+          {onSaveMax && est && (
+            <button onClick={handleSave} disabled={saved}
+              className={`w-full py-2.5 rounded-xl text-sm font-medium transition-all ${saved ? 'bg-green-500 text-white' : 'bg-amber-500 hover:bg-amber-600 text-white'}`}>
+              {saved ? '✓ Max enregistré !' : `Enregistrer ${est}kg comme nouveau max`}
+            </button>
+          )}
+        </div>
+      </div>
     </div>
   )
 }
