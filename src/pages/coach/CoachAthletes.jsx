@@ -21,14 +21,19 @@ export default function CoachAthletes() {
   const [athleteObjectifs, setAthleteObjectifs] = useState({})
   const [athleteCycle, setAthleteCycle]         = useState({})
   const [loading, setLoading]                   = useState(true)
-  const [showAdd, setShowAdd]     = useState(false)
-  const [form, setForm]           = useState({ full_name: '', email: '', genre: 'femme' })
-  const [saving, setSaving]       = useState(false)
-  const [err, setErr]             = useState('')
-  const [inviteSent, setInviteSent] = useState(false)
+  const [showAdd, setShowAdd]                   = useState(false)
+  const [sendInvite, setSendInvite]             = useState(true)
+  const [form, setForm]                         = useState({ full_name: '', email: '', genre: 'femme' })
+  const [saving, setSaving]                     = useState(false)
+  const [err, setErr]                           = useState('')
+  const [success, setSuccess]                   = useState('')
+
+  // Invitation ultérieure
+  const [sendingInvite, setSendingInvite]   = useState(null) // athlete id en cours
+  const [inviteSentFor, setInviteSentFor]   = useState(null) // athlete id confirmé
 
   // Suppression
-  const [confirmDelete, setConfirmDelete] = useState(null) // { id, name }
+  const [confirmDelete, setConfirmDelete] = useState(null)
   const [deleting, setDeleting]           = useState(false)
   const [deleteErr, setDeleteErr]         = useState('')
 
@@ -46,8 +51,8 @@ export default function CoachAthletes() {
   }
 
   async function fetchTrackingData(aths) {
-    const athIds      = aths.map(a => a.id)
-    const sevenAgo    = new Date(); sevenAgo.setDate(sevenAgo.getDate() - 7)
+    const athIds   = aths.map(a => a.id)
+    const sevenAgo = new Date(); sevenAgo.setDate(sevenAgo.getDate() - 7)
     const sevenAgoStr = sevenAgo.toISOString().split('T')[0]
 
     const [trackingRes, blocsRes] = await Promise.all([
@@ -83,12 +88,11 @@ export default function CoachAthletes() {
     }
     setAthleteObjectifs(objMap)
 
-    // Cycle — batch pour toutes les athlètes femmes (hors profil perso du coach)
+    // Cycle — batch pour toutes les athlètes femmes
     const femaleIds = aths.filter(a => a.genre === 'femme' && !a.is_self).map(a => a.id)
     if (femaleIds.length) {
       const { data: cycleLogs } = await supabase
-        .from('period_logs')
-        .select('*')
+        .from('period_logs').select('*')
         .in('user_id', femaleIds)
         .order('period_start_date', { ascending: false })
 
@@ -103,12 +107,13 @@ export default function CoachAthletes() {
     setLoading(false)
   }
 
-  async function handleInvite(e) {
+  async function handleSubmit(e) {
     e.preventDefault()
-    setSaving(true); setErr('')
+    setSaving(true); setErr(''); setSuccess('')
 
     try {
-      const response = await fetch('/api/invite-athlete', {
+      const endpoint = sendInvite ? '/api/invite-athlete' : '/api/create-athlete'
+      const response = await fetch(endpoint, {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -120,19 +125,19 @@ export default function CoachAthletes() {
       })
 
       const data = await response.json()
-
-      if (!response.ok) {
-        throw new Error(data.error || 'Erreur lors de l\'invitation')
-      }
+      if (!response.ok) throw new Error(data.error || 'Erreur')
 
       if (data.user_id) {
         await supabase.from('profiles').update({ genre: form.genre }).eq('id', data.user_id)
       }
 
-      setInviteSent(true)
+      setSuccess(sendInvite
+        ? `Invitation envoyée à ${form.email} ✓`
+        : `Profil créé pour ${form.email}. Tu pourras envoyer l'invitation plus tard. ✓`
+      )
       setForm({ full_name: '', email: '', genre: 'femme' })
       setTimeout(() => {
-        setInviteSent(false)
+        setSuccess('')
         setShowAdd(false)
         fetchAthletes()
       }, 3000)
@@ -144,34 +149,46 @@ export default function CoachAthletes() {
     setSaving(false)
   }
 
+  // Envoie l'invitation à un athlète déjà créé
+  async function handleSendInvite(athlete) {
+    setSendingInvite(athlete.id)
+    try {
+      const response = await fetch('/api/invite-athlete', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email:     athlete.email,
+          full_name: athlete.full_name,
+          coach_id:  profile.id,
+          genre:     athlete.genre,
+        }),
+      })
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.error || 'Erreur')
+      setInviteSentFor(athlete.id)
+      setTimeout(() => setInviteSentFor(null), 3000)
+    } catch (e) {
+      alert(e.message)
+    }
+    setSendingInvite(null)
+  }
+
   async function handleDelete() {
     if (!confirmDelete) return
     setDeleting(true); setDeleteErr('')
-
     try {
       const response = await fetch('/api/delete-athlete', {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          athlete_id: confirmDelete.id,
-          coach_id:   profile.id,
-        }),
+        body: JSON.stringify({ athlete_id: confirmDelete.id, coach_id: profile.id }),
       })
-
       const data = await response.json()
-
-      if (!response.ok) {
-        throw new Error(data.error || 'Erreur lors de la suppression')
-      }
-
-      // Retirer de la liste locale
+      if (!response.ok) throw new Error(data.error || 'Erreur lors de la suppression')
       setAthletes(prev => prev.filter(a => a.id !== confirmDelete.id))
       setConfirmDelete(null)
-
     } catch (e) {
       setDeleteErr(e.message)
     }
-
     setDeleting(false)
   }
 
@@ -182,6 +199,9 @@ export default function CoachAthletes() {
     if (diff === 1) return 'hier'
     return `il y a ${diff}j`
   }
+
+  // Un athlète est "non onboardé" s'il n'a pas encore rempli son profil
+  const isNotOnboarded = (a) => !a.taille && !a.date_naissance && !a.is_self
 
   const initiales = (name) => name?.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2) || '?'
 
@@ -203,22 +223,16 @@ export default function CoachAthletes() {
             <div className="bg-red-50 border border-red-100 rounded-xl px-4 py-3 mb-4">
               <p className="text-xs text-red-700 font-medium mb-1">Cette action est irréversible.</p>
               <p className="text-xs text-red-600">
-                Tous les programmes, séances, séries réalisées et données de suivi de cet athlète seront définitivement supprimés.
+                Tous les programmes, séances, séries réalisées et données de suivi seront définitivement supprimés.
               </p>
             </div>
-            {deleteErr && (
-              <p className="text-sm text-red-500 bg-red-50 rounded-lg px-3 py-2 mb-3">{deleteErr}</p>
-            )}
+            {deleteErr && <p className="text-sm text-red-500 bg-red-50 rounded-lg px-3 py-2 mb-3">{deleteErr}</p>}
             <div className="flex gap-2">
-              <button
-                onClick={handleDelete}
-                disabled={deleting}
+              <button onClick={handleDelete} disabled={deleting}
                 className="flex-1 bg-red-500 hover:bg-red-600 text-white rounded-lg py-2.5 text-sm font-medium disabled:opacity-50 transition-colors">
                 {deleting ? 'Suppression…' : 'Supprimer définitivement'}
               </button>
-              <button
-                onClick={() => { setConfirmDelete(null); setDeleteErr('') }}
-                disabled={deleting}
+              <button onClick={() => { setConfirmDelete(null); setDeleteErr('') }} disabled={deleting}
                 className="flex-1 border border-gray-200 rounded-lg py-2.5 text-sm text-gray-600 hover:bg-gray-50 transition-colors">
                 Annuler
               </button>
@@ -230,31 +244,25 @@ export default function CoachAthletes() {
       <div className="flex items-center gap-3 mb-6">
         <Link to="/coach" className="text-sm text-gray-400 hover:text-gray-700">← Accueil</Link>
         <h1 className="text-xl font-semibold flex-1">Mes coachés</h1>
-        <button onClick={() => setShowAdd(true)}
+        <button onClick={() => { setShowAdd(true); setErr(''); setSuccess('') }}
           className="bg-brand-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-brand-700">
-          + Inviter
+          + Ajouter
         </button>
       </div>
 
-      {/* ── Modale invitation ── */}
+      {/* ── Modale ajout ── */}
       {showAdd && (
         <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-2xl p-6 w-full max-w-md shadow-xl">
-            {inviteSent ? (
+            {success ? (
               <div className="text-center py-4">
-                <p className="text-3xl mb-3">✉️</p>
-                <h2 className="text-base font-semibold text-gray-900 mb-1">Invitation envoyée !</h2>
-                <p className="text-sm text-gray-500">
-                  L'athlète recevra un email avec un lien pour compléter son profil et créer son mot de passe.
-                </p>
+                <p className="text-3xl mb-3">{sendInvite ? '✉️' : '✅'}</p>
+                <p className="text-sm text-gray-700 font-medium">{success}</p>
               </div>
             ) : (
               <>
-                <h2 className="text-base font-semibold mb-1">Inviter un(e) coaché(e)</h2>
-                <p className="text-xs text-gray-400 mb-4">
-                  Un email d'invitation sera envoyé. L'athlète complétera son profil et créera son mot de passe.
-                </p>
-                <form onSubmit={handleInvite} className="space-y-3">
+                <h2 className="text-base font-semibold mb-4">Ajouter un(e) coaché(e)</h2>
+                <form onSubmit={handleSubmit} className="space-y-4">
                   <div>
                     <label className="text-sm font-medium text-gray-700">Prénom et nom</label>
                     <input
@@ -278,19 +286,39 @@ export default function CoachAthletes() {
                   </div>
                   <div>
                     <label className="text-sm font-medium text-gray-700">Email</label>
-                    <input
-                      type="email"
+                    <input type="email" required
                       className="mt-1 w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500"
                       value={form.email}
                       onChange={e => setForm(f => ({ ...f, email: e.target.value }))}
-                      required
                     />
                   </div>
+
+                  {/* Toggle invitation immédiate ou différée */}
+                  <div className="bg-gray-50 rounded-xl p-4 space-y-3">
+                    <p className="text-xs font-medium text-gray-600">Invitation</p>
+                    <div className="flex gap-2">
+                      <button type="button" onClick={() => setSendInvite(true)}
+                        className={`flex-1 py-2.5 rounded-lg text-xs font-medium border transition-colors ${sendInvite ? 'bg-brand-600 text-white border-brand-600' : 'border-gray-200 text-gray-600 hover:border-gray-300'}`}>
+                        ✉️ Envoyer maintenant
+                      </button>
+                      <button type="button" onClick={() => setSendInvite(false)}
+                        className={`flex-1 py-2.5 rounded-lg text-xs font-medium border transition-colors ${!sendInvite ? 'bg-brand-600 text-white border-brand-600' : 'border-gray-200 text-gray-600 hover:border-gray-300'}`}>
+                        🕐 Envoyer plus tard
+                      </button>
+                    </div>
+                    <p className="text-xs text-gray-400">
+                      {sendInvite
+                        ? "L'athlète reçoit un email pour créer son mot de passe et compléter son profil."
+                        : "Le profil est créé sans email. Tu pourras envoyer l'invitation depuis la liste quand tu veux."}
+                    </p>
+                  </div>
+
                   {err && <p className="text-sm text-red-500 bg-red-50 rounded-lg px-3 py-2">{err}</p>}
-                  <div className="flex gap-2 pt-2">
+
+                  <div className="flex gap-2 pt-1">
                     <button type="submit" disabled={saving || !form.email}
                       className="flex-1 bg-brand-600 text-white rounded-lg py-2 text-sm font-medium hover:bg-brand-700 disabled:opacity-50">
-                      {saving ? 'Envoi…' : '✉️ Envoyer l\'invitation'}
+                      {saving ? 'Création…' : sendInvite ? '✉️ Créer et inviter' : '✅ Créer le profil'}
                     </button>
                     <button type="button" onClick={() => { setShowAdd(false); setErr('') }}
                       className="flex-1 border border-gray-200 rounded-lg py-2 text-sm text-gray-600">
@@ -311,30 +339,33 @@ export default function CoachAthletes() {
           <p className="text-sm mb-2">Aucun coaché pour l'instant.</p>
           <button onClick={() => setShowAdd(true)}
             className="text-sm text-brand-600 font-medium hover:text-brand-800">
-            Inviter un premier athlète →
+            Ajouter un premier athlète →
           </button>
         </div>
       ) : (
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
           {athletes.map(a => {
-            const tr  = athleteTracking[a.id]
-            const obj = athleteObjectifs[a.id]
-            const b   = obj?.bornes || {}
+            const tr    = athleteTracking[a.id]
+            const obj   = athleteObjectifs[a.id]
+            const b     = obj?.bornes || {}
             const cycle = athleteCycle[a.id]
+            const notOnboarded = isNotOnboarded(a)
             return (
               <div key={a.id} className="relative group">
-                <Link
-                  to={`/coach/athlete/${a.id}`}
+                <Link to={`/coach/athlete/${a.id}`}
                   className="bg-white border border-gray-100 rounded-xl p-5 hover:border-brand-200 hover:shadow-sm transition-all block">
                   <div className="flex items-center gap-3 mb-3">
                     <div className={`w-9 h-9 rounded-full flex items-center justify-center text-sm font-medium flex-shrink-0 ${a.genre === 'femme' ? 'bg-pink-100 text-pink-700' : 'bg-brand-100 text-brand-700'}`}>
                       {initiales(a.full_name)}
                     </div>
                     <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-2 flex-wrap">
                         <p className="font-medium text-sm text-gray-900 group-hover:text-brand-700 truncate">{a.full_name}</p>
                         {a.is_self && (
                           <span className="text-xs bg-brand-100 text-brand-700 px-2 py-0.5 rounded-full font-medium flex-shrink-0">Moi</span>
+                        )}
+                        {notOnboarded && (
+                          <span className="text-xs bg-gray-100 text-gray-500 px-2 py-0.5 rounded-full font-medium flex-shrink-0">En attente</span>
                         )}
                       </div>
                       <p className="text-xs text-gray-400">
@@ -393,35 +424,44 @@ export default function CoachAthletes() {
                   ) : (
                     <div className="border-t border-gray-50 pt-3">
                       <p className="text-xs text-gray-400">
-                        {a.taille || a.date_naissance
-                          ? 'Aucune donnée ces 7 derniers jours'
-                          : 'En attente de complétion du profil…'}
+                        {notOnboarded ? 'Profil non encore complété' : 'Aucune donnée ces 7 derniers jours'}
                       </p>
                     </div>
                   )}
 
-                  {/* Badge cycle — athlètes femmes uniquement */}
+                  {/* Badge cycle */}
                   {a.genre === 'femme' && !a.is_self && (
                     cycle ? (
                       <div className={`mt-2 inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full font-medium ${PHASE_COLOR_CLASSES[cycle.phaseColor]}`}>
                         <span>{cycle.phaseLabel}</span>
                         <span className="opacity-70">· {cycle.dayLabel}</span>
                       </div>
-                    ) : (
+                    ) : !notOnboarded ? (
                       <p className="mt-2 text-xs text-gray-300">Cycle non renseigné</p>
-                    )
+                    ) : null
+                  )}
+
+                  {/* Bouton invitation différée — pour les profils pas encore onboardés */}
+                  {notOnboarded && (
+                    <div className="mt-3 border-t border-gray-50 pt-3" onClick={e => e.preventDefault()}>
+                      {inviteSentFor === a.id ? (
+                        <p className="text-xs text-green-600 font-medium">✓ Invitation envoyée !</p>
+                      ) : (
+                        <button
+                          onClick={e => { e.preventDefault(); handleSendInvite(a) }}
+                          disabled={sendingInvite === a.id}
+                          className="text-xs text-brand-600 hover:text-brand-800 font-medium border border-brand-200 hover:bg-brand-50 rounded-lg px-3 py-1.5 transition-colors disabled:opacity-50">
+                          {sendingInvite === a.id ? 'Envoi…' : '✉️ Envoyer l\'invitation'}
+                        </button>
+                      )}
+                    </div>
                   )}
                 </Link>
 
-                {/* ── Bouton suppression (visible au hover, caché pour is_self) ── */}
+                {/* Bouton suppression */}
                 {!a.is_self && (
                   <button
-                    onClick={e => {
-                      e.preventDefault()
-                      e.stopPropagation()
-                      setConfirmDelete({ id: a.id, name: a.full_name })
-                      setDeleteErr('')
-                    }}
+                    onClick={e => { e.preventDefault(); e.stopPropagation(); setConfirmDelete({ id: a.id, name: a.full_name }); setDeleteErr('') }}
                     className="absolute top-3 right-3 opacity-0 group-hover:opacity-100 transition-opacity w-7 h-7 rounded-lg bg-white border border-gray-200 hover:bg-red-50 hover:border-red-200 flex items-center justify-center shadow-sm"
                     title="Supprimer ce coaché">
                     <svg className="w-3.5 h-3.5 text-gray-400 hover:text-red-500" fill="none" viewBox="0 0 16 16">
