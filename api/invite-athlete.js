@@ -1,7 +1,3 @@
-// api/invite-athlete.js
-// Utilise le SDK @supabase/supabase-js avec la service role key
-// pour inviter un athlète via la méthode officielle auth.admin.inviteUserByEmail
-
 import { createClient } from '@supabase/supabase-js'
 
 export default async function handler(req, res) {
@@ -15,12 +11,8 @@ export default async function handler(req, res) {
   const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY
   const supabaseUrl    = process.env.VITE_SUPABASE_URL
 
-  if (!serviceRoleKey) {
-    return res.status(500).json({ error: 'SUPABASE_SERVICE_ROLE_KEY manquante dans les variables Vercel' })
-  }
-  if (!supabaseUrl) {
-    return res.status(500).json({ error: 'VITE_SUPABASE_URL manquante dans les variables Vercel' })
-  }
+  if (!serviceRoleKey) return res.status(500).json({ error: 'SUPABASE_SERVICE_ROLE_KEY manquante' })
+  if (!supabaseUrl)    return res.status(500).json({ error: 'VITE_SUPABASE_URL manquante' })
 
   const { email, full_name, coach_id, genre, redirect_to } = req.body
 
@@ -28,45 +20,67 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: 'email et coach_id sont requis' })
   }
 
-  // ── Client admin (service role — jamais exposé côté client) ─────────
   const supabaseAdmin = createClient(
     supabaseUrl.replace(/\/$/, ''),
     serviceRoleKey,
-    {
-      auth: {
-        autoRefreshToken: false,
-        persistSession:   false,
-      },
-    }
+    { auth: { autoRefreshToken: false, persistSession: false } }
   )
 
-  try {
-    // ── 1. Inviter l'utilisateur ─────────────────────────────────────
-    const redirectTo = redirect_to ||
-      `${process.env.VITE_APP_URL || ''}/onboarding`
+  const redirectTo = redirect_to || `${process.env.VITE_APP_URL || ''}/onboarding`
 
+  try {
+    // ── Cas 1 : utilisateur déjà créé (via create-athlete) ──────────
+    // On lui envoie un lien de définition de mot de passe plutôt qu'une invitation
+    const { data: existingUsers } = await supabaseAdmin.auth.admin.listUsers()
+    const existingUser = (existingUsers?.users || []).find(u => u.email === email)
+
+    if (existingUser) {
+      // generateLink type 'recovery' envoie un lien "définir mon mot de passe"
+      // qui redirige vers /onboarding après confirmation — même UX que l'invitation
+      const { data: linkData, error: linkError } = await supabaseAdmin.auth.admin.generateLink({
+        type:       'recovery',
+        email,
+        options:    { redirectTo },
+      })
+
+      if (linkError) {
+        console.error('generateLink error:', linkError)
+        return res.status(400).json({ error: linkError.message })
+      }
+
+      // Envoyer l'email manuellement via l'API Supabase
+      // (generateLink retourne le lien mais n'envoie pas d'email en mode admin)
+      // On utilise plutôt resetPasswordForEmail qui envoie l'email directement
+      const { error: resetError } = await supabaseAdmin.auth.resetPasswordForEmail(email, {
+        redirectTo,
+      })
+
+      if (resetError) {
+        console.error('resetPasswordForEmail error:', resetError)
+        return res.status(400).json({ error: resetError.message })
+      }
+
+      return res.status(200).json({
+        success: true,
+        user_id: existingUser.id,
+        email,
+        message: `Lien d'invitation envoyé à ${email}`,
+      })
+    }
+
+    // ── Cas 2 : nouvel utilisateur — invitation standard ─────────────
     const { data: inviteData, error: inviteError } =
       await supabaseAdmin.auth.admin.inviteUserByEmail(email, {
         redirectTo,
-        data: {
-          full_name,
-          coach_id,
-          role: 'athlete',
-        },
+        data: { full_name, coach_id, role: 'athlete' },
       })
 
     if (inviteError) {
       console.error('inviteUserByEmail error:', inviteError)
-
-      // Messages d'erreur lisibles selon le code
       let friendlyMsg = inviteError.message
-      if (inviteError.message?.includes('already been registered') ||
-          inviteError.message?.includes('already registered')) {
-        friendlyMsg = 'Cet email est déjà enregistré. L\'athlète peut se connecter directement.'
-      } else if (inviteError.message?.includes('rate limit')) {
+      if (inviteError.message?.includes('rate limit')) {
         friendlyMsg = 'Trop d\'invitations envoyées. Réessaie dans quelques minutes.'
       }
-
       return res.status(400).json({ error: friendlyMsg, detail: inviteError })
     }
 
@@ -75,24 +89,19 @@ export default async function handler(req, res) {
       return res.status(500).json({ error: 'Invitation envoyée mais ID utilisateur non retourné' })
     }
 
-    // ── 2. Créer le profil en base ───────────────────────────────────
-    const { error: profileError } = await supabaseAdmin
-      .from('profiles')
-      .insert({
-        id:        userId,
-        role:      'athlete',
-        full_name: full_name || email.split('@')[0],
-        email,
-        coach_id,
-        genre:     genre || 'femme',
-        is_self:   false,
-      })
+    // Créer le profil si pas encore fait
+    const { error: profileError } = await supabaseAdmin.from('profiles').insert({
+      id:        userId,
+      role:      'athlete',
+      full_name: full_name || email.split('@')[0],
+      email,
+      coach_id,
+      genre:     genre || 'femme',
+      is_self:   false,
+    })
 
-    if (profileError) {
-      // Non bloquant si le profil existe déjà (code 23505 = unique violation)
-      if (profileError.code !== '23505') {
-        console.warn('Profile creation warning:', profileError)
-      }
+    if (profileError && profileError.code !== '23505') {
+      console.warn('Profile creation warning:', profileError)
     }
 
     return res.status(200).json({
