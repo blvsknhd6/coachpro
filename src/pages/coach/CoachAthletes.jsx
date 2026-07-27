@@ -201,7 +201,7 @@ export default function CoachAthletes() {
   }
 
   // Un athlète est "non onboardé" s'il n'a pas encore rempli son profil
-  const isNotOnboarded = (a) => !a.taille && !a.date_naissance && !a.is_self
+  const isNotOnboarded = (a) => !a.profil_complet && !a.is_self
 
   const initiales = (name) => name?.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2) || '?'
 

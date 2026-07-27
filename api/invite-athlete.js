@@ -26,21 +26,28 @@ export default async function handler(req, res) {
     { auth: { autoRefreshToken: false, persistSession: false } }
   )
 
-  const redirectTo = redirect_to || `${process.env.VITE_APP_URL || ''}/onboarding`
+  // Construire l'URL complète depuis les headers de la requête Vercel
+  // (évite le problème de l'URL relative que Supabase refuse)
+  const proto      = req.headers['x-forwarded-proto'] || 'https'
+  const host       = req.headers['x-forwarded-host'] || req.headers.host || ''
+  const baseUrl    = host ? `${proto}://${host}` : (process.env.VITE_APP_URL || '')
+  const redirectTo = redirect_to || `${baseUrl}/onboarding`
 
   try {
-    // ── Cas 1 : utilisateur déjà créé (via create-athlete) ──────────
-    // On lui envoie un lien de définition de mot de passe plutôt qu'une invitation
-    const { data: existingUsers } = await supabaseAdmin.auth.admin.listUsers()
-    const existingUser = (existingUsers?.users || []).find(u => u.email === email)
+    // Vérifie si un compte Auth existe déjà pour cet email
+    // (cas : créé via create-athlete sans invitation)
+    const { data: { users }, error: listError } = await supabaseAdmin.auth.admin.listUsers()
+    if (listError) throw listError
+
+    const existingUser = users.find(u => u.email?.toLowerCase() === email.toLowerCase())
 
     if (existingUser) {
-      // generateLink type 'recovery' envoie un lien "définir mon mot de passe"
-      // qui redirige vers /onboarding après confirmation — même UX que l'invitation
+      // Le compte existe déjà — on génère un lien magique (type invite)
+      // qui connecte directement l'athlète et le redirige vers /onboarding
       const { data: linkData, error: linkError } = await supabaseAdmin.auth.admin.generateLink({
-        type:       'recovery',
+        type:    'magiclink',
         email,
-        options:    { redirectTo },
+        options: { redirectTo },
       })
 
       if (linkError) {
@@ -48,27 +55,37 @@ export default async function handler(req, res) {
         return res.status(400).json({ error: linkError.message })
       }
 
-      // Envoyer l'email manuellement via l'API Supabase
-      // (generateLink retourne le lien mais n'envoie pas d'email en mode admin)
-      // On utilise plutôt resetPasswordForEmail qui envoie l'email directement
-      const { error: resetError } = await supabaseAdmin.auth.resetPasswordForEmail(email, {
-        redirectTo,
+      // generateLink retourne le lien mais n'envoie pas d'email —
+      // on utilise l'API email de Supabase pour l'envoyer via le template "Magic Link"
+      const emailRes = await fetch(`${supabaseUrl.replace(/\/$/, '')}/auth/v1/admin/users/${existingUser.id}/send-email`, {
+        method:  'POST',
+        headers: {
+          'Content-Type':  'application/json',
+          'apikey':        serviceRoleKey,
+          'Authorization': `Bearer ${serviceRoleKey}`,
+        },
+        body: JSON.stringify({ email_action_link: linkData.properties?.action_link }),
       })
 
-      if (resetError) {
-        console.error('resetPasswordForEmail error:', resetError)
-        return res.status(400).json({ error: resetError.message })
+      // Fallback : si l'envoi via l'API interne échoue, on tente resetPasswordForEmail
+      // avec l'URL absolue qu'on vient de construire
+      if (!emailRes.ok) {
+        const { error: resetError } = await supabaseAdmin.auth.resetPasswordForEmail(email, { redirectTo })
+        if (resetError) {
+          console.error('resetPasswordForEmail error:', resetError)
+          return res.status(400).json({ error: `Impossible d'envoyer l'email : ${resetError.message}` })
+        }
       }
 
       return res.status(200).json({
         success: true,
         user_id: existingUser.id,
         email,
-        message: `Lien d'invitation envoyé à ${email}`,
+        message: `Lien d'accès envoyé à ${email}`,
       })
     }
 
-    // ── Cas 2 : nouvel utilisateur — invitation standard ─────────────
+    // Nouvel utilisateur — invitation standard
     const { data: inviteData, error: inviteError } =
       await supabaseAdmin.auth.admin.inviteUserByEmail(email, {
         redirectTo,
@@ -76,20 +93,14 @@ export default async function handler(req, res) {
       })
 
     if (inviteError) {
-      console.error('inviteUserByEmail error:', inviteError)
-      let friendlyMsg = inviteError.message
-      if (inviteError.message?.includes('rate limit')) {
-        friendlyMsg = 'Trop d\'invitations envoyées. Réessaie dans quelques minutes.'
-      }
-      return res.status(400).json({ error: friendlyMsg, detail: inviteError })
+      let msg = inviteError.message
+      if (msg?.includes('rate limit')) msg = 'Trop d\'invitations envoyées. Réessaie dans quelques minutes.'
+      return res.status(400).json({ error: msg })
     }
 
     const userId = inviteData?.user?.id
-    if (!userId) {
-      return res.status(500).json({ error: 'Invitation envoyée mais ID utilisateur non retourné' })
-    }
+    if (!userId) return res.status(500).json({ error: 'Invitation envoyée mais ID utilisateur non retourné' })
 
-    // Créer le profil si pas encore fait
     const { error: profileError } = await supabaseAdmin.from('profiles').insert({
       id:        userId,
       role:      'athlete',
