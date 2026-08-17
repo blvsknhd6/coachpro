@@ -33,8 +33,6 @@ export default function App() {
 
       <Route path="/coach" element={<PrivateRoute role="coach"><CoachHome /></PrivateRoute>} />
       <Route path="/coach/athletes" element={<PrivateRoute role="coach"><CoachAthletes /></PrivateRoute>} />
-      {/* Mon entraînement = même composant que l'athlète, le coach est son propre athlète */}
-      <Route path="/coach/mon-programme" element={<PrivateRoute role="coach"><AthleteEntrainement /></PrivateRoute>} />
       <Route path="/coach/progression" element={<PrivateRoute role="coach"><AthleteProgression /></PrivateRoute>} />
       <Route path="/coach/athlete/:athleteId" element={<PrivateRoute role="coach"><CoachAthlete /></PrivateRoute>} />
       <Route path="/coach/athlete/:athleteId/view" element={<PrivateRoute role="coach"><CoachAthleteView /></PrivateRoute>} />

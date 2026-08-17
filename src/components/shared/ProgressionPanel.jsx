@@ -1,53 +1,68 @@
 import { useState, useEffect } from 'react'
 import { supabase } from '../../lib/supabase'
-import { LineChart, Line, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts'
+import { LineChart, Line, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend } from 'recharts'
 import { calcSerieTonnage } from '../../lib/tonnage'
 
-// Fix Feature 2 : toutes les requêtes utilisent athleteId (prop) et non profile.id
-// Le composant est appelé depuis CoachAthlete avec athleteId = l'athlète coaché
+const BLOC_PALETTE = ['#6366f1','#10b981','#f59e0b','#ef4444','#ec4899','#8b5cf6','#06b6d4','#f97316']
 
 export default function ProgressionPanel({ athleteId, config, onConfigChange, color = '#6366f1', readOnly = false }) {
-  const [data, setData]         = useState({ tonnage: [], series: [], byExo: {} })
-  const [exercices, setExercices] = useState([])
-  const [loading, setLoading]   = useState(true)
-  const [showConfig, setShowConfig] = useState(false)
-  const [localConfig, setLocalConfig] = useState(config)
+  const [blocs, setBlocs]             = useState([])
+  const [activeBlocId, setActiveBlocId] = useState(null)
+  const [compareMode, setCompareMode] = useState(false)
 
-  useEffect(() => { fetchData() }, [athleteId, config.fav_exercices, config.muscles_filter])
+  const [data, setData]               = useState({ tonnage: [], series: [], byExo: {} })
+  const [compareData, setCompareData] = useState([])
+  const [exercices, setExercices]     = useState([])
+
+  const [loadingBlocs, setLoadingBlocs]     = useState(true)
+  const [loading, setLoading]               = useState(false)
+  const [loadingCompare, setLoadingCompare] = useState(false)
+  const [showConfig, setShowConfig]         = useState(false)
+  const [localConfig, setLocalConfig]       = useState(config)
+
+  useEffect(() => { if (athleteId) loadBlocs() }, [athleteId])
   useEffect(() => { setLocalConfig(config) }, [config])
 
-  async function fetchData() {
-    if (!athleteId) return
-    setLoading(true)
+  useEffect(() => {
+    if (!activeBlocId || compareMode) return
+    fetchBlocData(activeBlocId)
+  }, [activeBlocId, compareMode, config.fav_exercices, config.muscles_filter])
 
+  useEffect(() => {
+    if (compareMode && blocs.length) fetchCompareData()
+  }, [compareMode, blocs.length])
+
+  async function loadBlocs() {
+    setLoadingBlocs(true)
     const { data: blocsRes } = await supabase
-      .from('blocs').select('id').eq('athlete_id', athleteId)
-    if (!blocsRes?.length) { setLoading(false); return }
-    const blocIds = blocsRes.map(b => b.id)
+      .from('blocs').select('id, name, created_at')
+      .eq('athlete_id', athleteId).order('created_at', { ascending: false })
+    setBlocs(blocsRes || [])
+    setActiveBlocId(blocsRes?.length ? blocsRes[0].id : null)
 
-    const [semRes, exRes] = await Promise.all([
-      supabase.from('semaines').select('id, numero').in('bloc_id', blocIds).order('numero').limit(16),
-      supabase.from('exercices').select('id, nom, muscle').neq('nom', ''),
-    ])
-
-    const semaines = semRes.data || []
-    const allExs   = exRes.data || []
-    const uniqueNoms = [...new Set(allExs.map(e => e.nom))].sort()
+    const { data: exRes } = await supabase.from('exercices').select('id, nom, muscle').neq('nom', '')
+    const uniqueNoms = [...new Set((exRes || []).map(e => e.nom))].sort()
     setExercices(uniqueNoms)
+    setLoadingBlocs(false)
+  }
 
-    if (!semaines.length) { setLoading(false); return }
+  async function fetchBlocData(blocId) {
+    setLoading(true)
+    setData({ tonnage: [], series: [], byExo: {} })
+
+    const { data: semaines } = await supabase
+      .from('semaines').select('id, numero').eq('bloc_id', blocId).order('numero').limit(16)
+    if (!semaines?.length) { setLoading(false); return }
 
     const semIds = semaines.map(s => s.id)
     const { data: scData } = await supabase.from('seances').select('id, semaine_id').in('semaine_id', semIds)
     const scIds = (scData || []).map(s => s.id)
     if (!scIds.length) { setLoading(false); return }
 
-    // Feature 3 : poids_corps dans la sélection
     const { data: exsAll } = await supabase.from('exercices')
       .select('id, nom, muscle, unilateral, seance_id, poids_corps')
       .in('seance_id', scIds)
 
-    // Fix Feature 2 : filtrer par athleteId (pas profile.id)
     const [{ data: srAll }, poidsRes] = await Promise.all([
       supabase.from('series_realisees')
         .select('exercice_id, charge, reps, semaine_id, poids_corps_kg')
@@ -77,7 +92,6 @@ export default function ProgressionPanel({ athleteId, config, onConfigChange, co
         if (!ex) continue
         if (config.muscles_filter?.length && !config.muscles_filter.includes(ex.muscle)) continue
 
-        // Feature 3 : tonnage poids de corps
         const t = calcSerieTonnage(sr, ex, athletePoids)
         tonnage += t
         nbSeries++
@@ -98,22 +112,91 @@ export default function ProgressionPanel({ athleteId, config, onConfigChange, co
     setLoading(false)
   }
 
+  async function fetchCompareData() {
+    setLoadingCompare(true)
+    const result = []
+
+    await Promise.all(blocs.map(async (bloc) => {
+      const { data: semaines } = await supabase
+        .from('semaines').select('id, numero').eq('bloc_id', bloc.id).order('numero')
+      if (!semaines?.length) return
+      const semIds = semaines.map(s => s.id)
+      const { data: scAll } = await supabase.from('seances').select('id, semaine_id').in('semaine_id', semIds)
+      const scIds = (scAll || []).map(s => s.id); if (!scIds.length) return
+
+      const [{ data: exAll }, { data: srAll }, poidsRes] = await Promise.all([
+        supabase.from('exercices').select('id, seance_id, unilateral, poids_corps').in('seance_id', scIds),
+        supabase.from('series_realisees')
+          .select('charge, reps, exercice_id, semaine_id, poids_corps_kg')
+          .eq('athlete_id', athleteId).in('semaine_id', semIds)
+          .not('reps', 'is', null),
+        supabase.from('data_tracking').select('poids')
+          .eq('athlete_id', athleteId).not('poids', 'is', null)
+          .order('date', { ascending: false }).limit(1),
+      ])
+
+      const athletePoids = poidsRes.data?.[0]?.poids || null
+      const scToSemaine = {}; (scAll || []).forEach(sc => { scToSemaine[sc.id] = sc.semaine_id })
+      const exById = {}; (exAll || []).forEach(ex => {
+        exById[ex.id] = { unilateral: ex.unilateral, poids_corps: ex.poids_corps }
+      })
+
+      const tonnageMap = {}
+      ;(srAll || []).forEach(s => {
+        const ex = exById[s.exercice_id]; if (!ex) return
+        const vol = calcSerieTonnage(s, ex, athletePoids)
+        if (!tonnageMap[s.semaine_id]) tonnageMap[s.semaine_id] = { tonnage: 0, series: 0 }
+        tonnageMap[s.semaine_id].tonnage += vol
+        tonnageMap[s.semaine_id].series++
+      })
+
+      semaines.filter(s => tonnageMap[s.id]).forEach(s => {
+        result.push({
+          semaine:  `S${s.numero}`,
+          blocId:   bloc.id,
+          blocName: bloc.name,
+          tonnage:  Math.round(tonnageMap[s.id].tonnage),
+          series:   tonnageMap[s.id].series,
+        })
+      })
+    }))
+
+    setCompareData(result)
+    setLoadingCompare(false)
+  }
+
   function saveConfig() { onConfigChange(localConfig); setShowConfig(false) }
 
-  const metric  = localConfig.metric  || 'tonnage'
-  const display = localConfig.display || 'graph'
-  const mainData = metric === 'series' ? data.series : data.tonnage
-  const dataKey  = metric === 'series' ? 'series' : 'tonnage'
+  const metric     = localConfig.metric  || 'tonnage'
+  const display    = localConfig.display || 'graph'
+  const mainData   = metric === 'series' ? data.series : data.tonnage
+  const activeBloc = blocs.find(b => b.id === activeBlocId)
 
   return (
     <div className="bg-white border border-gray-100 rounded-xl overflow-hidden">
-      <div className="px-5 py-3 border-b border-gray-50 flex items-center justify-between">
+      <div className="px-5 py-3 border-b border-gray-50 flex items-center justify-between gap-2 flex-wrap">
         <p className="text-sm font-medium text-gray-700">Progression</p>
-        {!readOnly && (
-          <button onClick={() => setShowConfig(true)} className="text-xs text-gray-400 hover:text-brand-600 transition-colors">
-            Configurer
-          </button>
-        )}
+        <div className="flex items-center gap-2 flex-wrap">
+          {!compareMode && blocs.length > 0 && (
+            <select
+              value={activeBlocId || ''}
+              onChange={e => setActiveBlocId(e.target.value)}
+              className="text-xs border border-gray-200 rounded-lg px-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-brand-400 bg-white">
+              {blocs.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
+            </select>
+          )}
+          {blocs.length > 1 && (
+            <button onClick={() => setCompareMode(v => !v)}
+              className={`text-xs px-2.5 py-1.5 rounded-lg border font-medium transition-colors ${compareMode ? 'bg-brand-600 text-white border-brand-600' : 'border-gray-200 text-gray-500 hover:border-gray-300'}`}>
+              ⇄ Comparer les blocs
+            </button>
+          )}
+          {!readOnly && (
+            <button onClick={() => setShowConfig(true)} className="text-xs text-gray-400 hover:text-brand-600 transition-colors">
+              Configurer
+            </button>
+          )}
+        </div>
       </div>
 
       {showConfig && (
@@ -177,9 +260,46 @@ export default function ProgressionPanel({ athleteId, config, onConfigChange, co
       )}
 
       <div className="p-5 space-y-5">
-        {loading ? <p className="text-xs text-gray-400">Chargement...</p>
-        : mainData.length === 0 ? <p className="text-xs text-gray-400 text-center py-4">Aucune donnée disponible</p>
-        : (
+        {loadingBlocs ? (
+          <p className="text-xs text-gray-400">Chargement...</p>
+        ) : blocs.length === 0 ? (
+          <p className="text-xs text-gray-400 text-center py-4">Aucun bloc pour l'instant</p>
+        ) : compareMode ? (
+          loadingCompare ? <p className="text-xs text-gray-400">Chargement...</p>
+          : compareData.length === 0 ? <p className="text-xs text-gray-400 text-center py-4">Aucune donnée disponible</p>
+          : (
+            <div>
+              <p className="text-xs text-gray-400 mb-2">
+                {metric === 'series' ? 'Nombre de séries' : 'Tonnage (kg)'} par semaine, par bloc
+              </p>
+              <ResponsiveContainer width="100%" height={220}>
+                <LineChart margin={{ top: 4, right: 8, bottom: 0, left: -10 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#f3f4f6" />
+                  <XAxis dataKey="semaine" type="category" allowDuplicatedCategory={false} tick={{ fontSize: 10 }} />
+                  <YAxis tick={{ fontSize: 10 }} width={42} />
+                  <Tooltip contentStyle={{ fontSize: 11 }} formatter={v => [v?.toLocaleString('fr')]} />
+                  <Legend iconType="circle" wrapperStyle={{ fontSize: 11 }} />
+                  {blocs.map((bloc, i) => {
+                    const d = compareData.filter(r => r.blocId === bloc.id)
+                    if (!d.length) return null
+                    return (
+                      <Line key={bloc.id} data={d} type="monotone"
+                        dataKey={metric === 'series' ? 'series' : 'tonnage'}
+                        stroke={BLOC_PALETTE[i % BLOC_PALETTE.length]}
+                        strokeWidth={2} dot={{ r: 3 }} connectNulls name={bloc.name} />
+                    )
+                  })}
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+          )
+        ) : loading ? (
+          <p className="text-xs text-gray-400">Chargement...</p>
+        ) : mainData.length === 0 ? (
+          <p className="text-xs text-gray-400 text-center py-4">
+            Aucune donnée disponible{activeBloc ? ` pour ${activeBloc.name}` : ''}
+          </p>
+        ) : (
           <>
             {(metric === 'tonnage' || metric === 'both') && (
               <ProgressChart data={data.tonnage} dataKey="tonnage" label="Tonnage (kg)" color={color} display={display} />

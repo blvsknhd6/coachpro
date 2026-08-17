@@ -17,11 +17,11 @@ export default function Layout({ children }) {
   const homeRoute = isCoach ? '/coach' : '/athlete'
 
   const coachTabs = [
-    { to: '/coach',               label: 'Accueil',          exact: true },
-    { to: '/coach/athletes',      label: 'Mes coachés' },
-    { to: '/coach/mon-programme', label: 'Mon entraînement' },
-    { to: '/coach/tracking',      label: 'Mon suivi' },
-    { to: '/coach/progression',   label: 'Ma progression' },
+    { to: '/coach',                            label: 'Accueil',          exact: true },
+    { to: '/coach/athletes',                   label: 'Mes coachés' },
+    { to: `/coach/athlete/${profile?.id}`,     label: 'Mon entraînement' },
+    { to: '/coach/tracking',                   label: 'Mon suivi' },
+    { to: '/coach/progression',                label: 'Ma progression' },
   ]
 
   const athleteTabs = [
