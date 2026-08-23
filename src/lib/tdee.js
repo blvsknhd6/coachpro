@@ -38,7 +38,7 @@ export function calcBMR(poids, taille, age, sexe) {
  *
  * Le travail physique monte le plancher d'une catégorie entière :
  *   - Sédentaire  → Légèrement actif  (×1.375)
- *   - Légèrement  → Modérément actif  (×1.5)
+ *   - Légèrement  → Modérément actif  (×1.45)
  *   - Modérément  → Actif             (×1.725)
  *   - Très actif  → Très actif+       (×1.9)
  */
@@ -56,11 +56,11 @@ export function activityMultiplier(pasJournaliersMoy, seancesParSemaine, travail
   if (actif || moderement) {
     return travailPhysique
       ? { mult: 1.725, label: 'Actif + travail physique' }
-      : { mult: 1.5,  label: 'Modérément actif' }
+      : { mult: 1.45,  label: 'Modérément actif' }
   }
   if (legerement) {
     return travailPhysique
-      ? { mult: 1.5,  label: 'Modérément actif + travail physique' }
+      ? { mult: 1.45,  label: 'Modérément actif + travail physique' }
       : { mult: 1.375, label: 'Légèrement actif' }
   }
   // Sédentaire
