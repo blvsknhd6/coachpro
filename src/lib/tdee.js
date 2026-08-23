@@ -38,14 +38,14 @@ export function calcBMR(poids, taille, age, sexe) {
  *
  * Le travail physique monte le plancher d'une catégorie entière :
  *   - Sédentaire  → Légèrement actif  (×1.375)
- *   - Légèrement  → Modérément actif  (×1.55)
+ *   - Légèrement  → Modérément actif  (×1.5)
  *   - Modérément  → Actif             (×1.725)
  *   - Très actif  → Très actif+       (×1.9)
  */
 export function activityMultiplier(pasJournaliersMoy, seancesParSemaine, travailPhysique = false) {
-  const tresTactif = seancesParSemaine >= 5 || pasJournaliersMoy >= 12000
-  const actif      = seancesParSemaine >= 4 || pasJournaliersMoy >= 10000
-  const moderement = seancesParSemaine >= 3 || pasJournaliersMoy >= 7500
+  const tresTactif = seancesParSemaine >= 6 || pasJournaliersMoy >= 15000
+  const actif      = seancesParSemaine >= 4 || pasJournaliersMoy >= 11000
+  const moderement = seancesParSemaine >= 3 || pasJournaliersMoy >= 8000
   const legerement = seancesParSemaine >= 2 || pasJournaliersMoy >= 5000
 
   if (tresTactif) {
@@ -56,11 +56,11 @@ export function activityMultiplier(pasJournaliersMoy, seancesParSemaine, travail
   if (actif || moderement) {
     return travailPhysique
       ? { mult: 1.725, label: 'Actif + travail physique' }
-      : { mult: 1.55,  label: 'Modérément actif' }
+      : { mult: 1.5,  label: 'Modérément actif' }
   }
   if (legerement) {
     return travailPhysique
-      ? { mult: 1.55,  label: 'Modérément actif + travail physique' }
+      ? { mult: 1.5,  label: 'Modérément actif + travail physique' }
       : { mult: 1.375, label: 'Légèrement actif' }
   }
   // Sédentaire
@@ -99,7 +99,7 @@ export function calcTDEE(profile, activity) {
  * Suggestions nutritionnelles selon l'objectif.
  */
 export function nutritionSuggestions(tdee, poids, plan) {
-  const adjustments = { prise_de_masse: +250, maintien: 0, seche: -350 }
+  const adjustments = { prise_de_masse: +250, maintien: 0, recomposition: -200, seche: -450 }
   const kcal      = tdee + (adjustments[plan] ?? 0)
   const proteines = Math.round(poids * 2.4)
   const lipides   = Math.round((kcal * 0.25) / 9)
