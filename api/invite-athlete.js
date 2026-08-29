@@ -10,9 +10,7 @@ export default async function handler(req, res) {
   }
 
   if (req.method !== 'POST') {
-    return res.status(405).json({
-      error: 'Method Not Allowed'
-    })
+    return res.status(405).json({ error: 'Method Not Allowed' })
   }
 
   const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY
@@ -58,7 +56,6 @@ export default async function handler(req, res) {
     }
   )
 
-  // URL vers laquelle l'athlète sera envoyé après avoir utilisé le lien
   const proto = req.headers['x-forwarded-proto'] || 'https'
   const host =
     req.headers['x-forwarded-host'] ||
@@ -74,12 +71,7 @@ export default async function handler(req, res) {
     `${baseUrl}/onboarding`
 
   try {
-    /*
-     * ============================================================
-     * 1. CHERCHER SI L'UTILISATEUR EXISTE DÉJÀ
-     * ============================================================
-     */
-
+    // Cherche si l'utilisateur existe déjà
     let existingUser = null
     let page = 1
     const perPage = 1000
@@ -93,9 +85,7 @@ export default async function handler(req, res) {
         perPage
       })
 
-      if (error) {
-        throw error
-      }
+      if (error) throw error
 
       const users = data?.users || []
 
@@ -114,14 +104,9 @@ export default async function handler(req, res) {
       page++
     }
 
-    /*
-     * ============================================================
-     * 2. UTILISATEUR EXISTANT
-     * ============================================================
-     *
-     * On génère simplement un nouveau lien magique.
-     * AUCUN EMAIL N'EST ENVOYÉ.
-     */
+    // ============================================================
+    // UTILISATEUR EXISTANT
+    // ============================================================
 
     if (existingUser) {
       const {
@@ -136,10 +121,7 @@ export default async function handler(req, res) {
       })
 
       if (linkError) {
-        console.error(
-          'generateLink error:',
-          linkError
-        )
+        console.error('generateLink error:', linkError)
 
         return res.status(400).json({
           error: linkError.message
@@ -161,29 +143,20 @@ export default async function handler(req, res) {
         email: cleanEmail,
         action_link: actionLink,
         existing_user: true,
-        message:
-          `Lien d'accès généré : ${actionLink}`
+        message: 'Lien d’accès généré'
       })
     }
 
-    /*
-     * ============================================================
-     * 3. NOUVEL UTILISATEUR
-     * ============================================================
-     *
-     * On crée directement le compte sans envoyer d'email.
-     */
+    // ============================================================
+    // NOUVEL UTILISATEUR
+    // ============================================================
 
     const {
       data: createData,
       error: createError
     } = await supabaseAdmin.auth.admin.createUser({
       email: cleanEmail,
-
-      // Le compte est considéré comme confirmé puisque
-      // l'accès sera donné manuellement via le magic link.
       email_confirm: true,
-
       user_metadata: {
         full_name,
         coach_id,
@@ -192,10 +165,7 @@ export default async function handler(req, res) {
     })
 
     if (createError) {
-      console.error(
-        'createUser error:',
-        createError
-      )
+      console.error('createUser error:', createError)
 
       return res.status(400).json({
         error: createError.message
@@ -210,11 +180,9 @@ export default async function handler(req, res) {
       })
     }
 
-    /*
-     * ============================================================
-     * 4. CRÉER LE PROFIL
-     * ============================================================
-     */
+    // ============================================================
+    // CRÉATION DU PROFIL
+    // ============================================================
 
     const {
       error: profileError
@@ -242,11 +210,9 @@ export default async function handler(req, res) {
       )
     }
 
-    /*
-     * ============================================================
-     * 5. GÉNÉRER LE LIEN D'ACCÈS
-     * ============================================================
-     */
+    // ============================================================
+    // GÉNÉRATION DU LIEN
+    // ============================================================
 
     const {
       data: linkData,
@@ -260,10 +226,7 @@ export default async function handler(req, res) {
     })
 
     if (linkError) {
-      console.error(
-        'generateLink error:',
-        linkError
-      )
+      console.error('generateLink error:', linkError)
 
       return res.status(400).json({
         error:
@@ -283,14 +246,9 @@ export default async function handler(req, res) {
       })
     }
 
-    /*
-     * ============================================================
-     * 6. RETOURNER LE LIEN
-     * ============================================================
-     *
-     * Aucun email n'est envoyé.
-     * Le coach peut copier le lien et l'envoyer lui-même.
-     */
+    // ============================================================
+    // RETOUR AU FRONTEND
+    // ============================================================
 
     return res.status(200).json({
       success: true,
@@ -298,8 +256,7 @@ export default async function handler(req, res) {
       email: cleanEmail,
       action_link: actionLink,
       existing_user: false,
-      message:
-        `Lien d'accès généré : ${actionLink}`
+      message: 'Lien d’accès généré'
     })
 
   } catch (error) {
