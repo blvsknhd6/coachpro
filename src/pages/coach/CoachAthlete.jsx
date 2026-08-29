@@ -623,7 +623,7 @@ function ObjectifsBloc({ bloc, athlete, onSave }) {
         <div className="space-y-3">
           {obj.plan_nutritionnel && (
             <div className="text-sm font-medium text-gray-800">
-              {{'prise_de_masse':'💪 Prise de masse','maintien':'⚖️ Maintien','seche':'🔥 Sèche'}[obj.plan_nutritionnel]}
+              {{'prise_de_masse':'💪 Prise de masse','maintien':'⚖️ Maintien','recomposition':'Recomposition','seche':'🔥 Sèche'}[obj.plan_nutritionnel]}
             </div>
           )}
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">

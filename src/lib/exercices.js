@@ -9,7 +9,8 @@ export const MUSCLES = [
   'biceps',
   'triceps',
   'abdos',
-  'mollets'
+  'mollets',
+  'cardio',
 ]
 
 export const EXERCICES_PAR_MUSCLE = {
@@ -94,7 +95,8 @@ export const EXERCICES_PAR_MUSCLE = {
     'Relevé de jambes',
     'Circuit abdos',
   ],
-  mollets : ['Extensions mollets assis','Extensions mollets debout']
+  mollets : ['Extensions mollets assis','Extensions mollets debout'],
+  cardio : ['Cardio']
 }
 
 export const TEMPS_REPOS = [

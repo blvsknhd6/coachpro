@@ -118,7 +118,7 @@ export default function CoachAthleteView() {
 
   const isFemme = athlete?.genre === 'femme'
   const obj = Array.isArray(activeBloc?.objectifs_bloc) ? activeBloc?.objectifs_bloc[0] : activeBloc?.objectifs_bloc
-  const planLabel = { prise_de_masse: '💪 Prise de masse', maintien: '⚖️ Maintien', seche: '🔥 Sèche' }
+  const planLabel = { prise_de_masse: '💪 Prise de masse', maintien: '⚖️ Maintien', recomposition: 'Recomposition', seche: '🔥 Sèche' }
 
   // Feature 2 : calcul état séance côté coach
   function getSeanceStatus(seance) {
