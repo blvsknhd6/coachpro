@@ -342,7 +342,7 @@ export default function AthleteHome() {
                 <p className={`text-2xl font-bold ${accentText}`}>
                   {objectifs.kcal} <span className="text-sm font-normal text-gray-500">kcal/jour</span>
                    {objectifs.plan_nutritionnel && (
-                        <span className="ml-1 text-gray-500">
+                        <span className="ml-1 text-gray-300">
                           ({{'prise_de_masse': 'prise de masse', 'maintien': 'maintien', 'seche': 'sèche'}[objectifs.plan_nutritionnel]})
                         </span>
                       )}
@@ -354,7 +354,6 @@ export default function AthleteHome() {
                 </p>
                 {objectifs?.kcal && (
                   <div className={`mt-3 flex items-center gap-2 text-xs px-3 py-2 rounded-lg ${theme.isFemme ? 'bg-pink-50 text-pink-700' : 'bg-brand-50 text-brand-700'}`}>
-                    <span>🎯</span>
                     <span>
                       Maintien estimé : <strong>{tdeeData.tdee} kcal/j</strong>
                     </span>
