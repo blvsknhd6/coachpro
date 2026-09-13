@@ -336,11 +336,16 @@ export default function AthleteHome() {
             ) : tdeeData ? (
               <div className="bg-white border border-gray-100 rounded-xl p-4">
                 <div className="flex items-center justify-between mb-2">
-                  <p className="text-sm font-medium text-gray-700">Mon maintien estimé</p>
+                  <p className="text-sm font-medium text-gray-700">Objectif calories</p>
                   <Link to="/athlete/tracking" className={`text-xs ${accentText} font-medium`}>Mon suivi →</Link>
                 </div>
                 <p className={`text-2xl font-bold ${accentText}`}>
-                  {tdeeData.tdee} <span className="text-sm font-normal text-gray-500">kcal/jour</span>
+                  {objectifs.kcal} <span className="text-sm font-normal text-gray-500">kcal/jour</span>
+                   {objectifs.plan_nutritionnel && (
+                        <span className="ml-1 text-gray-500">
+                          ({{'prise_de_masse': 'prise de masse', 'maintien': 'maintien', 'seche': 'sèche'}[objectifs.plan_nutritionnel]})
+                        </span>
+                      )}
                 </p>
                 <p className="text-xs text-gray-400 mt-1">BMR {tdeeData.bmr} kcal · ×{tdeeData.multiplier} · {tdeeData.activityLabel}</p>
                 <p className="text-xs text-gray-300 mt-0.5">
@@ -351,12 +356,7 @@ export default function AthleteHome() {
                   <div className={`mt-3 flex items-center gap-2 text-xs px-3 py-2 rounded-lg ${theme.isFemme ? 'bg-pink-50 text-pink-700' : 'bg-brand-50 text-brand-700'}`}>
                     <span>🎯</span>
                     <span>
-                      Objectif coach : <strong>{objectifs.kcal} kcal/j</strong>
-                      {objectifs.plan_nutritionnel && (
-                        <span className="ml-1 text-gray-500">
-                          ({{'prise_de_masse': 'prise de masse', 'maintien': 'maintien', 'seche': 'sèche'}[objectifs.plan_nutritionnel]})
-                        </span>
-                      )}
+                      Maintien estimé : <strong>{tdeeData.tdee} kcal/j</strong>
                     </span>
                   </div>
                 )}
