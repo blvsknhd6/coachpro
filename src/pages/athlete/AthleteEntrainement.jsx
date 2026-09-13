@@ -4,7 +4,7 @@ import { supabase } from '../../lib/supabase'
 import { useAuth } from '../../hooks/useAuth'
 import { useTheme } from '../../hooks/useTheme'
 import Layout from '../../components/shared/Layout'
-import { findActiveSemaine } from '../../lib/semaine'
+import { findActiveSemaine, getCardioProgress } from '../../lib/semaine'
 
 export default function AthleteEntrainement() {
   const { profile } = useAuth()
@@ -61,16 +61,19 @@ export default function AthleteEntrainement() {
       supabase
         .from('seances')
         .select(`
-          id, nom, ordre,
+          id, nom, ordre, type,
           exercices(
             id,
             series_realisees(id)
           ),
-          activites_bonus(id, nom, ordre)
+          activites_bonus(id, nom, ordre),
+          cardio_realise(id)
         `)
         .eq('semaine_id', semaineId)
         .eq('exercices.series_realisees.athlete_id', profile.id)
         .eq('exercices.series_realisees.semaine_id', semaineId)
+        .eq('cardio_realise.athlete_id', profile.id)
+        .eq('cardio_realise.semaine_id', semaineId)
         .order('ordre'),
       supabase
         .from('activites_realisees')
@@ -167,14 +170,19 @@ export default function AthleteEntrainement() {
       ) : (
         <div className="space-y-3">
           {seancesNormales.map(sc => {
-            const total = sc.exercices?.length || 0
-            const done  = sc.exercices?.filter(e => (e.series_realisees?.length || 0) > 0).length || 0
-            const pct   = total > 0 ? Math.round((done / total) * 100) : 0
+            const isCardio = sc.type === 'cardio'
+            const { done, total } = isCardio
+              ? getCardioProgress(sc)
+              : {
+                  total: sc.exercices?.length || 0,
+                  done:  sc.exercices?.filter(e => (e.series_realisees?.length || 0) > 0).length || 0,
+                }
+            const pct = total > 0 ? Math.round((done / total) * 100) : 0
             return (
               <Link key={sc.id} to={`${seanceBasePath}/${sc.id}/semaine/${activeSemaine?.id}`}
                 className="bg-white border border-gray-100 rounded-xl p-4 block hover:shadow-sm transition-all group">
                 <div className="flex items-center justify-between mb-2">
-                  <p className={`font-medium text-sm text-gray-900 group-hover:${accentText}`}>{sc.nom}</p>
+                  <p className={`font-medium text-sm text-gray-900 group-hover:${accentText}`}>{isCardio && '🏃 '}{sc.nom}</p>
                   <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${pct === 100 ? 'bg-green-50 text-green-700' : pct > 0 ? 'bg-amber-50 text-amber-700' : 'bg-gray-50 text-gray-400'}`}>
                     {pct === 100 ? 'Terminé' : `${done}/${total}`}
                   </span>

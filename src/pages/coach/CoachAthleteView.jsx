@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import { useParams, Link, useNavigate } from 'react-router-dom'
 import { supabase } from '../../lib/supabase'
 import Layout from '../../components/shared/Layout'
-import { findActiveSemaine } from '../../lib/semaine'
+import { findActiveSemaine, getCardioProgress } from '../../lib/semaine'
 
 export default function CoachAthleteView() {
   const { athleteId } = useParams()
@@ -52,8 +52,10 @@ export default function CoachAthleteView() {
     setLoading(true)
     const { data } = await supabase
       .from('seances')
-      .select('*, exercices(*, series_realisees(*)), activites_bonus(*, activites_realisees(id, athlete_id, semaine_id, realisee))')
+      .select('*, exercices(*, series_realisees(*)), activites_bonus(*, activites_realisees(id, athlete_id, semaine_id, realisee)), cardio_realise(*)')
       .eq('semaine_id', semaineId)
+      .eq('cardio_realise.athlete_id', athleteId)
+      .eq('cardio_realise.semaine_id', semaineId)
       .order('ordre')
     setSeances(data || [])
     setLoading(false)
@@ -77,6 +79,14 @@ export default function CoachAthleteView() {
     for (const sc of seancesNormales) {
       text += `## ${sc.nom}\n`
       if (notesMap[sc.id]) text += `Note globale : ${notesMap[sc.id]}\n`
+      if (sc.type === 'cardio') {
+        const c = sc.cardio_realise?.[0]
+        text += c
+          ? `  ${c.activite} : ${c.duree} min · ${c.distance} km\n`
+          : `  non réalisé\n`
+        text += '\n'
+        continue
+      }
       for (const ex of (sc.exercices || []).sort((a, b) => a.ordre - b.ordre)) {
         const series = (ex.series_realisees || []).sort((a, b) => a.numero_set - b.numero_set)
         if (series.length === 0) { text += `  ${ex.nom} : non réalisé\n`; continue }
@@ -120,8 +130,14 @@ export default function CoachAthleteView() {
   const obj = Array.isArray(activeBloc?.objectifs_bloc) ? activeBloc?.objectifs_bloc[0] : activeBloc?.objectifs_bloc
   const planLabel = { prise_de_masse: '💪 Prise de masse', maintien: '⚖️ Maintien', recomposition: 'Recomposition', seche: '🔥 Sèche' }
 
-  // Feature 2 : calcul état séance côté coach
+  // Feature 2 : calcul état séance côté coach (gère aussi le cas cardio)
   function getSeanceStatus(seance) {
+    if (seance.type === 'cardio') {
+      const { done, total } = getCardioProgress(seance)
+      const pct = total > 0 ? Math.round((done / total) * 100) : 0
+      const status = done >= total && total > 0 ? 'complete' : 'not_started'
+      return { status, doneSets: done, totalSets: total, pct, isCardio: true }
+    }
     const exs = seance.exercices || []
     if (!exs.length) return { status: 'empty', doneSets: 0, totalSets: 0, pct: 0 }
     const srFiltered = exs.flatMap(ex =>
@@ -229,7 +245,7 @@ export default function CoachAthleteView() {
 function SeanceCard({ seance, semaineId, athleteId, isFemme, navigate, seanceStatus }) {
   const [open, setOpen] = useState(false)
   const [note, setNote] = useState('')
-  const { status, doneSets, totalSets, pct } = seanceStatus
+  const { status, doneSets, totalSets, pct, isCardio } = seanceStatus
 
   useEffect(() => {
     supabase.from('notes_seances').select('contenu')
@@ -243,7 +259,7 @@ function SeanceCard({ seance, semaineId, athleteId, isFemme, navigate, seanceSta
       <div className="px-5 py-4 flex items-center justify-between">
         <button onClick={() => setOpen(o => !o)} className="flex-1 text-left">
           <div className="flex items-center gap-2 flex-wrap mb-1">
-            <p className="font-medium text-sm text-gray-900">{seance.nom}</p>
+            <p className="font-medium text-sm text-gray-900">{isCardio && '🏃 '}{seance.nom}</p>
             {/* Feature 2 : badge état */}
             {status === 'complete' && (
               <span className="text-xs px-2 py-0.5 rounded-full bg-green-50 text-green-700 font-medium">✓ Terminé</span>
@@ -255,7 +271,7 @@ function SeanceCard({ seance, semaineId, athleteId, isFemme, navigate, seanceSta
               <span className="text-xs px-2 py-0.5 rounded-full bg-gray-50 text-gray-400 font-medium">Non commencé</span>
             )}
           </div>
-          <p className="text-xs text-gray-400">{doneSets}/{totalSets} sets · {pct}%</p>
+          <p className="text-xs text-gray-400">{doneSets}/{totalSets}{isCardio ? '' : ' sets'} · {pct}%</p>
           <div className={`mt-2 h-1.5 rounded-full overflow-hidden w-full max-w-48 ${
             status === 'complete' ? 'bg-green-100' : 'bg-gray-100'
           }`}>
@@ -280,48 +296,58 @@ function SeanceCard({ seance, semaineId, athleteId, isFemme, navigate, seanceSta
           {note && (
             <div className="bg-gray-50 rounded-lg px-3 py-2 text-xs text-gray-600 italic">💬 {note}</div>
           )}
-          {(seance.exercices || []).sort((a, b) => a.ordre - b.ordre).map(ex => {
-            const seriesDone = (ex.series_realisees || [])
-              .filter(s => s.athlete_id === athleteId)
-              .sort((a, b) => a.numero_set - b.numero_set)
-            const doneEx = seriesDone.filter(s => s.reps || s.charge).length
-            const totalEx = ex.sets || 0
-            const exPartial = doneEx > 0 && doneEx < totalEx
-
-            return (
-              <div key={ex.id}>
-                <div className="flex items-center justify-between mb-1">
-                  <p className="text-sm font-medium text-gray-800">{ex.nom}</p>
-                  <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
-                    doneEx >= totalEx && totalEx > 0 ? 'bg-green-50 text-green-700'
-                    : exPartial ? 'bg-amber-50 text-amber-600'
-                    : 'bg-gray-50 text-gray-400'
-                  }`}>
-                    {exPartial && '⚠ '}{doneEx}/{totalEx}
-                  </span>
-                </div>
-                <p className="text-xs text-gray-400 mb-1">{ex.muscle} · {ex.sets}×{ex.rep_range} · repos {ex.repos}</p>
-                {ex.indications && <p className="text-xs text-amber-600 mb-1">{ex.indications}</p>}
-                {seriesDone.length > 0 ? (
-                  <div className="flex flex-wrap gap-1">
-                    {seriesDone.map(s => (
-                      <span key={s.id} className={`text-xs px-2 py-0.5 rounded-md border ${isFemme ? 'bg-pink-50 border-pink-100 text-pink-700' : 'bg-brand-50 border-brand-100 text-brand-700'}`}>
-                        S{s.numero_set} : {s.charge ? `${s.charge}kg` : '—'} × {s.reps || '—'}{s.notes ? ` · ${s.notes}` : ''}
-                      </span>
-                    ))}
-                    {/* Feature 2 : sets manquants */}
-                    {Array.from({ length: Math.max(0, totalEx - seriesDone.length) }, (_, i) => (
-                      <span key={`missing-${i}`} className="text-xs px-2 py-0.5 rounded-md border border-dashed border-amber-200 text-amber-400">
-                        S{seriesDone.length + i + 1} : —
-                      </span>
-                    ))}
-                  </div>
-                ) : (
-                  <p className="text-xs text-gray-300 italic">Pas encore réalisé</p>
-                )}
+          {isCardio ? (
+            seance.cardio_realise?.[0] ? (
+              <div className="bg-sky-50 border border-sky-100 rounded-lg px-3 py-2 text-sm text-sky-700">
+                🏃 {seance.cardio_realise[0].activite} · {seance.cardio_realise[0].duree} min · {seance.cardio_realise[0].distance} km
               </div>
+            ) : (
+              <p className="text-xs text-gray-300 italic">Pas encore réalisé</p>
             )
-          })}
+          ) : (
+            (seance.exercices || []).sort((a, b) => a.ordre - b.ordre).map(ex => {
+              const seriesDone = (ex.series_realisees || [])
+                .filter(s => s.athlete_id === athleteId)
+                .sort((a, b) => a.numero_set - b.numero_set)
+              const doneEx = seriesDone.filter(s => s.reps || s.charge).length
+              const totalEx = ex.sets || 0
+              const exPartial = doneEx > 0 && doneEx < totalEx
+
+              return (
+                <div key={ex.id}>
+                  <div className="flex items-center justify-between mb-1">
+                    <p className="text-sm font-medium text-gray-800">{ex.nom}</p>
+                    <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
+                      doneEx >= totalEx && totalEx > 0 ? 'bg-green-50 text-green-700'
+                      : exPartial ? 'bg-amber-50 text-amber-600'
+                      : 'bg-gray-50 text-gray-400'
+                    }`}>
+                      {exPartial && '⚠ '}{doneEx}/{totalEx}
+                    </span>
+                  </div>
+                  <p className="text-xs text-gray-400 mb-1">{ex.muscle} · {ex.sets}×{ex.rep_range} · repos {ex.repos}</p>
+                  {ex.indications && <p className="text-xs text-amber-600 mb-1">{ex.indications}</p>}
+                  {seriesDone.length > 0 ? (
+                    <div className="flex flex-wrap gap-1">
+                      {seriesDone.map(s => (
+                        <span key={s.id} className={`text-xs px-2 py-0.5 rounded-md border ${isFemme ? 'bg-pink-50 border-pink-100 text-pink-700' : 'bg-brand-50 border-brand-100 text-brand-700'}`}>
+                          S{s.numero_set} : {s.charge ? `${s.charge}kg` : '—'} × {s.reps || '—'}{s.notes ? ` · ${s.notes}` : ''}
+                        </span>
+                      ))}
+                      {/* Feature 2 : sets manquants */}
+                      {Array.from({ length: Math.max(0, totalEx - seriesDone.length) }, (_, i) => (
+                        <span key={`missing-${i}`} className="text-xs px-2 py-0.5 rounded-md border border-dashed border-amber-200 text-amber-400">
+                          S{seriesDone.length + i + 1} : —
+                        </span>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-xs text-gray-300 italic">Pas encore réalisé</p>
+                  )}
+                </div>
+              )
+            })
+          )}
         </div>
       )}
     </div>

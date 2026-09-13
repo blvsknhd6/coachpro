@@ -7,6 +7,7 @@ import Layout from '../../components/shared/Layout'
 
 const RPE_VALUES = [6, 6.5, 7, 7.5, 8, 8.5, 9, 9.5, 10]
 const LIFT_LABELS = { squat: '🏋️ Squat', bench: '💪 Bench', deadlift: '⚡ Deadlift' }
+const CARDIO_ACTIVITES = ['Course à pied', 'Vélo', 'Rameur', 'Natation', 'Elliptique', 'Corde à sauter', 'Marche', 'Autre']
 
 function epley1RM(weight, reps, rpe = null) {
   if (!weight || !reps || reps <= 0) return null
@@ -44,6 +45,11 @@ export default function AthleteSeance() {
   const [powerMaxes, setPowerMaxes]             = useState({})
   const [showCalc, setShowCalc]                 = useState(null)
 
+  // ── Cardio ──────────────────────────────────────────────────────────
+  const [cardioForm, setCardioForm]     = useState({ activite: '', duree: '', distance: '' })
+  const [cardioSaving, setCardioSaving] = useState(false)
+  const [cardioSaved, setCardioSaved]   = useState(false)
+
   useEffect(() => { if (profile) fetchAll() }, [seanceId, semaineId, profile])
 
   async function fetchAll() {
@@ -67,6 +73,24 @@ export default function AthleteSeance() {
     setShowChargeIndicative(bloc?.show_charge_indicative || false)
     setShowRpe(bloc?.show_rpe || false)
     setIsPowerlifting(bloc?.powerlifting || false)
+
+    // Séance cardio : interface dédiée, on court-circuite toute la logique muscu
+    if (sc?.type === 'cardio') {
+      const { data: cardioData } = await supabase
+        .from('cardio_realise')
+        .select('*')
+        .eq('seance_id', seanceId)
+        .eq('semaine_id', semaineId)
+        .eq('athlete_id', athId)
+        .single()
+      setCardioForm(cardioData ? {
+        activite: cardioData.activite || '',
+        duree:    cardioData.duree    ?? '',
+        distance: cardioData.distance ?? '',
+      } : { activite: '', duree: '', distance: '' })
+      setLoading(false)
+      return
+    }
 
     // Feature 3 : récupérer le poids de l'athlète (dernier poids connu)
     const { data: poidsData } = await supabase
@@ -181,6 +205,26 @@ export default function AthleteSeance() {
     setSeriesPrev(mapByOrdre)
   }
 
+  // ── Cardio : sauvegarde automatique dès que les 3 champs sont remplis ──
+  async function saveCardio(formValues) {
+    if (!targetAthleteId) return
+    const isComplete = formValues.activite && formValues.duree !== '' && formValues.distance !== ''
+    if (!isComplete) return
+    setCardioSaving(true)
+    await supabase.from('cardio_realise').upsert({
+      seance_id: seanceId,
+      semaine_id: semaineId,
+      athlete_id: targetAthleteId,
+      activite: formValues.activite,
+      duree: Number(formValues.duree),
+      distance: Number(formValues.distance),
+      date_realisation: new Date().toISOString(),
+    }, { onConflict: 'seance_id,semaine_id,athlete_id' })
+    setCardioSaving(false)
+    setCardioSaved(true)
+    setTimeout(() => setCardioSaved(false), 2000)
+  }
+
   async function saveNoteSeance(contenu) {
     if (!targetAthleteId) return
     await supabase.from('notes_seances').upsert({
@@ -251,6 +295,75 @@ export default function AthleteSeance() {
   const goBack = () => { if (window.history.length > 1) navigate(-1); else navigate('/athlete') }
 
   if (loading) return <Layout><p className="text-sm text-gray-400">Chargement…</p></Layout>
+
+  // ── Vue Cardio ────────────────────────────────────────────────────
+  if (seance?.type === 'cardio') {
+    const isComplete = !!(cardioForm.activite && cardioForm.duree !== '' && cardioForm.distance !== '')
+    return (
+      <Layout>
+        <div className="flex items-center gap-3 mb-4 flex-wrap">
+          <button onClick={goBack} className="text-sm text-gray-400 hover:text-gray-700">← Retour</button>
+          <h1 className="text-xl font-semibold">{seance?.nom}</h1>
+          {isCoachEditing && <span className="text-xs bg-amber-100 text-amber-700 px-2 py-1 rounded-full font-medium">Mode édition coach</span>}
+          {isComplete && (
+            <span className="text-xs bg-green-50 border border-green-200 text-green-700 px-2 py-1 rounded-full font-medium">
+              ✓ Terminé
+            </span>
+          )}
+        </div>
+
+        <div className="bg-white border border-gray-100 rounded-xl p-5 space-y-4 max-w-md">
+          <p className="text-xs text-sky-600 bg-sky-50 border border-sky-100 rounded-lg px-3 py-2 inline-block">
+            🏃 Séance cardio
+          </p>
+
+          <div>
+            <label className="block text-xs font-medium text-gray-500 mb-1">Activité</label>
+            <select
+              value={cardioForm.activite}
+              onChange={e => {
+                const updated = { ...cardioForm, activite: e.target.value }
+                setCardioForm(updated)
+                saveCardio(updated)
+              }}
+              className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400 bg-white">
+              <option value="">— Choisir —</option>
+              {CARDIO_ACTIVITES.map(a => <option key={a} value={a}>{a}</option>)}
+            </select>
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-xs font-medium text-gray-500 mb-1">Durée (minutes)</label>
+              <input type="number" inputMode="numeric" value={cardioForm.duree}
+                onChange={e => setCardioForm(f => ({ ...f, duree: e.target.value }))}
+                onBlur={() => saveCardio(cardioForm)}
+                placeholder="45"
+                className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400" />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-500 mb-1">Distance (km)</label>
+              <input type="number" inputMode="decimal" step="0.1" value={cardioForm.distance}
+                onChange={e => setCardioForm(f => ({ ...f, distance: e.target.value }))}
+                onBlur={() => saveCardio(cardioForm)}
+                placeholder="8.5"
+                className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400" />
+            </div>
+          </div>
+
+          <div>
+            {cardioSaving && <p className="text-xs text-gray-400">Enregistrement…</p>}
+            {!cardioSaving && cardioSaved && <p className="text-xs text-green-500">✓ Enregistré</p>}
+            {!cardioSaving && !isComplete && (
+              <p className="text-xs text-gray-400">
+                Renseigne l'activité, la durée et la distance — la séance sera automatiquement enregistrée comme réalisée.
+              </p>
+            )}
+          </div>
+        </div>
+      </Layout>
+    )
+  }
 
   // ── Vue Bonus ───────────────────────────────────────────────────────
   if (seance?.nom === 'Bonus') {

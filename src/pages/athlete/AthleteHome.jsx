@@ -6,7 +6,7 @@ import { useTheme } from '../../hooks/useTheme'
 import { usePreferences } from '../../hooks/usePreferences'
 import Layout from '../../components/shared/Layout'
 import WidgetConfig from '../../components/shared/WidgetConfig'
-import { findActiveSemaine } from '../../lib/semaine'
+import { findActiveSemaine, getCardioProgress } from '../../lib/semaine'
 import { metricColor, computeAverages } from '../../lib/tracking'
 import { calcTDEE } from '../../lib/tdee'
 import { fetchPeriodLogs } from '../../lib/cycleService'
@@ -72,10 +72,16 @@ export default function AthleteHome() {
 
     const { data: sc } = await supabase
       .from('seances')
-      .select('id, nom, ordre, exercices(id, sets, series_realisees(id, reps, charge))')
+      .select(`
+        id, nom, ordre, type,
+        exercices(id, sets, series_realisees(id, reps, charge)),
+        cardio_realise(id)
+      `)
       .eq('semaine_id', activeSem.id)
       .eq('exercices.series_realisees.athlete_id', profile.id)
       .eq('exercices.series_realisees.semaine_id', activeSem.id)
+      .eq('cardio_realise.athlete_id', profile.id)
+      .eq('cardio_realise.semaine_id', activeSem.id)
       .order('ordre')
     setSeances(sc || [])
 
@@ -372,9 +378,14 @@ export default function AthleteHome() {
               </div>
               <div className="space-y-1">
                 {seances.filter(s => s.nom !== 'Bonus').map(sc => {
-                  const totalSets = sc.exercices?.reduce((acc, e) => acc + (e.sets || 0), 0) || 0
-                  const doneSets  = sc.exercices?.reduce((acc, e) =>
-                    acc + (e.series_realisees?.filter(sr => sr.reps || sr.charge).length || 0), 0) || 0
+                  const isCardio = sc.type === 'cardio'
+                  const { done: doneSets, total: totalSets } = isCardio
+                    ? getCardioProgress(sc)
+                    : {
+                        total: sc.exercices?.reduce((acc, e) => acc + (e.sets || 0), 0) || 0,
+                        done:  sc.exercices?.reduce((acc, e) =>
+                          acc + (e.series_realisees?.filter(sr => sr.reps || sr.charge).length || 0), 0) || 0,
+                      }
                   const complete = doneSets >= totalSets && totalSets > 0
                   const partial  = doneSets > 0 && doneSets < totalSets
                   return (
@@ -383,7 +394,7 @@ export default function AthleteHome() {
                         complete ? 'bg-green-50' : partial ? 'bg-amber-50' : 'hover:bg-gray-50'
                       }`}>
                       <span className={`text-sm ${complete ? 'text-green-700' : partial ? 'text-amber-700' : 'text-gray-700'}`}>
-                        {sc.nom}
+                        {isCardio && '🏃 '}{sc.nom}
                       </span>
                       <span className={`text-xs font-medium ${complete ? 'text-green-600' : partial ? 'text-amber-500' : 'text-gray-400'}`}>
                         {complete ? 'Terminé ✓' : partial ? `${doneSets}/${totalSets} ⚠` : `0/${totalSets}`}

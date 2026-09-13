@@ -3,7 +3,7 @@ import { Link, useNavigate } from 'react-router-dom'
 import { supabase } from '../../lib/supabase'
 import { useAuth } from '../../hooks/useAuth'
 import Layout from '../../components/shared/Layout'
-import { findActiveSemaine } from '../../lib/semaine'
+import { findActiveSemaine, getCardioProgress } from '../../lib/semaine'
 
 export default function CoachMyTraining() {
   const { profile } = useAuth()
@@ -59,7 +59,7 @@ export default function CoachMyTraining() {
     const { data, error } = await supabase
       .from('seances')
       .select(`
-        id, nom, ordre,
+        id, nom, ordre, type,
         exercices(
           id,
           series_realisees(id)
@@ -67,11 +67,14 @@ export default function CoachMyTraining() {
         activites_bonus(
           id, nom, ordre,
           activites_realisees(id)
-        )
+        ),
+        cardio_realise(id)
       `)
       .eq('semaine_id', semaineId)
       .eq('exercices.series_realisees.athlete_id', profile.id)
       .eq('activites_bonus.activites_realisees.athlete_id', profile.id)
+      .eq('cardio_realise.athlete_id', profile.id)
+      .eq('cardio_realise.semaine_id', semaineId)
       .order('ordre')
 
     if (error) { console.error('fetchSeances:', error); setLoading(false); return }
@@ -199,16 +202,23 @@ export default function CoachMyTraining() {
       ) : (
         <div className="grid gap-3 sm:grid-cols-2">
           {seances.filter(s => s.nom !== 'Bonus').map(seance => {
-            const totalEx = seance.exercices?.length || 0
-            const doneEx  = seance.exercices?.filter(e => (e.series_realisees?.length || 0) > 0).length || 0
+            const isCardio = seance.type === 'cardio'
+            const { done: doneEx, total: totalEx } = isCardio
+              ? getCardioProgress(seance)
+              : {
+                  total: seance.exercices?.length || 0,
+                  done:  seance.exercices?.filter(e => (e.series_realisees?.length || 0) > 0).length || 0,
+                }
             const pct = totalEx > 0 ? Math.round((doneEx / totalEx) * 100) : 0
             return (
               <Link
                 key={seance.id}
                 to={`/coach/my-training/seance/${seance.id}/semaine/${activeSemaine?.id}`}
                 className="bg-white border border-gray-100 rounded-xl p-5 hover:border-brand-200 hover:shadow-sm transition-all group">
-                <p className="font-medium text-sm text-gray-900 group-hover:text-brand-700 mb-3">{seance.nom}</p>
-                <p className="text-xs text-gray-400 mb-2">{totalEx} exercice{totalEx !== 1 ? 's' : ''}</p>
+                <p className="font-medium text-sm text-gray-900 group-hover:text-brand-700 mb-3">{isCardio && '🏃 '}{seance.nom}</p>
+                <p className="text-xs text-gray-400 mb-2">
+                  {isCardio ? 'Séance cardio' : `${totalEx} exercice${totalEx !== 1 ? 's' : ''}`}
+                </p>
                 <div className="h-1.5 bg-gray-100 rounded-full overflow-hidden">
                   <div className="h-full bg-brand-500 rounded-full transition-all" style={{ width: `${pct}%` }} />
                 </div>

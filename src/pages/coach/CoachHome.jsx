@@ -6,7 +6,7 @@ import { useTheme } from '../../hooks/useTheme'
 import { usePreferences } from '../../hooks/usePreferences'
 import Layout from '../../components/shared/Layout'
 import WidgetConfig from '../../components/shared/WidgetConfig'
-import { findActiveSemaine } from '../../lib/semaine'
+import { findActiveSemaine, getCardioProgress } from '../../lib/semaine'
 import { metricColor, computeAverages } from '../../lib/tracking'
 
 // ── Utilitaire base64 ─────────────────────────────────────────────────
@@ -358,8 +358,16 @@ export default function CoachHome() {
       const activeSem = await findActiveSemaine(semaines, athleteId)
       setActiveSemaine(activeSem)
       const { data: sc } = await supabase
-        .from('seances').select('id, nom, ordre, exercices(id, series_realisees(id))')
-        .eq('semaine_id', activeSem.id).order('ordre')
+        .from('seances')
+        .select(`
+          id, nom, ordre, type,
+          exercices(id, series_realisees(id)),
+          cardio_realise(id)
+        `)
+        .eq('semaine_id', activeSem.id)
+        .eq('cardio_realise.athlete_id', athleteId)
+        .eq('cardio_realise.semaine_id', activeSem.id)
+        .order('ordre')
       setSeances(sc || [])
       const seancesNormales = (sc || []).filter(s => s.nom !== 'Bonus' && (s.exercices?.length || 0) > 0)
       const pasCommencee    = seancesNormales.find(s => s.exercices.filter(e => (e.series_realisees?.length || 0) > 0).length === 0)
@@ -777,13 +785,18 @@ export default function CoachHome() {
               </div>
               <div className="space-y-1">
                 {seances.filter(s => s.nom !== 'Bonus').map(sc => {
-                  const total    = sc.exercices?.length || 0
-                  const done     = sc.exercices?.filter(e => (e.series_realisees?.length || 0) > 0).length || 0
+                  const isCardio = sc.type === 'cardio'
+                  const { done, total } = isCardio
+                    ? getCardioProgress(sc)
+                    : {
+                        total: sc.exercices?.length || 0,
+                        done:  sc.exercices?.filter(e => (e.series_realisees?.length || 0) > 0).length || 0,
+                      }
                   const complete = done >= total && total > 0
                   return (
                     <Link key={sc.id} to={`/coach/my-training/seance/${sc.id}/semaine/${activeSemaine?.id}`}
                       className={`flex items-center justify-between py-1.5 px-2 rounded-lg ${complete ? 'bg-green-50' : 'hover:bg-gray-50'}`}>
-                      <span className={`text-sm ${complete ? 'text-green-700' : 'text-gray-700'}`}>{sc.nom}</span>
+                      <span className={`text-sm ${complete ? 'text-green-700' : 'text-gray-700'}`}>{isCardio && '🏃 '}{sc.nom}</span>
                       <span className={`text-xs ${complete ? 'text-green-600 font-medium' : 'text-gray-400'}`}>
                         {complete ? 'Terminé' : `${done}/${total}`}
                       </span>

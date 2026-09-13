@@ -89,3 +89,18 @@ export async function findActiveSemaine(semaines, athleteId) {
   }
   return derniere
 }
+
+/**
+ * Progression d'une séance cardio : la séance compte comme 1 "unité" à réaliser
+ * (activité + durée + distance renseignées = fait). Pas d'état "partiel" possible.
+ *
+ * `seance.cardio_realise` doit être le tableau retourné par une requête Supabase
+ * jointe et filtrée sur (athlete_id, semaine_id) — au plus un élément grâce à la
+ * contrainte unique(seance_id, semaine_id, athlete_id).
+ *
+ * @returns {{ done: 0|1, total: 1 }}
+ */
+export function getCardioProgress(seance) {
+  const done = (seance?.cardio_realise?.length || 0) > 0 ? 1 : 0
+  return { done, total: 1 }
+}
