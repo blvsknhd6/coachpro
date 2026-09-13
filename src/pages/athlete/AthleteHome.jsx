@@ -342,7 +342,7 @@ export default function AthleteHome() {
                 <p className={`text-2xl font-bold ${accentText}`}>
                   {objectifs.kcal} <span className="text-sm font-normal text-gray-500">kcal/jour</span>
                    {objectifs.plan_nutritionnel && (
-                        <span className="ml-1 text-gray-300">
+                        <span className="ml-1 text-sm text-gray-700">
                           ({{'prise_de_masse': 'prise de masse', 'maintien': 'maintien', 'seche': 'sèche'}[objectifs.plan_nutritionnel]})
                         </span>
                       )}
