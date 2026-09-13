@@ -368,7 +368,6 @@ export default function AthleteSeance() {
                 className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400" />
             </div>
           </div>
-          </div>
 
           {/* NOTE DE SÉANCE */}
           <div className="bg-white border border-gray-100 rounded-xl p-4">
