@@ -76,21 +76,39 @@ export default function AthleteSeance() {
 
     // Séance cardio : interface dédiée, on court-circuite toute la logique muscu
     if (sc?.type === 'cardio') {
-      const { data: cardioData } = await supabase
+      const [{ data: cardioData }, { data: noteData }] = await Promise.all([
+      supabase
         .from('cardio_realise')
         .select('*')
+       .eq('seance_id', seanceId)
+       .eq('semaine_id', semaineId)
+        .eq('athlete_id', athId)
+        .single(),
+
+      supabase
+        .from('notes_seances')
+        .select('contenu')
+        .eq('athlete_id', athId)
         .eq('seance_id', seanceId)
         .eq('semaine_id', semaineId)
-        .eq('athlete_id', athId)
         .single()
-      setCardioForm(cardioData ? {
-        activite: cardioData.activite || '',
-        duree:    cardioData.duree    ?? '',
-        distance: cardioData.distance ?? '',
-      } : { activite: '', duree: '', distance: '' })
-      setLoading(false)
-      return
-    }
+    ])
+
+    setCardioForm(cardioData ? {
+      activite: cardioData.activite || '',
+      duree: cardioData.duree ?? '',
+      distance: cardioData.distance ?? '',
+    } : {
+      activite: '',
+      duree: '',
+      distance: ''
+    })
+
+    setNoteSeance(noteData?.contenu || '')
+
+    setLoading(false)
+    return
+  }
 
     // Feature 3 : récupérer le poids de l'athlète (dernier poids connu)
     const { data: poidsData } = await supabase
@@ -208,7 +226,7 @@ export default function AthleteSeance() {
   // ── Cardio : sauvegarde automatique dès que les 3 champs sont remplis ──
   async function saveCardio(formValues) {
     if (!targetAthleteId) return
-    const isComplete = formValues.activite && formValues.duree !== '' && formValues.distance !== ''
+    const isComplete = !!(cardioForm.duree !== '' || cardioForm.distance !== '' || noteSeance.trim() !== '')    
     if (!isComplete) return
     setCardioSaving(true)
     await supabase.from('cardio_realise').upsert({
@@ -349,6 +367,33 @@ export default function AthleteSeance() {
                 placeholder="8.5"
                 className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400" />
             </div>
+          </div>
+          </div>
+
+          {/* NOTE DE SÉANCE */}
+          <div className="bg-white border border-gray-100 rounded-xl p-4">
+            <p className="text-xs font-medium text-gray-500 mb-2">
+              📝 Note générale de séance
+            </p>
+
+            <textarea
+              value={noteSeance}
+              onChange={e => setNoteSeance(e.target.value)}
+              onBlur={() => saveNoteSeance(e.target.value)}
+              placeholder="Comment s'est passée la séance ? Fatigue, ressenti, observations…"
+              rows={3}
+              className={`w-full border border-gray-100 rounded-lg px-3 py-2.5 text-sm focus:outline-none bg-gray-50 focus:bg-white resize-none ${
+                theme.isFemme
+                  ? 'focus:ring-2 focus:ring-pink-300'
+                  : 'focus:ring-2 focus:ring-brand-400'
+              }`}
+            />
+
+            {noteSaved && (
+              <p className="text-xs text-green-500 mt-1">
+                ✓ Note enregistrée
+              </p>
+            )}
           </div>
 
           <div>
