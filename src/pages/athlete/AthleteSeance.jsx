@@ -7,7 +7,7 @@ import Layout from '../../components/shared/Layout'
 
 const RPE_VALUES = [6, 6.5, 7, 7.5, 8, 8.5, 9, 9.5, 10]
 const LIFT_LABELS = { squat: '🏋️ Squat', bench: '💪 Bench', deadlift: '⚡ Deadlift' }
-const CARDIO_ACTIVITES = ['Course à pied', 'Vélo', 'Rameur', 'Natation', 'Elliptique', 'Corde à sauter', 'Marche', 'Autre']
+const CARDIO_ACTIVITES = ['Course à pied', 'Vélo', 'Rameur', 'Natation', 'Elliptique', 'Corde à sauter', 'Marche Inclinée', 'Marche', 'Autre']
 
 function epley1RM(weight, reps, rpe = null) {
   if (!weight || !reps || reps <= 0) return null
@@ -316,18 +316,20 @@ export default function AthleteSeance() {
   }
 
   // ── Cardio : sauvegarde dès qu'au moins une information est renseignée
+  // Une note seule suffit à valider la séance cardio.
   async function saveCardio(formValues) {
     if (!targetAthleteId) return
 
     const hasInfo =
       formValues.duree !== '' ||
-      formValues.distance !== ''
+      formValues.distance !== '' ||
+      noteSeance.trim() !== ''
 
     if (!hasInfo) return
 
     setCardioSaving(true)
 
-    await supabase
+    const { error } = await supabase
       .from('cardio_realise')
       .upsert({
         seance_id: seanceId,
@@ -342,26 +344,61 @@ export default function AthleteSeance() {
       })
 
     setCardioSaving(false)
-    setCardioSaved(true)
-    setTimeout(() => setCardioSaved(false), 2000)
+
+    if (!error) {
+      setCardioSaved(true)
+      setTimeout(() => setCardioSaved(false), 2000)
+    }
   }
 
   async function saveNoteSeance(contenu) {
     if (!targetAthleteId) return
 
-    await supabase
+    const cleanNote = contenu.trim()
+
+    const { error: noteError } = await supabase
       .from('notes_seances')
       .upsert({
         athlete_id: targetAthleteId,
         seance_id: seanceId,
         semaine_id: semaineId,
-        contenu: contenu.trim() || null,
+        contenu: cleanNote || null,
       }, {
         onConflict: 'athlete_id,seance_id,semaine_id'
       })
 
-    setNoteSaved(true)
-    setTimeout(() => setNoteSaved(false), 2000)
+    // Pour une séance cardio, une note seule valide la séance.
+    // On crée donc aussi cardio_realise afin que les jauges 1/1
+    // de l'accueil et de la vue coach puissent la détecter.
+    if (seance?.type === 'cardio' && cleanNote) {
+      const { error: cardioError } = await supabase
+        .from('cardio_realise')
+        .upsert({
+          seance_id: seanceId,
+          semaine_id: semaineId,
+          athlete_id: targetAthleteId,
+          activite: cardioForm.activite || null,
+          duree: cardioForm.duree !== ''
+            ? Number(cardioForm.duree)
+            : null,
+          distance: cardioForm.distance !== ''
+            ? Number(cardioForm.distance)
+            : null,
+          date_realisation: new Date().toISOString(),
+        }, {
+          onConflict: 'seance_id,semaine_id,athlete_id'
+        })
+
+      if (!cardioError) {
+        setCardioSaved(true)
+        setTimeout(() => setCardioSaved(false), 2000)
+      }
+    }
+
+    if (!noteError) {
+      setNoteSaved(true)
+      setTimeout(() => setNoteSaved(false), 2000)
+    }
   }
 
   async function addSerie(exerciceId, numeroSet) {

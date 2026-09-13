@@ -24,8 +24,13 @@ async function isSemaineComplete(semaineId, athleteId, existingSr = null) {
 
   // Réutiliser les sr déjà fetchés si possible
   let srFiltered
+
   if (existingSr) {
-    srFiltered = existingSr.filter(s => s.semaine_id === semaineId && exoIds.has(s.exercice_id))
+    srFiltered = existingSr.filter(
+      s =>
+        s.semaine_id === semaineId &&
+        exoIds.has(s.exercice_id)
+    )
   } else {
     const { data } = await supabase
       .from('series_realisees')
@@ -33,23 +38,24 @@ async function isSemaineComplete(semaineId, athleteId, existingSr = null) {
       .eq('athlete_id', athleteId)
       .eq('semaine_id', semaineId)
       .in('exercice_id', [...exoIds])
+
     srFiltered = data || []
   }
 
-  const exosRealises = new Set(srFiltered.map(s => s.exercice_id))
+  const exosRealises = new Set(
+    srFiltered.map(s => s.exercice_id)
+  )
+
   return exosRealises.size >= exercices.length
 }
 
 /**
  * Trouve la semaine active pour un athlète.
- * Version batch : une seule requête series_realisees pour toutes les semaines,
- * puis traitement côté JS pour éviter les boucles séquentielles.
  *
  * Logique :
- * - On cherche la dernière semaine ayant de l'activité (en partant de la fin).
- * - Si cette semaine est entièrement complétée (tous les exercices ont au moins une série),
- *   on passe à la semaine suivante.
- * - Si la semaine est commencée mais pas terminée, on reste dessus.
+ * - On cherche la dernière semaine ayant de l'activité.
+ * - Si cette semaine est entièrement complétée, on passe à la suivante.
+ * - Si elle est commencée mais pas terminée, on reste dessus.
  * - Si aucune activité, on retourne la semaine 1.
  */
 export async function findActiveSemaine(semaines, athleteId) {
@@ -66,11 +72,14 @@ export async function findActiveSemaine(semaines, athleteId) {
 
   if (!sr?.length) return semaines[0]
 
-  const semainesAvecActivite = new Set(sr.map(s => s.semaine_id))
+  const semainesAvecActivite = new Set(
+    sr.map(s => s.semaine_id)
+  )
 
   // Trouver la dernière semaine avec activité en partant de la fin
   let derniere = null
   let derniereIdx = -1
+
   for (let i = semaines.length - 1; i >= 0; i--) {
     if (semainesAvecActivite.has(semaines[i].id)) {
       derniere = semaines[i]
@@ -82,25 +91,36 @@ export async function findActiveSemaine(semaines, athleteId) {
   if (!derniere) return semaines[0]
 
   // Vérifier si cette semaine est complète en réutilisant les sr déjà fetchés
-  const complete = await isSemaineComplete(derniere.id, athleteId, sr)
+  const complete = await isSemaineComplete(
+    derniere.id,
+    athleteId,
+    sr
+  )
 
   if (complete && semaines[derniereIdx + 1]) {
     return semaines[derniereIdx + 1]
   }
+
   return derniere
 }
 
 /**
- * Progression d'une séance cardio : la séance compte comme 1 "unité" à réaliser
- * (activité + durée + distance renseignées = fait). Pas d'état "partiel" possible.
+ * Progression d'une séance cardio.
  *
- * `seance.cardio_realise` doit être le tableau retourné par une requête Supabase
- * jointe et filtrée sur (athlete_id, semaine_id) — au plus un élément grâce à la
- * contrainte unique(seance_id, semaine_id, athlete_id).
+ * Une séance cardio = 1 unité.
+ * L'enregistrement cardio_realise indique que la séance est réalisée.
  *
- * @returns {{ done: 0|1, total: 1 }}
+ * Une note seule crée maintenant cet enregistrement dans AthleteSeance.jsx,
+ * donc une séance avec uniquement une note sera bien comptée comme 1/1.
  */
 export function getCardioProgress(seance) {
-  const done = (seance?.cardio_realise?.length || 0) > 0 ? 1 : 0
-  return { done, total: 1 }
+  const done =
+    (seance?.cardio_realise?.length || 0) > 0
+      ? 1
+      : 0
+
+  return {
+    done,
+    total: 1
+  }
 }
