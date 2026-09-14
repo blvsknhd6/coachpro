@@ -3,6 +3,17 @@ import { supabase } from '../../lib/supabase'
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts'
 import { metricColor } from '../../lib/tracking'
 
+function today() { return new Date().toISOString().split('T')[0] }
+
+function emptyAddForm() {
+  return {
+    date: today(),
+    sport_fait: false,
+    kcal: '', proteines: '', glucides: '', lipides: '',
+    sommeil: '', pas_journaliers: '', stress: '', poids: '',
+  }
+}
+
 export default function RecapTracking({ athleteId, blocId, coachMode = false }) {
   const [data, setData]             = useState([])
   const [objectifs, setObjectifs]   = useState(null)
@@ -12,6 +23,12 @@ export default function RecapTracking({ athleteId, blocId, coachMode = false }) 
   const [editingEntry, setEditingEntry] = useState(null)
   const [editForm, setEditForm]         = useState({})
   const [saving, setSaving]             = useState(false)
+
+  // Ajout manuel d'une entrée (coach)
+  const [showAddEntry, setShowAddEntry] = useState(false)
+  const [addForm, setAddForm]           = useState(emptyAddForm())
+  const [addSaving, setAddSaving]       = useState(false)
+  const [addError, setAddError]         = useState('')
 
   useEffect(() => { fetchData() }, [blocId])
 
@@ -172,8 +189,60 @@ export default function RecapTracking({ athleteId, blocId, coachMode = false }) 
     setSaving(false)
   }
 
+  // ── Ajout manuel d'une entrée journalière (coach) ─────────────────
+  function openAddEntry() {
+    setAddForm(emptyAddForm())
+    setAddError('')
+    setShowAddEntry(true)
+  }
+
+  // Si la date choisie correspond à une entrée existante, on pré-remplit
+  // avec ses valeurs pour éviter d'écraser des données sans le voir.
+  function handleAddDateChange(dateVal) {
+    const existing = data.find(d => d.date === dateVal)
+    setAddForm(existing ? {
+      date:            dateVal,
+      sport_fait:      existing.sport_fait      || false,
+      kcal:            existing.kcal            ?? '',
+      proteines:       existing.proteines       ?? '',
+      glucides:        existing.glucides        ?? '',
+      lipides:         existing.lipides         ?? '',
+      sommeil:         existing.sommeil         ?? '',
+      pas_journaliers: existing.pas_journaliers ?? '',
+      stress:          existing.stress          ?? '',
+      poids:           existing.poids           ?? '',
+    } : { ...emptyAddForm(), date: dateVal })
+  }
+
+  async function saveNewEntry() {
+    if (!addForm.date) { setAddError('La date est requise.'); return }
+    setAddSaving(true)
+    setAddError('')
+    const { error } = await supabase.from('data_tracking').upsert({
+      athlete_id:      athleteId,
+      bloc_id:         blocId,
+      date:            addForm.date,
+      sport_fait:      addForm.sport_fait,
+      kcal:            addForm.kcal            || null,
+      proteines:       addForm.proteines        || null,
+      glucides:        addForm.glucides         || null,
+      lipides:         addForm.lipides          || null,
+      sommeil:         addForm.sommeil          || null,
+      pas_journaliers: addForm.pas_journaliers  || null,
+      stress:          addForm.stress           || null,
+      poids:           addForm.poids            || null,
+    }, { onConflict: 'athlete_id,date' })
+
+    if (error) { setAddError(error.message); setAddSaving(false); return }
+
+    setShowAddEntry(false)
+    await fetchData()
+    setAddSaving(false)
+  }
+
   const bilans    = bilanSemaines()
   const poidsData = data.filter(d => d.poids).map(d => ({ date: d.date, poids: d.poids }))
+  const addDateExists = data.some(d => d.date === addForm.date)
 
   // Couleur d'une cellule : utilise les objectifs en vigueur à la date de la semaine
   function cc(value, key, midDate) {
@@ -239,6 +308,64 @@ export default function RecapTracking({ athleteId, blocId, coachMode = false }) 
                 {saving ? 'Enregistrement…' : 'Enregistrer'}
               </button>
               <button onClick={() => setEditingEntry(null)}
+                className="flex-1 border border-gray-200 rounded-lg py-2 text-sm text-gray-600">Annuler</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showAddEntry && (
+        <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl p-6 w-full max-w-md shadow-xl">
+            <h3 className="text-base font-semibold mb-1">Ajouter une entrée</h3>
+            <p className="text-xs text-gray-400 mb-4">Renseigne les données pour une date — les champs vides resteront vides.</p>
+
+            <div className="mb-3">
+              <label className="text-xs text-gray-500">Date</label>
+              <input type="date" value={addForm.date} max={today()}
+                onChange={e => handleAddDateChange(e.target.value)}
+                className="mt-0.5 w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400"
+              />
+              {addDateExists && (
+                <p className="text-xs text-amber-600 mt-1">
+                  ⚠️ Une entrée existe déjà pour cette date — elle sera mise à jour avec les valeurs ci-dessous.
+                </p>
+              )}
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              {[
+                ['kcal','Kcal'], ['proteines','Protéines (g)'], ['glucides','Glucides (g)'],
+                ['lipides','Lipides (g)'], ['sommeil','Sommeil (h)'], ['pas_journaliers','Pas'],
+                ['stress','Stress /10'], ['poids','Poids (kg)'],
+              ].map(([key, label]) => (
+                <div key={key}>
+                  <label className="text-xs text-gray-500">{label}</label>
+                  <input type="number" value={addForm[key] || ''}
+                    onChange={e => setAddForm(f => ({ ...f, [key]: e.target.value }))}
+                    className="mt-0.5 w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400"
+                  />
+                </div>
+              ))}
+              <div className="col-span-2">
+                <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
+                  <input type="checkbox" checked={addForm.sport_fait || false}
+                    onChange={e => setAddForm(f => ({ ...f, sport_fait: e.target.checked }))}
+                    className="rounded"
+                  />
+                  Sport fait ce jour
+                </label>
+              </div>
+            </div>
+
+            {addError && <p className="text-xs text-red-500 mt-3">{addError}</p>}
+
+            <div className="flex gap-2 mt-4">
+              <button onClick={saveNewEntry} disabled={addSaving}
+                className="flex-1 bg-brand-600 text-white rounded-lg py-2 text-sm font-medium hover:bg-brand-700 disabled:opacity-50">
+                {addSaving ? 'Enregistrement…' : 'Enregistrer'}
+              </button>
+              <button onClick={() => setShowAddEntry(false)}
                 className="flex-1 border border-gray-200 rounded-lg py-2 text-sm text-gray-600">Annuler</button>
             </div>
           </div>
@@ -341,55 +468,67 @@ export default function RecapTracking({ athleteId, blocId, coachMode = false }) 
             </div>
           )}
 
-          {/* Entrées journalières modifiables (mode coach) */}
-          {coachMode && data.length > 0 && (
+          {/* Entrées journalières modifiables + ajout manuel (mode coach) */}
+          {coachMode && (
             <div className="bg-white border border-gray-100 rounded-xl overflow-hidden">
-              <div className="px-4 py-3 border-b border-gray-50 flex items-center justify-between">
+              <div className="px-4 py-3 border-b border-gray-50 flex items-center justify-between gap-3">
                 <h4 className="text-sm font-medium text-gray-700">Entrées journalières</h4>
-                <span className="text-xs text-gray-400">Cliquez sur une ligne pour modifier</span>
+                <div className="flex items-center gap-3">
+                  {data.length > 0 && (
+                    <span className="text-xs text-gray-400 hidden sm:inline">Cliquez sur une ligne pour modifier</span>
+                  )}
+                  <button onClick={openAddEntry}
+                    className="text-xs text-brand-600 hover:text-brand-800 font-medium border border-brand-200 rounded-lg px-2.5 py-1.5 hover:bg-brand-50 transition-colors flex-shrink-0">
+                    + Ajouter une entrée
+                  </button>
+                </div>
               </div>
-              <div className="overflow-x-auto">
-                <table className="w-full text-xs">
-                  <thead>
-                    <tr className="text-gray-400 border-b border-gray-50">
-                      <th className="text-left px-4 py-2">Date</th>
-                      <th className="px-3 py-2">Sport</th>
-                      <th className="px-3 py-2">Kcal</th>
-                      <th className="px-3 py-2">P</th>
-                      <th className="px-3 py-2">G</th>
-                      <th className="px-3 py-2">L</th>
-                      <th className="px-3 py-2">Sommeil</th>
-                      <th className="px-3 py-2">Pas</th>
-                      <th className="px-3 py-2">Stress</th>
-                      <th className="px-3 py-2">Poids</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {[...data].sort((a, b) => new Date(b.date) - new Date(a.date)).map(e => {
-                      const objE = getObjectifsAt(e.date)
-                      const bE   = objE?.bornes || {}
-                      return (
-                        <tr key={e.id}
-                          onClick={() => { setEditingEntry(e.id); setEditForm({ ...e }) }}
-                          className="border-b border-gray-50 hover:bg-brand-50 cursor-pointer transition-colors">
-                          <td className="px-4 py-2 text-gray-600 whitespace-nowrap">
-                            {new Date(e.date + 'T12:00:00').toLocaleDateString('fr-FR', { weekday: 'short', day: 'numeric', month: 'short' })}
-                          </td>
-                          <td className="px-3 py-2 text-center">{e.sport_fait ? '✓' : '—'}</td>
-                          <td className={`px-3 py-2 text-center ${metricColor(e.kcal,            'kcal',      objE, bE)}`}>{e.kcal ?? '—'}</td>
-                          <td className={`px-3 py-2 text-center ${metricColor(e.proteines,       'proteines', objE, bE)}`}>{e.proteines ?? '—'}</td>
-                          <td className={`px-3 py-2 text-center ${metricColor(e.glucides,        'glucides',  objE, bE)}`}>{e.glucides ?? '—'}</td>
-                          <td className={`px-3 py-2 text-center ${metricColor(e.lipides,         'lipides',   objE, bE)}`}>{e.lipides ?? '—'}</td>
-                          <td className={`px-3 py-2 text-center ${metricColor(e.sommeil,         'sommeil',   objE, bE)}`}>{e.sommeil ?? '—'}</td>
-                          <td className={`px-3 py-2 text-center ${metricColor(e.pas_journaliers, 'pas',       objE, bE)}`}>{e.pas_journaliers ?? '—'}</td>
-                          <td className={`px-3 py-2 text-center ${metricColor(e.stress,          'stress',    objE, bE)}`}>{e.stress ?? '—'}</td>
-                          <td className="px-3 py-2 text-center text-gray-600">{e.poids ? `${e.poids}kg` : '—'}</td>
-                        </tr>
-                      )
-                    })}
-                  </tbody>
-                </table>
-              </div>
+              {data.length === 0 ? (
+                <p className="text-xs text-gray-400 px-4 py-6 text-center">Aucune entrée pour l'instant.</p>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className="text-gray-400 border-b border-gray-50">
+                        <th className="text-left px-4 py-2">Date</th>
+                        <th className="px-3 py-2">Sport</th>
+                        <th className="px-3 py-2">Kcal</th>
+                        <th className="px-3 py-2">P</th>
+                        <th className="px-3 py-2">G</th>
+                        <th className="px-3 py-2">L</th>
+                        <th className="px-3 py-2">Sommeil</th>
+                        <th className="px-3 py-2">Pas</th>
+                        <th className="px-3 py-2">Stress</th>
+                        <th className="px-3 py-2">Poids</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {[...data].sort((a, b) => new Date(b.date) - new Date(a.date)).map(e => {
+                        const objE = getObjectifsAt(e.date)
+                        const bE   = objE?.bornes || {}
+                        return (
+                          <tr key={e.id}
+                            onClick={() => { setEditingEntry(e.id); setEditForm({ ...e }) }}
+                            className="border-b border-gray-50 hover:bg-brand-50 cursor-pointer transition-colors">
+                            <td className="px-4 py-2 text-gray-600 whitespace-nowrap">
+                              {new Date(e.date + 'T12:00:00').toLocaleDateString('fr-FR', { weekday: 'short', day: 'numeric', month: 'short' })}
+                            </td>
+                            <td className="px-3 py-2 text-center">{e.sport_fait ? '✓' : '—'}</td>
+                            <td className={`px-3 py-2 text-center ${metricColor(e.kcal,            'kcal',      objE, bE)}`}>{e.kcal ?? '—'}</td>
+                            <td className={`px-3 py-2 text-center ${metricColor(e.proteines,       'proteines', objE, bE)}`}>{e.proteines ?? '—'}</td>
+                            <td className={`px-3 py-2 text-center ${metricColor(e.glucides,        'glucides',  objE, bE)}`}>{e.glucides ?? '—'}</td>
+                            <td className={`px-3 py-2 text-center ${metricColor(e.lipides,         'lipides',   objE, bE)}`}>{e.lipides ?? '—'}</td>
+                            <td className={`px-3 py-2 text-center ${metricColor(e.sommeil,         'sommeil',   objE, bE)}`}>{e.sommeil ?? '—'}</td>
+                            <td className={`px-3 py-2 text-center ${metricColor(e.pas_journaliers, 'pas',       objE, bE)}`}>{e.pas_journaliers ?? '—'}</td>
+                            <td className={`px-3 py-2 text-center ${metricColor(e.stress,          'stress',    objE, bE)}`}>{e.stress ?? '—'}</td>
+                            <td className="px-3 py-2 text-center text-gray-600">{e.poids ? `${e.poids}kg` : '—'}</td>
+                          </tr>
+                        )
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </div>
           )}
 
