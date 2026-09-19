@@ -445,222 +445,220 @@ export default function RecapTracking({ athleteId, blocId, coachMode = false }) 
         </div>
       )}
 
+      {/* Tableau résumé par semaine — spécifique au bloc actif */}
       {bilans.length === 0 ? (
-        <p className="text-sm text-gray-400">Aucune donnée saisie pour l'instant.</p>
+        <p className="text-sm text-gray-400">Aucune donnée saisie pour ce bloc pour l'instant.</p>
       ) : (
-        <>
-          {/* Tableau résumé par semaine */}
-          <div className="bg-white border border-gray-100 rounded-xl overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-gray-100 text-xs text-gray-400">
-                  <th className="text-left px-4 py-3 font-medium">Semaine</th>
-                  <th className="px-3 py-3 font-medium text-right">Sport</th>
-                  <th className="px-3 py-3 font-medium text-right">Kcal</th>
-                  <th className="px-3 py-3 font-medium text-right">P</th>
-                  <th className="px-3 py-3 font-medium text-right">G</th>
-                  <th className="px-3 py-3 font-medium text-right">L</th>
-                  <th className="px-3 py-3 font-medium text-right">Sommeil</th>
-                  <th className="px-3 py-3 font-medium text-right">Pas</th>
-                  <th className="px-3 py-3 font-medium text-right">Stress</th>
-                </tr>
-              </thead>
-              <tbody>
-                {bilans.map((b, idx) => {
-                  const objSemaine = getObjectifsAt(b.midDate)
-                  const bornes     = objSemaine?.bornes || {}
-                  const change     = getChangeLabel(b.midDate)
+        <div className="bg-white border border-gray-100 rounded-xl overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-gray-100 text-xs text-gray-400">
+                <th className="text-left px-4 py-3 font-medium">Semaine</th>
+                <th className="px-3 py-3 font-medium text-right">Sport</th>
+                <th className="px-3 py-3 font-medium text-right">Kcal</th>
+                <th className="px-3 py-3 font-medium text-right">P</th>
+                <th className="px-3 py-3 font-medium text-right">G</th>
+                <th className="px-3 py-3 font-medium text-right">L</th>
+                <th className="px-3 py-3 font-medium text-right">Sommeil</th>
+                <th className="px-3 py-3 font-medium text-right">Pas</th>
+                <th className="px-3 py-3 font-medium text-right">Stress</th>
+              </tr>
+            </thead>
+            <tbody>
+              {bilans.map((b, idx) => {
+                const objSemaine = getObjectifsAt(b.midDate)
+                const bornes     = objSemaine?.bornes || {}
+                const change     = getChangeLabel(b.midDate)
 
-                  // Ligne d'objectifs si changement détecté dans cette semaine
-                  const showObjRow = change !== null
+                // Ligne d'objectifs si changement détecté dans cette semaine
+                const showObjRow = change !== null
 
-                  return (
-                    <>
-                      {showObjRow && (
-                        <tr key={`obj-${b.name}`} className="border-b border-gray-50 bg-amber-50/60">
-                          <td className="px-4 py-1.5 text-xs text-amber-600 font-medium" colSpan={9}>
-                            📋 Objectifs modifiés le {new Date(change.date + 'T12:00:00').toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' })}
-                            {change.obj.plan_nutritionnel && (
-                              <span className="ml-2">
-                                {{'prise_de_masse':'💪 Prise de masse','maintien':'⚖️ Maintien','seche':'🔥 Sèche'}[change.obj.plan_nutritionnel]}
-                              </span>
-                            )}
-                            {change.obj.kcal && <span className="ml-2 text-gray-500">{change.obj.kcal} kcal/j</span>}
-                          </td>
-                        </tr>
-                      )}
-                      <tr key={b.name} className="border-b border-gray-50 hover:bg-gray-50">
-                        <td className="px-4 py-3 font-medium text-gray-800">
-                          {b.name}
-                          {b.dateDebut && (
-                            <span className="ml-1.5 text-xs text-gray-300">
-                              {new Date(b.dateDebut + 'T12:00:00').toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' })}
+                return (
+                  <>
+                    {showObjRow && (
+                      <tr key={`obj-${b.name}`} className="border-b border-gray-50 bg-amber-50/60">
+                        <td className="px-4 py-1.5 text-xs text-amber-600 font-medium" colSpan={9}>
+                          📋 Objectifs modifiés le {new Date(change.date + 'T12:00:00').toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' })}
+                          {change.obj.plan_nutritionnel && (
+                            <span className="ml-2">
+                              {{'prise_de_masse':'💪 Prise de masse','maintien':'⚖️ Maintien','seche':'🔥 Sèche'}[change.obj.plan_nutritionnel]}
                             </span>
                           )}
+                          {change.obj.kcal && <span className="ml-2 text-gray-500">{change.obj.kcal} kcal/j</span>}
                         </td>
-                        <td className={`px-3 py-3 text-right ${cc(b.sport, 'seances', b.midDate)}`}>{b.sport}j</td>
-                        <td className={`px-3 py-3 text-right ${cc(b.kcal, 'kcal', b.midDate)}`}>{fmt(b.kcal, true)}</td>
-                        <td className={`px-3 py-3 text-right ${cc(b.proteines, 'proteines', b.midDate)}`}>{fmt(b.proteines)}</td>
-                        <td className={`px-3 py-3 text-right ${cc(b.glucides, 'glucides', b.midDate)}`}>{fmt(b.glucides)}</td>
-                        <td className={`px-3 py-3 text-right ${cc(b.lipides, 'lipides', b.midDate)}`}>{fmt(b.lipides)}</td>
-                        <td className={`px-3 py-3 text-right ${cc(b.sommeil, 'sommeil', b.midDate)}`}>{fmt(b.sommeil)}h</td>
-                        <td className={`px-3 py-3 text-right ${cc(b.pas, 'pas', b.midDate)}`}>
-                          {b.pas ? Math.round(b.pas).toLocaleString('fr') : '—'}
-                        </td>
-                        <td className={`px-3 py-3 text-right ${cc(b.stress, 'stress', b.midDate)}`}>{fmt(b.stress)}/10</td>
                       </tr>
-                    </>
-                  )
-                })}
-              </tbody>
-            </table>
-          </div>
-
-          {/* Légende historique si plusieurs phases */}
-          {historique.length > 1 && (
-            <div className="bg-amber-50 border border-amber-100 rounded-xl px-4 py-3">
-              <p className="text-xs font-semibold text-amber-700 mb-2">Historique des objectifs</p>
-              <div className="space-y-1">
-                {[...historique].reverse().map((h, i) => (
-                  <div key={h.id} className="flex items-center gap-3 text-xs text-gray-600">
-                    <span className="text-gray-400 w-24 flex-shrink-0">
-                      {new Date(h.date_debut + 'T12:00:00').toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', year: '2-digit' })}
-                    </span>
-                    {h.plan_nutritionnel && (
-                      <span className="font-medium">
-                        {{'prise_de_masse':'💪 Prise','maintien':'⚖️ Maintien','seche':'🔥 Sèche'}[h.plan_nutritionnel]}
-                      </span>
                     )}
-                    {h.kcal && <span>{h.kcal} kcal</span>}
-                    {h.proteines && <span>P{h.proteines}g</span>}
-                    {h.glucides  && <span>G{h.glucides}g</span>}
-                    {h.lipides   && <span>L{h.lipides}g</span>}
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
+                    <tr key={b.name} className="border-b border-gray-50 hover:bg-gray-50">
+                      <td className="px-4 py-3 font-medium text-gray-800">
+                        {b.name}
+                        {b.dateDebut && (
+                          <span className="ml-1.5 text-xs text-gray-300">
+                            {new Date(b.dateDebut + 'T12:00:00').toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' })}
+                          </span>
+                        )}
+                      </td>
+                      <td className={`px-3 py-3 text-right ${cc(b.sport, 'seances', b.midDate)}`}>{b.sport}j</td>
+                      <td className={`px-3 py-3 text-right ${cc(b.kcal, 'kcal', b.midDate)}`}>{fmt(b.kcal, true)}</td>
+                      <td className={`px-3 py-3 text-right ${cc(b.proteines, 'proteines', b.midDate)}`}>{fmt(b.proteines)}</td>
+                      <td className={`px-3 py-3 text-right ${cc(b.glucides, 'glucides', b.midDate)}`}>{fmt(b.glucides)}</td>
+                      <td className={`px-3 py-3 text-right ${cc(b.lipides, 'lipides', b.midDate)}`}>{fmt(b.lipides)}</td>
+                      <td className={`px-3 py-3 text-right ${cc(b.sommeil, 'sommeil', b.midDate)}`}>{fmt(b.sommeil)}h</td>
+                      <td className={`px-3 py-3 text-right ${cc(b.pas, 'pas', b.midDate)}`}>
+                        {b.pas ? Math.round(b.pas).toLocaleString('fr') : '—'}
+                      </td>
+                      <td className={`px-3 py-3 text-right ${cc(b.stress, 'stress', b.midDate)}`}>{fmt(b.stress)}/10</td>
+                    </tr>
+                  </>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
 
-          {/* Entrées journalières modifiables + ajout manuel (mode coach) */}
-          {coachMode && (
-            <div className="bg-white border border-gray-100 rounded-xl overflow-hidden">
-              <div className="px-4 py-3 border-b border-gray-50 flex items-center justify-between gap-3">
-                <h4 className="text-sm font-medium text-gray-700">Entrées journalières</h4>
-                <div className="flex items-center gap-3">
-                  {data.length > 0 && (
-                    <span className="text-xs text-gray-400 hidden sm:inline">Cliquez sur une ligne pour modifier</span>
-                  )}
-                  <button onClick={openAddEntry}
-                    className="text-xs text-brand-600 hover:text-brand-800 font-medium border border-brand-200 rounded-lg px-2.5 py-1.5 hover:bg-brand-50 transition-colors flex-shrink-0">
-                    + Ajouter une entrée
-                  </button>
-                </div>
+      {/* Légende historique si plusieurs phases — indépendant des bilans */}
+      {historique.length > 1 && (
+        <div className="bg-amber-50 border border-amber-100 rounded-xl px-4 py-3">
+          <p className="text-xs font-semibold text-amber-700 mb-2">Historique des objectifs</p>
+          <div className="space-y-1">
+            {[...historique].reverse().map((h, i) => (
+              <div key={h.id} className="flex items-center gap-3 text-xs text-gray-600">
+                <span className="text-gray-400 w-24 flex-shrink-0">
+                  {new Date(h.date_debut + 'T12:00:00').toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', year: '2-digit' })}
+                </span>
+                {h.plan_nutritionnel && (
+                  <span className="font-medium">
+                    {{'prise_de_masse':'💪 Prise','maintien':'⚖️ Maintien','seche':'🔥 Sèche'}[h.plan_nutritionnel]}
+                  </span>
+                )}
+                {h.kcal && <span>{h.kcal} kcal</span>}
+                {h.proteines && <span>P{h.proteines}g</span>}
+                {h.glucides  && <span>G{h.glucides}g</span>}
+                {h.lipides   && <span>L{h.lipides}g</span>}
               </div>
-              {data.length === 0 ? (
-                <p className="text-xs text-gray-400 px-4 py-6 text-center">Aucune entrée pour l'instant.</p>
-              ) : (
-                <div className="overflow-x-auto">
-                  <table className="w-full text-xs">
-                    <thead>
-                      <tr className="text-gray-400 border-b border-gray-50">
-                        <th className="text-left px-4 py-2">Date</th>
-                        <th className="px-3 py-2">Sport</th>
-                        <th className="px-3 py-2">Kcal</th>
-                        <th className="px-3 py-2">P</th>
-                        <th className="px-3 py-2">G</th>
-                        <th className="px-3 py-2">L</th>
-                        <th className="px-3 py-2">Sommeil</th>
-                        <th className="px-3 py-2">Pas</th>
-                        <th className="px-3 py-2">Stress</th>
-                        <th className="px-3 py-2">Poids</th>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Entrées journalières modifiables + ajout manuel (mode coach) — indépendant des bilans */}
+      {coachMode && (
+        <div className="bg-white border border-gray-100 rounded-xl overflow-hidden">
+          <div className="px-4 py-3 border-b border-gray-50 flex items-center justify-between gap-3">
+            <h4 className="text-sm font-medium text-gray-700">Entrées journalières</h4>
+            <div className="flex items-center gap-3">
+              {data.length > 0 && (
+                <span className="text-xs text-gray-400 hidden sm:inline">Cliquez sur une ligne pour modifier</span>
+              )}
+              <button onClick={openAddEntry}
+                className="text-xs text-brand-600 hover:text-brand-800 font-medium border border-brand-200 rounded-lg px-2.5 py-1.5 hover:bg-brand-50 transition-colors flex-shrink-0">
+                + Ajouter une entrée
+              </button>
+            </div>
+          </div>
+          {data.length === 0 ? (
+            <p className="text-xs text-gray-400 px-4 py-6 text-center">Aucune entrée pour ce bloc pour l'instant.</p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="text-gray-400 border-b border-gray-50">
+                    <th className="text-left px-4 py-2">Date</th>
+                    <th className="px-3 py-2">Sport</th>
+                    <th className="px-3 py-2">Kcal</th>
+                    <th className="px-3 py-2">P</th>
+                    <th className="px-3 py-2">G</th>
+                    <th className="px-3 py-2">L</th>
+                    <th className="px-3 py-2">Sommeil</th>
+                    <th className="px-3 py-2">Pas</th>
+                    <th className="px-3 py-2">Stress</th>
+                    <th className="px-3 py-2">Poids</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {[...data].sort((a, b) => new Date(b.date) - new Date(a.date)).map(e => {
+                    const objE = getObjectifsAt(e.date)
+                    const bE   = objE?.bornes || {}
+                    return (
+                      <tr key={e.id}
+                        onClick={() => { setEditingEntry(e.id); setEditForm({ ...e }) }}
+                        className="border-b border-gray-50 hover:bg-brand-50 cursor-pointer transition-colors">
+                        <td className="px-4 py-2 text-gray-600 whitespace-nowrap">
+                          {new Date(e.date + 'T12:00:00').toLocaleDateString('fr-FR', { weekday: 'short', day: 'numeric', month: 'short' })}
+                        </td>
+                        <td className="px-3 py-2 text-center">{e.sport_fait ? '✓' : '—'}</td>
+                        <td className={`px-3 py-2 text-center ${metricColor(e.kcal,            'kcal',      objE, bE)}`}>{e.kcal ?? '—'}</td>
+                        <td className={`px-3 py-2 text-center ${metricColor(e.proteines,       'proteines', objE, bE)}`}>{e.proteines ?? '—'}</td>
+                        <td className={`px-3 py-2 text-center ${metricColor(e.glucides,        'glucides',  objE, bE)}`}>{e.glucides ?? '—'}</td>
+                        <td className={`px-3 py-2 text-center ${metricColor(e.lipides,         'lipides',   objE, bE)}`}>{e.lipides ?? '—'}</td>
+                        <td className={`px-3 py-2 text-center ${metricColor(e.sommeil,         'sommeil',   objE, bE)}`}>{e.sommeil ?? '—'}</td>
+                        <td className={`px-3 py-2 text-center ${metricColor(e.pas_journaliers, 'pas',       objE, bE)}`}>{e.pas_journaliers ?? '—'}</td>
+                        <td className={`px-3 py-2 text-center ${metricColor(e.stress,          'stress',    objE, bE)}`}>{e.stress ?? '—'}</td>
+                        <td className="px-3 py-2 text-center text-gray-600">{e.poids ? `${e.poids}kg` : '—'}</td>
                       </tr>
-                    </thead>
-                    <tbody>
-                      {[...data].sort((a, b) => new Date(b.date) - new Date(a.date)).map(e => {
-                        const objE = getObjectifsAt(e.date)
-                        const bE   = objE?.bornes || {}
-                        return (
-                          <tr key={e.id}
-                            onClick={() => { setEditingEntry(e.id); setEditForm({ ...e }) }}
-                            className="border-b border-gray-50 hover:bg-brand-50 cursor-pointer transition-colors">
-                            <td className="px-4 py-2 text-gray-600 whitespace-nowrap">
-                              {new Date(e.date + 'T12:00:00').toLocaleDateString('fr-FR', { weekday: 'short', day: 'numeric', month: 'short' })}
-                            </td>
-                            <td className="px-3 py-2 text-center">{e.sport_fait ? '✓' : '—'}</td>
-                            <td className={`px-3 py-2 text-center ${metricColor(e.kcal,            'kcal',      objE, bE)}`}>{e.kcal ?? '—'}</td>
-                            <td className={`px-3 py-2 text-center ${metricColor(e.proteines,       'proteines', objE, bE)}`}>{e.proteines ?? '—'}</td>
-                            <td className={`px-3 py-2 text-center ${metricColor(e.glucides,        'glucides',  objE, bE)}`}>{e.glucides ?? '—'}</td>
-                            <td className={`px-3 py-2 text-center ${metricColor(e.lipides,         'lipides',   objE, bE)}`}>{e.lipides ?? '—'}</td>
-                            <td className={`px-3 py-2 text-center ${metricColor(e.sommeil,         'sommeil',   objE, bE)}`}>{e.sommeil ?? '—'}</td>
-                            <td className={`px-3 py-2 text-center ${metricColor(e.pas_journaliers, 'pas',       objE, bE)}`}>{e.pas_journaliers ?? '—'}</td>
-                            <td className={`px-3 py-2 text-center ${metricColor(e.stress,          'stress',    objE, bE)}`}>{e.stress ?? '—'}</td>
-                            <td className="px-3 py-2 text-center text-gray-600">{e.poids ? `${e.poids}kg` : '—'}</td>
-                          </tr>
-                        )
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-              )}
+                    )
+                  })}
+                </tbody>
+              </table>
             </div>
           )}
+        </div>
+      )}
 
-          {/* Graphe Kcal — continu, tous blocs confondus */}
-          {loadingGlobal ? (
-            <div className="h-40 bg-gray-100 rounded-xl animate-pulse" />
-          ) : globalKcalWeekly.length > 0 && (
-            <div className="bg-white border border-gray-100 rounded-xl p-5">
-              <p className="text-xs font-medium text-gray-500 mb-1">Kcal moyennes par semaine — historique complet</p>
-              <p className="text-xs text-gray-300 mb-3">Continu entre les blocs</p>
-              <ResponsiveContainer width="100%" height={160}>
-                <LineChart data={globalKcalWeekly}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#f3f4f6" />
-                  <XAxis dataKey="semaine" tick={{ fontSize: 11 }} />
-                  <YAxis tick={{ fontSize: 11 }} width={40} />
-                  <Tooltip contentStyle={{ fontSize: 12 }} />
-                  <Line type="monotone" dataKey="kcal" stroke="#6366f1" strokeWidth={2} dot={{ r: 3 }} name="Kcal" />
-                </LineChart>
-              </ResponsiveContainer>
-              {blocsTimeline.length > 1 && (
-                <div className="flex flex-wrap gap-1.5 mt-3">
-                  {blocsTimeline.map((b, i) => (
-                    <span key={b.id} className="text-xs bg-gray-50 border border-gray-100 rounded-full px-2 py-0.5 text-gray-500">
-                      {b.name} · depuis {blocChipDate(b.startDate, i)}
-                    </span>
-                  ))}
-                </div>
-              )}
+      {/* Graphe Kcal — continu, tous blocs confondus, toujours visible */}
+      {loadingGlobal ? (
+        <div className="h-40 bg-gray-100 rounded-xl animate-pulse" />
+      ) : globalKcalWeekly.length > 0 && (
+        <div className="bg-white border border-gray-100 rounded-xl p-5">
+          <p className="text-xs font-medium text-gray-500 mb-1">Kcal moyennes par semaine — historique complet</p>
+          <p className="text-xs text-gray-300 mb-3">Continu entre les blocs</p>
+          <ResponsiveContainer width="100%" height={160}>
+            <LineChart data={globalKcalWeekly}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#f3f4f6" />
+              <XAxis dataKey="semaine" tick={{ fontSize: 11 }} />
+              <YAxis tick={{ fontSize: 11 }} width={40} />
+              <Tooltip contentStyle={{ fontSize: 12 }} />
+              <Line type="monotone" dataKey="kcal" stroke="#6366f1" strokeWidth={2} dot={{ r: 3 }} name="Kcal" />
+            </LineChart>
+          </ResponsiveContainer>
+          {blocsTimeline.length > 1 && (
+            <div className="flex flex-wrap gap-1.5 mt-3">
+              {blocsTimeline.map((b, i) => (
+                <span key={b.id} className="text-xs bg-gray-50 border border-gray-100 rounded-full px-2 py-0.5 text-gray-500">
+                  {b.name} · depuis {blocChipDate(b.startDate, i)}
+                </span>
+              ))}
             </div>
           )}
+        </div>
+      )}
 
-          {/* Graphe Poids — continu, tous blocs confondus */}
-          {loadingGlobal ? (
-            <div className="h-32 bg-gray-100 rounded-xl animate-pulse" />
-          ) : globalPoidsData.length > 0 && (
-            <div className="bg-white border border-gray-100 rounded-xl p-5">
-              <p className="text-xs font-medium text-gray-500 mb-1">Évolution du poids — historique complet</p>
-              <p className="text-xs text-gray-300 mb-3">Continu entre les blocs</p>
-              <ResponsiveContainer width="100%" height={140}>
-                <LineChart data={globalPoidsData}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#f3f4f6" />
-                  <XAxis dataKey="date" tick={{ fontSize: 10 }} />
-                  <YAxis tick={{ fontSize: 11 }} width={35} domain={['auto', 'auto']} />
-                  <Tooltip contentStyle={{ fontSize: 12 }} formatter={v => [`${v} kg`]} />
-                  <Line type="monotone" dataKey="poids" stroke="#10b981" strokeWidth={2} dot={{ r: 3 }} name="Poids" />
-                </LineChart>
-              </ResponsiveContainer>
-              {blocsTimeline.length > 1 && (
-                <div className="flex flex-wrap gap-1.5 mt-3">
-                  {blocsTimeline.map((b, i) => (
-                    <span key={b.id} className="text-xs bg-gray-50 border border-gray-100 rounded-full px-2 py-0.5 text-gray-500">
-                      {b.name} · depuis {blocChipDate(b.startDate, i)}
-                    </span>
-                  ))}
-                </div>
-              )}
+      {/* Graphe Poids — continu, tous blocs confondus, toujours visible */}
+      {loadingGlobal ? (
+        <div className="h-32 bg-gray-100 rounded-xl animate-pulse" />
+      ) : globalPoidsData.length > 0 && (
+        <div className="bg-white border border-gray-100 rounded-xl p-5">
+          <p className="text-xs font-medium text-gray-500 mb-1">Évolution du poids — historique complet</p>
+          <p className="text-xs text-gray-300 mb-3">Continu entre les blocs</p>
+          <ResponsiveContainer width="100%" height={140}>
+            <LineChart data={globalPoidsData}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#f3f4f6" />
+              <XAxis dataKey="date" tick={{ fontSize: 10 }} />
+              <YAxis tick={{ fontSize: 11 }} width={35} domain={['auto', 'auto']} />
+              <Tooltip contentStyle={{ fontSize: 12 }} formatter={v => [`${v} kg`]} />
+              <Line type="monotone" dataKey="poids" stroke="#10b981" strokeWidth={2} dot={{ r: 3 }} name="Poids" />
+            </LineChart>
+          </ResponsiveContainer>
+          {blocsTimeline.length > 1 && (
+            <div className="flex flex-wrap gap-1.5 mt-3">
+              {blocsTimeline.map((b, i) => (
+                <span key={b.id} className="text-xs bg-gray-50 border border-gray-100 rounded-full px-2 py-0.5 text-gray-500">
+                  {b.name} · depuis {blocChipDate(b.startDate, i)}
+                </span>
+              ))}
             </div>
           )}
-        </>
+        </div>
       )}
     </div>
   )
