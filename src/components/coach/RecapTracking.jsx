@@ -616,7 +616,7 @@ export default function RecapTracking({ athleteId, blocId, coachMode = false }) 
             <LineChart data={globalKcalWeekly}>
               <CartesianGrid strokeDasharray="3 3" stroke="#f3f4f6" />
               <XAxis dataKey="semaine" tick={{ fontSize: 11 }} />
-              <YAxis tick={{ fontSize: 11 }} width={40} />
+              <YAxis  tick={{ fontSize: 11 }} width={40} domain={[ (dataMin) => Math.min(1500, dataMin), 'auto' ]} />
               <Tooltip contentStyle={{ fontSize: 12 }} />
               <Line type="monotone" dataKey="kcal" stroke="#6366f1" strokeWidth={2} dot={{ r: 3 }} name="Kcal" />
             </LineChart>
