@@ -30,7 +30,14 @@ export default function RecapTracking({ athleteId, blocId, coachMode = false }) 
   const [addSaving, setAddSaving]       = useState(false)
   const [addError, setAddError]         = useState('')
 
+  // Graphiques continus (tous blocs confondus) — indépendants du bloc affiché
+  const [globalPoidsData, setGlobalPoidsData]   = useState([])
+  const [globalKcalWeekly, setGlobalKcalWeekly] = useState([])
+  const [blocsTimeline, setBlocsTimeline]       = useState([])
+  const [loadingGlobal, setLoadingGlobal]       = useState(true)
+
   useEffect(() => { fetchData() }, [blocId])
+  useEffect(() => { if (athleteId) fetchGlobalData() }, [athleteId])
 
   async function fetchData() {
     setLoading(true)
@@ -52,6 +59,66 @@ export default function RecapTracking({ athleteId, blocId, coachMode = false }) 
     setSemaines(sems || [])
     setHistorique(hist || [])
     setLoading(false)
+  }
+
+  /**
+   * Récupère les graphiques Poids & Kcal continus, tous blocs confondus,
+   * pour que la progression de l'athlète ne soit pas coupée à chaque
+   * changement de bloc. Indépendant du blocId affiché — ne se recharge
+   * que quand on change d'athlète, pas quand on change d'onglet bloc.
+   */
+  async function fetchGlobalData() {
+    setLoadingGlobal(true)
+    const [{ data: allBlocs }, { data: allTracking }] = await Promise.all([
+      supabase.from('blocs').select('id, name, created_at').eq('athlete_id', athleteId).order('created_at', { ascending: true }),
+      supabase.from('data_tracking').select('*').eq('athlete_id', athleteId).order('date', { ascending: true }),
+    ])
+
+    const blocsList    = allBlocs || []
+    const trackingList = allTracking || []
+
+    // Poids : tous les points renseignés, toutes dates confondues
+    setGlobalPoidsData(
+      trackingList.filter(d => d.poids).map(d => ({ date: d.date, poids: d.poids }))
+    )
+
+    // Kcal : moyenne par semaine calendaire (lundi → dimanche), continue entre les blocs
+    const weekMap = {}
+    trackingList.forEach(d => {
+      if (d.kcal == null) return
+      const dt = new Date(d.date + 'T12:00:00')
+      const day = dt.getDay() // 0 = dimanche
+      const diffToMonday = day === 0 ? 6 : day - 1
+      const monday = new Date(dt)
+      monday.setDate(dt.getDate() - diffToMonday)
+      const weekStart = monday.toISOString().split('T')[0]
+      if (!weekMap[weekStart]) weekMap[weekStart] = { total: 0, count: 0 }
+      weekMap[weekStart].total += Number(d.kcal)
+      weekMap[weekStart].count += 1
+    })
+    setGlobalKcalWeekly(
+      Object.entries(weekMap)
+        .sort((a, b) => new Date(a[0]) - new Date(b[0]))
+        .map(([weekStart, { total, count }]) => ({
+          weekStart,
+          semaine: new Date(weekStart + 'T12:00:00').toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' }),
+          kcal: Math.round(total / count),
+        }))
+    )
+
+    // Timeline des blocs : date de la première donnée de tracking de chaque bloc
+    // (fallback sur created_at si le bloc n'a encore aucune donnée)
+    const timeline = blocsList
+      .map(b => {
+        const firstEntry = trackingList.find(t => t.bloc_id === b.id)
+        const startDate = firstEntry?.date || b.created_at?.split('T')[0]
+        return { id: b.id, name: b.name, startDate }
+      })
+      .filter(b => b.startDate)
+      .sort((a, b) => new Date(a.startDate) - new Date(b.startDate))
+    setBlocsTimeline(timeline)
+
+    setLoadingGlobal(false)
   }
 
   /**
@@ -186,6 +253,7 @@ export default function RecapTracking({ athleteId, blocId, coachMode = false }) 
     }).eq('id', editingEntry)
     setEditingEntry(null)
     fetchData()
+    fetchGlobalData()
     setSaving(false)
   }
 
@@ -237,12 +305,11 @@ export default function RecapTracking({ athleteId, blocId, coachMode = false }) 
 
     setShowAddEntry(false)
     await fetchData()
+    await fetchGlobalData()
     setAddSaving(false)
   }
 
-  const bilans    = bilanSemaines()
-  const poidsData = data.filter(d => d.poids).map(d => ({ date: d.date, poids: d.poids }))
-  const addDateExists = data.some(d => d.date === addForm.date)
+  const bilans = bilanSemaines()
 
   // Couleur d'une cellule : utilise les objectifs en vigueur à la date de la semaine
   function cc(value, key, midDate) {
@@ -266,6 +333,12 @@ export default function RecapTracking({ athleteId, blocId, coachMode = false }) 
     })()
     const changeDansSemaine = historique.find(h => h.date_debut >= semDebut && h.date_debut <= semFin)
     return changeDansSemaine ? { date: changeDansSemaine.date_debut, obj: changeDansSemaine } : null
+  }
+
+  function blocChipDate(dateStr, i) {
+    return new Date(dateStr + 'T12:00:00').toLocaleDateString('fr-FR', {
+      day: 'numeric', month: 'short', year: i === 0 ? undefined : '2-digit',
+    })
   }
 
   if (loading) return <p className="text-sm text-gray-400">Chargement du suivi…</p>
@@ -326,7 +399,7 @@ export default function RecapTracking({ athleteId, blocId, coachMode = false }) 
                 onChange={e => handleAddDateChange(e.target.value)}
                 className="mt-0.5 w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400"
               />
-              {addDateExists && (
+              {data.some(d => d.date === addForm.date) && (
                 <p className="text-xs text-amber-600 mt-1">
                   ⚠️ Une entrée existe déjà pour cette date — elle sera mise à jour avec les valeurs ci-dessous.
                 </p>
@@ -532,32 +605,43 @@ export default function RecapTracking({ athleteId, blocId, coachMode = false }) 
             </div>
           )}
 
-          {/* Graphe Kcal */}
-          {bilans.some(b => b.kcal) && (
+          {/* Graphe Kcal — continu, tous blocs confondus */}
+          {loadingGlobal ? (
+            <div className="h-40 bg-gray-100 rounded-xl animate-pulse" />
+          ) : globalKcalWeekly.length > 0 && (
             <div className="bg-white border border-gray-100 rounded-xl p-5">
-              <p className="text-xs font-medium text-gray-500 mb-3">Kcal moyennes par semaine</p>
+              <p className="text-xs font-medium text-gray-500 mb-1">Kcal moyennes par semaine — historique complet</p>
+              <p className="text-xs text-gray-300 mb-3">Continu entre les blocs</p>
               <ResponsiveContainer width="100%" height={160}>
-                <LineChart data={bilans}>
+                <LineChart data={globalKcalWeekly}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#f3f4f6" />
-                  <XAxis dataKey="name" tick={{ fontSize: 11 }} />
+                  <XAxis dataKey="semaine" tick={{ fontSize: 11 }} />
                   <YAxis tick={{ fontSize: 11 }} width={40} />
                   <Tooltip contentStyle={{ fontSize: 12 }} />
                   <Line type="monotone" dataKey="kcal" stroke="#6366f1" strokeWidth={2} dot={{ r: 3 }} name="Kcal" />
-                  {objectifs?.kcal && (
-                    <Line type="monotone" dataKey={() => objectifs.kcal}
-                      stroke="#a5b4fc" strokeWidth={1} strokeDasharray="4 4" dot={false} name="Objectif actuel" />
-                  )}
                 </LineChart>
               </ResponsiveContainer>
+              {blocsTimeline.length > 1 && (
+                <div className="flex flex-wrap gap-1.5 mt-3">
+                  {blocsTimeline.map((b, i) => (
+                    <span key={b.id} className="text-xs bg-gray-50 border border-gray-100 rounded-full px-2 py-0.5 text-gray-500">
+                      {b.name} · depuis {blocChipDate(b.startDate, i)}
+                    </span>
+                  ))}
+                </div>
+              )}
             </div>
           )}
 
-          {/* Graphe Poids */}
-          {poidsData.length > 0 && (
+          {/* Graphe Poids — continu, tous blocs confondus */}
+          {loadingGlobal ? (
+            <div className="h-32 bg-gray-100 rounded-xl animate-pulse" />
+          ) : globalPoidsData.length > 0 && (
             <div className="bg-white border border-gray-100 rounded-xl p-5">
-              <p className="text-xs font-medium text-gray-500 mb-3">Évolution du poids</p>
+              <p className="text-xs font-medium text-gray-500 mb-1">Évolution du poids — historique complet</p>
+              <p className="text-xs text-gray-300 mb-3">Continu entre les blocs</p>
               <ResponsiveContainer width="100%" height={140}>
-                <LineChart data={poidsData}>
+                <LineChart data={globalPoidsData}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#f3f4f6" />
                   <XAxis dataKey="date" tick={{ fontSize: 10 }} />
                   <YAxis tick={{ fontSize: 11 }} width={35} domain={['auto', 'auto']} />
@@ -565,6 +649,15 @@ export default function RecapTracking({ athleteId, blocId, coachMode = false }) 
                   <Line type="monotone" dataKey="poids" stroke="#10b981" strokeWidth={2} dot={{ r: 3 }} name="Poids" />
                 </LineChart>
               </ResponsiveContainer>
+              {blocsTimeline.length > 1 && (
+                <div className="flex flex-wrap gap-1.5 mt-3">
+                  {blocsTimeline.map((b, i) => (
+                    <span key={b.id} className="text-xs bg-gray-50 border border-gray-100 rounded-full px-2 py-0.5 text-gray-500">
+                      {b.name} · depuis {blocChipDate(b.startDate, i)}
+                    </span>
+                  ))}
+                </div>
+              )}
             </div>
           )}
         </>
