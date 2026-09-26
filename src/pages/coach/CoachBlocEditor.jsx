@@ -460,7 +460,7 @@ export default function CoachBlocEditor() {
               onDeleteExercice={(id) => deleteExercice(id, seance.nom)}
               onReorderExercices={(from, to) => reorderExercices(seance.id, from, to)}
               onAddCustomExo={addCustomExo}
-              onDeleteSeance={() => { supabase.from('seances').delete().eq('id', seance.id); fetchSeances(activeSemaine.id) }}
+              onDeleteSeance={async () => { await supabase.from('seances').delete().eq('id', seance.id); fetchSeances(activeSemaine.id) }}
               onUpdateNom={(a, n) => updateSeanceNom(seance.id, a, n)}
               onUpdateType={(newType) => updateSeanceType(seance.id, seance.nom, newType)}
             />
