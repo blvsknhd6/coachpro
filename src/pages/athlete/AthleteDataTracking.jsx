@@ -10,9 +10,9 @@ function formatDate(d) {
   return new Date(d + 'T12:00:00').toLocaleDateString('fr-FR', { weekday: 'short', day: 'numeric', month: 'short' })
 }
 
-function getLast7Days() {
+function getLastMonth() {
   const days = []
-  for (let i = 6; i >= 0; i--) {
+  for (let i = 29; i >= 0; i--) {
     const d = new Date(); d.setDate(d.getDate() - i)
     days.push(d.toISOString().split('T')[0])
   }
@@ -31,7 +31,7 @@ export default function AthleteDataTracking() {
   const [recentEntries, setRecentEntries] = useState([])
   const saveTimerRef                      = useRef(null)
   const activeBlocIdRef                   = useRef(null)
-  const days = getLast7Days()
+  const days = getLastMonth()
 
   useEffect(() => { fetchBlocs() }, [profile])
   useEffect(() => {
@@ -82,7 +82,7 @@ export default function AthleteDataTracking() {
   async function fetchRecent() {
     const { data } = await supabase.from('data_tracking').select('*')
       .eq('athlete_id', profile.id).eq('bloc_id', activeBloc.id)
-      .order('date', { ascending: false }).limit(28)
+      .order('date', { ascending: false }).limit(31)
     setRecentEntries(data || [])
   }
 
@@ -216,6 +216,16 @@ export default function AthleteDataTracking() {
       )}
 
       {/* Sélecteur de date */}
+      <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
+        <p className="text-xs text-gray-400">30 derniers jours</p>
+        <div className="flex items-center gap-1.5">
+          <label className="text-xs text-gray-400 flex-shrink-0">Aller à une date :</label>
+          <input type="date" value={selectedDate} min={days[0]} max={days[days.length - 1]}
+            onChange={e => setSelectedDate(e.target.value)}
+            className="border border-gray-200 rounded-lg px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-brand-400"
+          />
+        </div>
+      </div>
       <div className="flex gap-1.5 mb-6 overflow-x-auto pb-1">
         {days.map(d => {
           const hasEntry = recentEntries.some(e => e.date === d)
